@@ -35,6 +35,7 @@ from app.db import Database
 from app.services.kiz_pick import KizService, PickVerifyService
 from app.services.orders import OrdersService
 from app.services import supply_detail_cache
+from app.services import supply_session
 from app.services.trbx_stickers import StickersService, TrbxService
 from app.ui.dialog_utils import (
     apply_fullscreen_on_show,
@@ -55,57 +56,17 @@ _RENDER_BATCH = 50
 _WAIT_ORDERS_TIP = "Дождитесь загрузки заказов"
 
 
-def _enrich_supply_rows(
-    rows: List[Dict[str, Any]],
-    api_key: str,
-    supply_pickup_allowed: bool,
-) -> None:
-    from app.services.print_docs import _fetch_picking_stickers
-
-    ids = [int(r["order_id"]) for r in rows if r.get("order_id") is not None]
-    stickers = {}  # type: Dict[int, Dict[str, Any]]
-    if ids and api_key:
-        try:
-            stickers = _fetch_picking_stickers(api_key, ids)
-        except Exception:
-            stickers = {}
-    for r in rows:
-        oid = int(r.get("order_id") or 0)
-        st = stickers.get(oid) or {}
-        part_a = str(st.get("partA") or "").strip()
-        part_b = str(st.get("partB") or "").strip()
-        r["sticker_part_a"] = part_a
-        r["sticker_part_b"] = part_b
-        r["sticker_number"] = "{}{}".format(part_a, part_b)
-        r["created_date"] = format_date_short(r.get("created_at_wb"))
-        r["created_ago"] = ago_label(r.get("created_at_wb"))
-        r["pickup_allowed"] = bool(
-            r.get("pickup_allowed") or supply_pickup_allowed
-        )
-        codes = r.get("kiz_codes")
-        if not isinstance(codes, list):
-            codes = parse_json_list(r.get("kiz_codes_json"))
-        r["kiz_codes"] = codes
-        has_codes = any(str(c).strip() for c in codes)
-        if has_codes:
-            r["kiz_required"] = True
-            if int(r.get("kiz_wb_synced") or 0):
-                r["kiz_status"] = "ok"
-            else:
-                r["kiz_status"] = "pending"
-        else:
-            r["kiz_required"] = False
-            r["kiz_status"] = "empty"
-
-
 class _SupplyLoadWorker(QThread):
-    """Load orders + WB sticker numbers off the UI thread."""
+    """Staged preload: orders → sticker numbers → KIZ/pick meta → PNG stickers."""
 
-    loaded = pyqtSignal(object)
+    progress = pyqtSignal(str)
+    core_ready = pyqtSignal(object)
+    png_ready = pyqtSignal(object)
     failed = pyqtSignal(str)
 
     def __init__(
         self,
+        db: Database,
         orders: OrdersService,
         source_id: int,
         supply_id: str,
@@ -113,6 +74,7 @@ class _SupplyLoadWorker(QThread):
         supply_pickup_allowed: bool,
     ) -> None:
         super(_SupplyLoadWorker, self).__init__()
+        self.db = db
         self.orders = orders
         self.source_id = source_id
         self.supply_id = supply_id
@@ -121,18 +83,21 @@ class _SupplyLoadWorker(QThread):
 
     def run(self) -> None:
         try:
-            rows = self.orders.orders_in_supply(
-                self.source_id, self.supply_id, api_key=self.api_key
+            def _progress(msg: str) -> None:
+                self.progress.emit(msg)
+
+            session = supply_session.preload_supply_core(
+                self.db,
+                self.orders,
+                self.source_id,
+                self.supply_id,
+                self.api_key,
+                supply_pickup_allowed=self.supply_pickup_allowed,
+                progress=_progress,
             )
-            _enrich_supply_rows(rows, self.api_key, self.supply_pickup_allowed)
-            warehouse = ""
-            if rows:
-                warehouse = str(
-                    rows[0].get("warehouse_label")
-                    or rows[0].get("warehouse_id")
-                    or ""
-                )
-            self.loaded.emit({"rows": rows, "warehouse": warehouse})
+            self.core_ready.emit(supply_session.snapshot_for_ui(session))
+            supply_session.preload_sticker_pngs(session, progress=_progress)
+            self.png_ready.emit({"png_ready": True, "count": len(session.sticker_png)})
         except Exception as exc:
             self.failed.emit(str(exc))
 
@@ -230,6 +195,12 @@ class SupplyDetailDialog(QDialog):
         self.meta.setWordWrap(True)
         self.meta.hide()
         hv.addWidget(self.meta)
+
+        self.load_status = QLabel("")
+        self.load_status.setObjectName("sdLoadStatus")
+        self.load_status.setWordWrap(True)
+        self.load_status.hide()
+        hv.addWidget(self.load_status)
 
         actions = FlowLayout(h_spacing=8, v_spacing=8)
 
@@ -396,8 +367,17 @@ class SupplyDetailDialog(QDialog):
         worker = self._load_worker
         if worker is None:
             return
-        if worker.isRunning():
-            worker.wait(3000)
+        for signal in (
+            worker.progress,
+            worker.core_ready,
+            worker.png_ready,
+            worker.failed,
+        ):
+            try:
+                signal.disconnect()
+            except Exception:
+                pass
+        # Do not block UI on PNG stage — session keeps filling in background.
         self._load_worker = None
         self._loading = False
 
@@ -476,6 +456,7 @@ class SupplyDetailDialog(QDialog):
 
     def reload(self) -> None:
         supply_detail_cache.invalidate(self.source_id, self.supply_id)
+        supply_session.invalidate(self.source_id, self.supply_id)
         self._apply_supply_header(self.orders.get_supply(self.source_id, self.supply_id))
         self._show_loading_table()
         self._set_actions_ready(False)
@@ -530,44 +511,68 @@ class SupplyDetailDialog(QDialog):
         self.table.setSpan(0, 0, 1, 4)
         self.table.setCellWidget(0, 0, loading)
         self.table.blockSignals(False)
+        self._set_load_status("Подготовка данных поставки…")
+
+    def _set_load_status(self, text: str = "") -> None:
+        msg = str(text or "").strip()
+        if not msg:
+            self.load_status.hide()
+            self.load_status.setText("")
+            return
+        self.load_status.setText(msg)
+        self.load_status.show()
 
     def _begin_load(self, *, force: bool = False) -> None:
         if self._loading and not force:
             return
 
-        cached = None if force else supply_detail_cache.get(
-            self.source_id, self.supply_id
-        )
-        if cached:
-            self._apply_loaded_payload(cached)
-            return
+        if not force:
+            session = supply_session.get_session(self.source_id, self.supply_id)
+            if session and session.core_ready:
+                self._apply_loaded_payload(supply_session.snapshot_for_ui(session))
+                if session.png_ready:
+                    self._set_load_status("")
+                else:
+                    self._set_load_status("Стикеры для печати ещё готовятся…")
+                return
 
         self._loading = True
         self._set_actions_ready(False)
         self._stop_load_worker()
         worker = _SupplyLoadWorker(
+            self.db,
             self.orders,
             self.source_id,
             self.supply_id,
             self.api_key,
             self._supply_pickup_allowed,
         )
-        worker.loaded.connect(self._on_load_finished)
+        worker.progress.connect(self._on_load_progress)
+        worker.core_ready.connect(self._on_core_ready)
+        worker.png_ready.connect(self._on_png_ready)
         worker.failed.connect(self._on_load_failed)
         self._load_worker = worker
         worker.start()
 
-    def _on_load_finished(self, payload: object) -> None:
-        self._loading = False
-        self._load_worker = None
+    def _on_load_progress(self, message: str) -> None:
+        self._set_load_status(message)
+
+    def _on_core_ready(self, payload: object) -> None:
         if not isinstance(payload, dict):
             return
         supply_detail_cache.put(self.source_id, self.supply_id, payload)
         self._apply_loaded_payload(payload)
+        self._set_load_status("Подготовка стикеров для печати…")
+
+    def _on_png_ready(self, _payload: object) -> None:
+        self._loading = False
+        self._load_worker = None
+        self._set_load_status("")
 
     def _on_load_failed(self, message: str) -> None:
         self._loading = False
         self._load_worker = None
+        self._set_load_status("")
         self.table.blockSignals(True)
         self.table.setRowCount(1)
         self.table.clearSpans()
@@ -578,6 +583,7 @@ class SupplyDetailDialog(QDialog):
         self.table.setSpan(0, 0, 1, 4)
         self.table.setCellWidget(0, 0, err)
         self.table.blockSignals(False)
+        self._set_actions_ready(True)
 
     def _apply_loaded_payload(self, payload: Dict[str, Any]) -> None:
         rows = list(payload.get("rows") or [])
@@ -863,7 +869,12 @@ class SupplyDetailDialog(QDialog):
         from app.services.print_docs import print_picking_list
 
         preloaded = None
-        if str(variant).lower() == "extended" and self._all_rows:
+        session = supply_session.get_session(self.source_id, self.supply_id)
+        if session and session.sticker_numbers:
+            preloaded = {
+                int(oid): dict(meta) for oid, meta in session.sticker_numbers.items()
+            }
+        elif str(variant).lower() == "extended" and self._all_rows:
             preloaded = {}
             for row in self._all_rows:
                 oid = row.get("order_id")
@@ -900,6 +911,20 @@ class SupplyDetailDialog(QDialog):
             return
         from app.services.print_docs import print_supply_stickers
 
+        session = supply_session.get_session(self.source_id, self.supply_id)
+        preloaded = None
+        if session and session.png_ready and session.sticker_png:
+            preloaded = session.sticker_png
+        elif session and not session.png_ready:
+            self._set_load_status("Стикеры ещё готовятся — подождите…")
+            QMessageBox.information(
+                self,
+                "Стикеры",
+                "Стикеры для печати ещё загружаются.\n"
+                "Дождитесь окончания статуса в шапке и нажмите снова.",
+            )
+            return
+
         QApplication.setOverrideCursor(QCursor(Qt.WaitCursor))
         try:
             print_supply_stickers(
@@ -910,6 +935,7 @@ class SupplyDetailDialog(QDialog):
                 self.supply_id,
                 order_ids=sorted(self._selected) if self._selected else None,
                 parent=self,
+                preloaded_stickers=preloaded,
             )
         except Exception as exc:
             QMessageBox.critical(self, "Стикеры", str(exc))
@@ -1124,6 +1150,13 @@ class SupplyDetailDialog(QDialog):
                 else ""
             ),
         }
+        session = supply_session.get_session(self.source_id, self.supply_id)
+        if session:
+            session.rows = rows
+            session.apply_sticker_numbers_to_rows()
+            session.build_kiz_and_pick_rows(self.db)
+            supply_session.put_session(session)
+            payload = supply_session.snapshot_for_ui(session)
         supply_detail_cache.put(self.source_id, self.supply_id, payload)
         self._apply_loaded_payload(payload)
 

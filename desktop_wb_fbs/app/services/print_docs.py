@@ -747,6 +747,7 @@ def print_supply_stickers(
     supply_id: str,
     order_ids: Optional[List[int]] = None,
     parent: Optional["QWidget"] = None,
+    preloaded_stickers: Optional[Dict[int, Dict[str, Any]]] = None,
 ) -> Path:
     rows = orders_svc.orders_in_supply(source_id, supply_id, api_key="")
     if not rows and api_key:
@@ -755,8 +756,18 @@ def print_supply_stickers(
         want = set(int(x) for x in order_ids)
         rows = [r for r in rows if int(r["order_id"]) in want]
     ids = [int(r["order_id"]) for r in rows]
-    # Stickers print needs official PNG files — WB API is required on first run.
-    stickers = fetch_stickers_map(api_key, ids) if ids else {}
+    if preloaded_stickers is not None:
+        stickers = {
+            int(oid): dict(meta)
+            for oid, meta in preloaded_stickers.items()
+            if oid is not None
+        }
+        missing = [oid for oid in ids if oid not in stickers]
+        if missing and api_key:
+            stickers.update(fetch_stickers_map(api_key, missing))
+    else:
+        # Stickers print needs official PNG files — WB API is required on first run.
+        stickers = fetch_stickers_map(api_key, ids) if ids else {}
     cards = fetch_cards(api_key, rows)
     products = ProductService(db).list_all()
     groups = build_groups(rows, stickers, cards, products)

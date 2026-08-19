@@ -28,6 +28,7 @@ from PyQt5.QtWidgets import (
 )
 
 from app.services.kiz_pick import KizService
+from app.services import supply_session
 from app.services.print_docs import _fetch_picking_stickers
 from app.services.trbx_stickers import StickersService
 from app.ui.dialog_utils import (
@@ -396,10 +397,14 @@ class KizDialog(QDialog):
         self.table.setRowCount(1)
         self.table.setItem(0, 0, QTableWidgetItem("Загрузка…"))
         QApplication.processEvents()
+        session = supply_session.get_session(self.source_id, self.supply_id)
         try:
-            self.rows = self.kiz.marking_rows(
-                self.source_id, self.supply_id, self.api_key
-            )
+            if session and session.core_ready and session.kiz_rows is not None:
+                self.rows = [dict(r) for r in session.kiz_rows]
+            else:
+                self.rows = self.kiz.marking_rows(
+                    self.source_id, self.supply_id, self.api_key
+                )
         except Exception as exc:
             self.rows = []
             self._set_info(str(exc))
@@ -410,24 +415,28 @@ class KizDialog(QDialog):
         self.row_errors = {}
         self._sticker_map = {}
         self._code_inputs = {}
-        try:
-            ids = [int(r["order_id"]) for r in self.rows]
-            stickers = _fetch_picking_stickers(self.api_key, ids)
-            for r in self.rows:
-                oid = int(r["order_id"])
-                st = stickers.get(oid) or {}
-                part_a = str(st.get("partA") or "").strip()
-                part_b = str(st.get("partB") or "").strip()
-                r["sticker_part_a"] = part_a
-                r["sticker_part_b"] = part_b
-                full = _sticker_number(part_a, part_b)
-                r["sticker_number"] = full
-                if full:
-                    self._sticker_map[full] = r
-                if part_b:
-                    self._sticker_map[part_b] = r
-        except Exception:
-            pass
+        stickers = {}  # type: Dict[int, Dict[str, Any]]
+        if session and session.sticker_numbers:
+            stickers = session.sticker_numbers
+        else:
+            try:
+                ids = [int(r["order_id"]) for r in self.rows]
+                stickers = _fetch_picking_stickers(self.api_key, ids)
+            except Exception:
+                stickers = {}
+        for r in self.rows:
+            oid = int(r["order_id"])
+            st = stickers.get(oid) or {}
+            part_a = str(st.get("partA") or r.get("sticker_part_a") or "").strip()
+            part_b = str(st.get("partB") or r.get("sticker_part_b") or "").strip()
+            r["sticker_part_a"] = part_a
+            r["sticker_part_b"] = part_b
+            full = _sticker_number(part_a, part_b)
+            r["sticker_number"] = full or str(r.get("sticker_number") or "")
+            if full:
+                self._sticker_map[full] = r
+            if part_b:
+                self._sticker_map[part_b] = r
         self._render_table()
         if not self.rows:
             self._set_info("В поставке нет заказов, требующих маркировки КИЗ")

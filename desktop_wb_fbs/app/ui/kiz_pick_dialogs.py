@@ -25,7 +25,7 @@ from PyQt5.QtWidgets import (
 from app.ui.kiz_dialog import KizDialog  # noqa: F401 — re-export
 
 from app.services.kiz_pick import PickVerifyService
-from app.services.trbx_stickers import StickersService
+from app.services import supply_session
 from app.ui.dialog_utils import (
     apply_fullscreen_on_show,
     fullscreen_parent,
@@ -227,34 +227,31 @@ class PickDialog(QDialog):
         return True
 
     def load_rows(self) -> None:
+        session = supply_session.get_session(self.source_id, self.supply_id)
         try:
-            self.rows = self.pick.rows(self.source_id, self.supply_id, self.api_key)
+            if session and session.core_ready and session.pick_rows is not None:
+                self.rows = [dict(r) for r in session.pick_rows]
+            else:
+                self.rows = self.pick.rows(self.source_id, self.supply_id, self.api_key)
         except Exception as exc:
             self.info.setText("Ошибка: {}".format(exc))
             return
         self.row_errors = {}
-        try:
-            stickers = StickersService(self.pick.db).order_stickers_png(
-                self.api_key, [int(r["order_id"]) for r in self.rows]
-            )
-            for st in stickers:
-                try:
-                    oid = int(st.get("order_id"))
-                except (TypeError, ValueError):
-                    continue
-                row = next((r for r in self.rows if int(r["order_id"]) == oid), None)
-                if not row:
-                    continue
-                part_a = str(st.get("partA") or "")
-                part_b = str(st.get("partB") or "")
-                full = part_a + part_b
-                row["sticker_number"] = full
-                if full:
-                    self._sticker_map[full] = row
-                if part_b:
-                    self._sticker_map[part_b] = row
-        except Exception:
-            pass
+        self._sticker_map = {}
+        stickers = (session.sticker_numbers if session else {}) or {}
+        for row in self.rows:
+            oid = int(row["order_id"])
+            st = stickers.get(oid) or {}
+            part_a = str(st.get("partA") or row.get("sticker_part_a") or "")
+            part_b = str(st.get("partB") or row.get("sticker_part_b") or "")
+            full = (part_a + part_b) or str(row.get("sticker_number") or "")
+            row["sticker_number"] = full
+            row["sticker_part_a"] = part_a
+            row["sticker_part_b"] = part_b
+            if full:
+                self._sticker_map[full] = row
+            if part_b:
+                self._sticker_map[part_b] = row
         try:
             from app.services.cancelled import list_cancelled_in_supply
 

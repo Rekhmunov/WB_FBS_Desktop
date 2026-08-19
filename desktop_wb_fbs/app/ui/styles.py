@@ -546,6 +546,15 @@ QLabel#sdWarehouse {
     font-size: 14px;
     padding-left: 2px;
 }
+QLabel#sdLoadStatus {
+    color: #1d4ed8;
+    font-size: 13px;
+    font-weight: 600;
+    background: #eff6ff;
+    border: 1px solid #bfdbfe;
+    border-radius: 8px;
+    padding: 8px 12px;
+}
 QLabel#sdChip {
     background: #f8fafc;
     border: 1px solid #e2e8f0;

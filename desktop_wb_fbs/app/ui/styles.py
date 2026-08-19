@@ -625,6 +625,11 @@ QToolButton#secondary:disabled {
     border-color: #e2e8f0;
     background: #f8fafc;
 }
+QFrame#sdHeader QPushButton#secondary {
+    min-height: 40px;
+    max-height: 40px;
+    padding: 0 14px;
+}
 QWidget#splitPair {
     min-height: 40px;
     max-height: 40px;

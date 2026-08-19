@@ -29,6 +29,27 @@ WB_FBS_API = "https://marketplace-api.wildberries.ru"
 TRBX_STICKERS_PER_REQUEST = 100
 TRBX_DELETE_PER_REQUEST = 100
 
+
+def archive_month_windows(
+    *,
+    months_back: int = 6,
+    now: datetime | None = None,
+) -> list[tuple[int, int]]:
+    """Calendar (year, month) windows for GET /api/marketplace/v3/fbs/orders/archive.
+
+    Official archive API requires year+month; scan newest months first.
+    """
+    cursor = now or datetime.now(UTC)
+    y, m = int(cursor.year), int(cursor.month)
+    out: list[tuple[int, int]] = []
+    for _ in range(max(1, int(months_back))):
+        out.append((y, m))
+        m -= 1
+        if m < 1:
+            m = 12
+            y -= 1
+    return out
+
 # UI tab <- supplierStatus / wbStatus / archive flag
 TAB_NEW = "new"
 TAB_ASSEMBLY = "assembly"       # confirm
@@ -452,24 +473,72 @@ class WbFbsClient:
                 _log.debug("get_supply_order_ids %s failed: %s", path, exc)
         return []
 
-    def get_archive_orders(self, *, limit: int = 1000, next_token: int = 0) -> tuple[list[dict[str, Any]], int]:
-        for path in (
+    def get_archive_orders(
+        self,
+        *,
+        year: int,
+        month: int,
+        limit: int = 1000,
+        next_token: int = 0,
+    ) -> tuple[list[dict[str, Any]], int | None]:
+        """Archived FBS assembly orders for one calendar month.
+
+        Official: ``GET /api/marketplace/v3/fbs/orders/archive``
+        Required query params: ``year``, ``month``, ``next``, ``limit``.
+        ``GET /api/v3/orders`` only covers the last ~3 months; older orders
+        must be loaded from this archive endpoint (year/month windows).
+        """
+        y = int(year)
+        m = int(month)
+        if m < 1 or m > 12:
+            raise ValueError("month must be 1..12")
+        params: dict[str, object] = {
+            "year": y,
+            "month": m,
+            "limit": max(1, min(int(limit), 1000)),
+            "next": int(next_token or 0),
+        }
+        data = self._request(
+            "GET",
             "/api/marketplace/v3/fbs/orders/archive",
-            "/api/v3/orders/archive",
-        ):
-            try:
-                data = self._request("GET", path, params={"limit": limit, "next": next_token})
-                if not isinstance(data, dict):
-                    continue
-                orders = data.get("orders") if isinstance(data.get("orders"), list) else []
-                try:
-                    nxt = int(data.get("next") or 0)
-                except (TypeError, ValueError):
-                    nxt = 0
-                return list(orders), nxt
-            except Exception as exc:
-                _log.debug("archive %s failed: %s", path, exc)
-        return [], 0
+            params=params,
+        )
+        if not isinstance(data, dict):
+            return [], None
+        orders = data.get("orders") if isinstance(data.get("orders"), list) else []
+        nxt = data.get("next")
+        if nxt is None:
+            return list(orders), None
+        try:
+            return list(orders), int(nxt)
+        except (TypeError, ValueError):
+            return list(orders), None
+
+    def iter_archive_pages(
+        self,
+        *,
+        months_back: int = 6,
+        limit: int = 1000,
+        max_pages: int | None = None,
+    ):
+        """Yield archive order pages across recent year/month windows."""
+        pages = 0
+        for year, month in archive_month_windows(months_back=months_back):
+            next_token: int | None = 0
+            while next_token is not None:
+                if max_pages is not None and pages >= max_pages:
+                    return
+                orders, next_token = self.get_archive_orders(
+                    year=year,
+                    month=month,
+                    limit=limit,
+                    next_token=int(next_token or 0),
+                )
+                pages += 1
+                yield orders
+                if next_token is None:
+                    break
+                time.sleep(0.21)
 
     def get_order_stickers(
         self,
@@ -1510,20 +1579,14 @@ def fill_missing_order_prices(
 
     if needed:
         try:
-            arch_next: int | None = 0
-            pages = 0
             max_pages = max(0, min(int(max_archive_pages), 30))
-            while pages < max_pages and needed:
-                arch_orders, arch_next = client.get_archive_orders(
-                    limit=1000, next_token=arch_next
-                )
-                if not arch_orders:
+            for arch_orders in client.iter_archive_pages(
+                months_back=6, limit=1000, max_pages=max_pages or None
+            ):
+                if not needed:
                     break
-                _absorb(arch_orders, is_archive=True)
-                pages += 1
-                if not arch_next:
-                    break
-                time.sleep(0.2)
+                if arch_orders:
+                    _absorb(arch_orders, is_archive=True)
         except Exception as exc:
             _log.warning("fill_missing_order_prices archive scan failed: %s", exc)
 
@@ -2312,20 +2375,14 @@ def hydrate_orders_for_kiz_srids(
 
         # 2) Archive / finished — sold AND cancelled (отказы). Never invent wbStatus.
         try:
-            arch_next: int | None = 0
-            pages = 0
             max_pages = max(0, min(int(archive_pages), 30))
-            while pages < max_pages and still_missing:
-                arch_orders, arch_next = client.get_archive_orders(
-                    limit=1000, next_token=arch_next
-                )
-                if not arch_orders:
+            for arch_orders in client.iter_archive_pages(
+                months_back=6, limit=1000, max_pages=max_pages or None
+            ):
+                if not still_missing:
                     break
-                _absorb(arch_orders, is_archive=True)
-                pages += 1
-                if not arch_next:
-                    break
-                time.sleep(0.2)
+                if arch_orders:
+                    _absorb(arch_orders, is_archive=True)
         except Exception as exc:
             _log.warning("kiz hydrate archive failed: %s", exc)
 
@@ -2788,12 +2845,12 @@ def _fetch_order_payload_from_wb(
     except Exception as exc:
         _log.warning("wb_fbs lookup orders scan failed order=%s: %s", oid, exc)
 
-    arch_next = 0
     try:
-        for _ in range(max(0, int(max_archive_pages))):
-            arch_orders, arch_next = client.get_archive_orders(
-                limit=1000, next_token=arch_next
-            )
+        for arch_orders in client.iter_archive_pages(
+            months_back=6,
+            limit=1000,
+            max_pages=max(0, int(max_archive_pages)) or None,
+        ):
             for order in arch_orders:
                 if not isinstance(order, dict) or order.get("id") is None:
                     continue
@@ -2802,9 +2859,6 @@ def _fetch_order_payload_from_wb(
                         return order, True, status_row
                 except (TypeError, ValueError):
                     continue
-            if not arch_next:
-                break
-            time.sleep(0.25)
     except Exception as exc:
         _log.warning("wb_fbs lookup archive scan failed order=%s: %s", oid, exc)
 
@@ -3700,16 +3754,14 @@ def sync_wb_fbs_source(
     # 5) Archive — disabled by default (hidden tabs; save API quota).
     if archive_pages > 0:
         _prog("Архив…")
-        arch_next = 0
         try:
-            for _ in range(max(0, archive_pages)):
+            for arch_orders in client.iter_archive_pages(
+                months_back=6,
+                limit=1000,
+                max_pages=max(0, int(archive_pages)) or None,
+            ):
                 if _stopped():
                     stopped = True
-                    break
-                arch_orders, arch_next = client.get_archive_orders(
-                    limit=1000, next_token=arch_next
-                )
-                if not arch_orders:
                     break
                 for order in arch_orders:
                     upsert_order(
@@ -3722,9 +3774,6 @@ def sync_wb_fbs_source(
                         wb_status=str(order.get("wbStatus") or "sold"),
                     )
                     _note_order(order)
-                if not arch_next:
-                    break
-                time.sleep(0.25)
         except Exception as exc:
             errors.append(friendly_sync_error("archive", exc))
 

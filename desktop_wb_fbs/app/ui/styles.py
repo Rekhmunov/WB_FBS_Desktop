@@ -471,6 +471,9 @@ QTabBar::tab:selected {
 QTabBar::tab:hover {
     color: #0f172a;
 }
+QTabBar {
+    qproperty-expanding: false;
+}
 QGroupBox {
     border: 1px solid #e2e8f0;
     border-radius: 8px;

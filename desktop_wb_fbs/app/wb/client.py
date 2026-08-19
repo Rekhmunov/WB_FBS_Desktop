@@ -146,6 +146,69 @@ class WbFbsClient:
                 _log.debug("get_supply_order_ids %s failed: %s", path, exc)
         return []
 
+    def get_archive_orders(
+        self,
+        year,  # type: int
+        month,  # type: int
+        limit=1000,  # type: int
+        next_token=0,  # type: int
+    ):
+        # type: (...) -> Tuple[List[Dict[str, Any]], Optional[int]]
+        """Official: GET /api/marketplace/v3/fbs/orders/archive?year&month&next&limit."""
+        y = int(year)
+        m = int(month)
+        if m < 1 or m > 12:
+            raise ValueError("month must be 1..12")
+        params = {
+            "year": y,
+            "month": m,
+            "limit": max(1, min(int(limit), 1000)),
+            "next": int(next_token or 0),
+        }  # type: Dict[str, object]
+        data = self._request(
+            "GET", "/api/marketplace/v3/fbs/orders/archive", params=params
+        )
+        if not isinstance(data, dict):
+            return [], None
+        orders = data.get("orders") if isinstance(data.get("orders"), list) else []
+        nxt = data.get("next")
+        if nxt is None:
+            return list(orders), None
+        try:
+            return list(orders), int(nxt)
+        except (TypeError, ValueError):
+            return list(orders), None
+
+    def iter_archive_pages(self, months_back=6, limit=1000, max_pages=None):
+        # type: (int, int, Optional[int]) -> Any
+        """Yield archive order pages across recent year/month windows."""
+        pages = 0
+        now = datetime.now()
+        y, m = int(now.year), int(now.month)
+        windows = []  # type: List[Tuple[int, int]]
+        for _ in range(max(1, int(months_back))):
+            windows.append((y, m))
+            m -= 1
+            if m < 1:
+                m = 12
+                y -= 1
+        for year, month in windows:
+            next_token = 0  # type: Optional[int]
+            while next_token is not None:
+                if max_pages is not None and pages >= max_pages:
+                    return
+                orders, next_token = self.get_archive_orders(
+                    year=year,
+                    month=month,
+                    limit=limit,
+                    next_token=int(next_token or 0),
+                )
+                pages += 1
+                yield orders
+                if next_token is None:
+                    break
+                time.sleep(0.21)
+
     def get_order_stickers(
         self,
         order_ids: List[int],

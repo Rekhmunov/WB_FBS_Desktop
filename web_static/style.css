@@ -991,12 +991,20 @@ button.secondary.danger:hover {
   display: flex;
   gap: 8px;
   flex-wrap: wrap;
+  align-items: stretch;
 }
 
 .settings-tab-btn {
   color: #334155;
   border: 1px solid rgba(147, 197, 253, 0.42);
   background: linear-gradient(160deg, rgba(255, 255, 255, 0.88), rgba(242, 248, 255, 0.8));
+  white-space: nowrap;
+  overflow: visible;
+  text-overflow: clip;
+  flex: 0 1 auto;
+  min-width: max-content;
+  width: auto;
+  padding: 10px 14px;
 }
 
 .settings-tab-btn.active {
@@ -1139,8 +1147,22 @@ button.secondary.danger:hover {
   margin: 0;
 }
 
-.mt-10 {
-  margin-top: 10px;
+#section-supplies-settings .settings-tabs,
+#section-salary-settings .settings-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  overflow: visible;
+}
+
+#section-supplies-settings .settings-tab-btn,
+#section-salary-settings .settings-tab-btn {
+  white-space: nowrap;
+  overflow: visible;
+  text-overflow: clip;
+  flex: 0 1 auto;
+  min-width: max-content;
+  width: auto;
 }
 
 
@@ -1843,6 +1865,11 @@ button.secondary.danger:hover {
   font-weight: 500;
   font-size: 14px;
   transition: background 0.15s, color 0.15s, border-color 0.15s;
+  white-space: nowrap;
+  overflow: visible;
+  text-overflow: clip;
+  flex: 0 1 auto;
+  min-width: max-content;
 }
 
 .bucket-tab:hover {
@@ -2659,20 +2686,20 @@ button.secondary.danger:hover {
   display: flex;
   flex-direction: row;
   align-items: center;
-  gap: 4px;
-  flex-wrap: nowrap;
+  gap: 8px;
+  flex-wrap: wrap;
   width: 100%;
   padding-bottom: 12px;
 }
 
 .chats-buckets-row .bucket-tab {
-  flex: 1 1 0;
-  min-width: 0;
+  flex: 0 1 auto;
+  min-width: max-content;
   font-size: 13px;
-  padding: 6px 8px;
+  padding: 6px 12px;
   white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  overflow: visible;
+  text-overflow: clip;
   width: auto !important;
 }
 
@@ -3411,6 +3438,10 @@ button.secondary.danger:hover {
   .settings-tab-btn {
     white-space: nowrap;
     width: auto;
+    overflow: visible;
+    text-overflow: clip;
+    flex: 0 1 auto;
+    min-width: max-content;
   }
 
   .tariff-item {
@@ -3999,10 +4030,14 @@ body.sst-col-resizing * {
     display: inline-flex;
   }
 
-  /* Sort select stays compact */
+  /* Sort select stays compact; tabs keep full labels */
   .chats-buckets-row .bucket-tab {
     font-size: 12px;
-    padding: 6px 4px;
+    padding: 6px 10px;
+    flex: 0 1 auto;
+    min-width: max-content;
+    overflow: visible;
+    text-overflow: clip;
   }
 
   /* Textarea: compact on mobile, 2 rows */
@@ -4115,11 +4150,15 @@ body.sst-col-resizing * {
 
   .reviews-buckets {
     width: 100%;
+    flex-wrap: wrap;
   }
 
   .bucket-tab {
-    flex: 1 1 auto;
-    min-width: 0;
+    flex: 0 1 auto;
+    min-width: max-content;
+    overflow: visible;
+    text-overflow: clip;
+    white-space: nowrap;
   }
 
   .reviews-date-panel {

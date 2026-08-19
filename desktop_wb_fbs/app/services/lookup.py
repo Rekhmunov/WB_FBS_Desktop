@@ -66,22 +66,20 @@ def _fetch_order_payload_from_wb(
             break
         time.sleep(0.25)
 
-    arch_next = 0
-    for _ in range(5):
-        arch_orders, arch_next = client.get_archive_orders(
-            limit=1000, next_token=arch_next
-        )
-        for order in arch_orders:
-            if not isinstance(order, dict) or order.get("id") is None:
-                continue
-            try:
-                if int(order["id"]) == oid:
-                    return order, True, status_row
-            except (TypeError, ValueError):
-                continue
-        if not arch_next:
-            break
-        time.sleep(0.25)
+    try:
+        for arch_orders in client.iter_archive_pages(
+            months_back=6, limit=1000, max_pages=5
+        ):
+            for order in arch_orders:
+                if not isinstance(order, dict) or order.get("id") is None:
+                    continue
+                try:
+                    if int(order["id"]) == oid:
+                        return order, True, status_row
+                except (TypeError, ValueError):
+                    continue
+    except Exception as exc:
+        _log.warning("desktop lookup archive scan failed order=%s: %s", oid, exc)
 
     return {"id": oid}, False, status_row
 

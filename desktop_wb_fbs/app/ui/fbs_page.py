@@ -1080,15 +1080,21 @@ class FbsPage(QWidget):
         """Product stickers for one supply, used by row menu and bottom bar."""
         from app.services.print_docs import print_supply_stickers
 
+        from PyQt5.QtGui import QCursor
+        from PyQt5.QtWidgets import QApplication
+
         src = self.current_source()
         if not src or not sid:
             return
+        QApplication.setOverrideCursor(QCursor(Qt.WaitCursor))
         try:
             print_supply_stickers(
                 self.db, self.orders, int(src["id"]), str(src["api_key"]), sid
             )
         except Exception as exc:
             QMessageBox.critical(self, "Стикеры товаров", str(exc))
+        finally:
+            QApplication.restoreOverrideCursor()
 
     def _supply_qr_for(self, sid: str) -> None:
         """Supply QR/sticker, used by row menu and bottom bar."""

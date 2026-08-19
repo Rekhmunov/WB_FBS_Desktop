@@ -374,6 +374,10 @@ class SupplyDetailDialog(QDialog):
     def print_stickers(self) -> None:
         from app.services.print_docs import print_supply_stickers
 
+        from PyQt5.QtGui import QCursor
+        from PyQt5.QtWidgets import QApplication
+
+        QApplication.setOverrideCursor(QCursor(Qt.WaitCursor))
         try:
             print_supply_stickers(
                 self.db,
@@ -384,6 +388,8 @@ class SupplyDetailDialog(QDialog):
             )
         except Exception as exc:
             QMessageBox.critical(self, "Стикеры", str(exc))
+        finally:
+            QApplication.restoreOverrideCursor()
 
     def print_qr(self) -> None:
         try:

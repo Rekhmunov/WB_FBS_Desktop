@@ -2,8 +2,11 @@
 """Print HTML for picking lists and stickers — portal-like (no web server)."""
 from __future__ import annotations
 
+import copy
+import hashlib
 import html
 import tempfile
+import threading
 import time
 from collections import OrderedDict
 from pathlib import Path
@@ -22,6 +25,42 @@ from app.wb.content import WbContentClient
 
 def _esc(value: object) -> str:
     return html.escape(str(value or ""), quote=True)
+
+
+_STICKERS_CACHE_TTL_SEC = 120.0
+_stickers_cache = {}  # type: Dict[tuple, tuple]
+_stickers_cache_lock = threading.Lock()
+
+
+def _api_key_fp(api_key: str) -> str:
+    return hashlib.sha256((api_key or "").encode("utf-8")).hexdigest()[:16]
+
+
+def _stickers_cache_key(
+    api_key: str, order_ids: List[int], sticker_type: str, keep_files: bool
+) -> tuple:
+    ids = tuple(sorted({int(x) for x in order_ids if x is not None}))
+    stype = str(sticker_type or "png").strip().lower() or "png"
+    return (_api_key_fp(api_key), stype, bool(keep_files), ids)
+
+
+def _cache_get_stickers(key: tuple) -> Optional[Dict[int, Dict[str, Any]]]:
+    with _stickers_cache_lock:
+        item = _stickers_cache.get(key)
+        if not item:
+            return None
+        ts, data = item
+        if time.monotonic() - ts > _STICKERS_CACHE_TTL_SEC:
+            _stickers_cache.pop(key, None)
+            return None
+        return copy.deepcopy(data)
+
+
+def _cache_put_stickers(key: tuple, data: Dict[int, Dict[str, Any]]) -> None:
+    if not data:
+        return
+    with _stickers_cache_lock:
+        _stickers_cache[key] = (time.monotonic(), copy.deepcopy(data))
 
 
 def open_html(html_doc: str, basename: str) -> Path:
@@ -181,13 +220,22 @@ def fetch_stickers_map(
     keep_files: bool = True,
 ) -> Dict[int, Dict[str, Any]]:
     """Fetch WB order stickers. Picking list only needs partA/partB — use svg + keep_files=False."""
+    ids = [int(x) for x in order_ids if x is not None]
+    if not ids:
+        return {}
+    stype = str(sticker_type or "png").strip().lower() or "png"
+    cache_key = None
+    if api_key:
+        cache_key = _stickers_cache_key(api_key, ids, stype, keep_files)
+        cached = _cache_get_stickers(cache_key)
+        if cached is not None:
+            return cached
     client = WbFbsClient(api_key)
     out = {}  # type: Dict[int, Dict[str, Any]]
-    stype = str(sticker_type or "png").strip().lower() or "png"
-    for i in range(0, len(order_ids), 100):
+    for i in range(0, len(ids), 100):
         if i:
             time.sleep(0.21)
-        chunk = order_ids[i : i + 100]
+        chunk = ids[i : i + 100]
         for st in client.get_order_stickers(chunk, sticker_type=stype):
             if not isinstance(st, dict):
                 continue
@@ -208,6 +256,8 @@ def fetch_stickers_map(
                     "partB": str(st.get("partB") or ""),
                     "file_b64": "",
                 }
+    if cache_key is not None and out:
+        _cache_put_stickers(cache_key, out)
     return out
 
 
@@ -573,11 +623,14 @@ def print_supply_stickers(
     supply_id: str,
     order_ids: Optional[List[int]] = None,
 ) -> Path:
-    rows = orders_svc.orders_in_supply(source_id, supply_id, api_key=api_key)
+    rows = orders_svc.orders_in_supply(source_id, supply_id, api_key="")
+    if not rows and api_key:
+        rows = orders_svc.orders_in_supply(source_id, supply_id, api_key=api_key)
     if order_ids is not None:
         want = set(int(x) for x in order_ids)
         rows = [r for r in rows if int(r["order_id"]) in want]
     ids = [int(r["order_id"]) for r in rows]
+    # Stickers print needs official PNG files — WB API is required on first run.
     stickers = fetch_stickers_map(api_key, ids) if ids else {}
     cards = fetch_cards(api_key, rows)
     products = ProductService(db).list_all()

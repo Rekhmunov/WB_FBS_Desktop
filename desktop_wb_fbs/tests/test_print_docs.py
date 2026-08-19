@@ -28,6 +28,23 @@ class FetchPickingStickersTests(unittest.TestCase):
         fetch_mock.assert_any_call("key", [1, 2], sticker_type="png", keep_files=False)
 
 
+class FetchStickersCacheTests(unittest.TestCase):
+    @patch("app.services.print_docs.WbFbsClient")
+    def test_reuses_cached_png_stickers(self, client_cls):
+        from app.services import print_docs
+
+        client = client_cls.return_value
+        client.get_order_stickers.return_value = [
+            {"orderId": 1, "partA": "A", "partB": "B", "file": "ZmlsZQ=="}
+        ]
+        print_docs._stickers_cache.clear()
+        first = print_docs.fetch_stickers_map("secret-key", [1])
+        second = print_docs.fetch_stickers_map("secret-key", [1])
+        self.assertEqual(first[1]["partB"], "B")
+        self.assertEqual(second[1]["partB"], "B")
+        client.get_order_stickers.assert_called_once()
+
+
 class PrintPickingListTests(unittest.TestCase):
     @patch("app.services.print_docs.open_html")
     @patch("app.services.print_docs.fetch_cards")

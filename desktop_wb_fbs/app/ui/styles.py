@@ -612,6 +612,19 @@ QPushButton#portalBtn:hover {
     border-color: rgba(147, 51, 234, 0.45);
     color: #581c87;
 }
+QPushButton[waitOrders="true"],
+QToolButton[waitOrders="true"],
+QCheckBox[waitOrders="true"],
+QLineEdit[waitOrders="true"] {
+    opacity: 0.55;
+}
+QPushButton#secondary:disabled,
+QToolButton#splitCaret:disabled,
+QToolButton#secondary:disabled {
+    color: #94a3b8;
+    border-color: #e2e8f0;
+    background: #f8fafc;
+}
 QToolButton#splitCaret {
     color: #334155;
     border: 1px solid #dbe3ef;

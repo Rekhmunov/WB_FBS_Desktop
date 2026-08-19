@@ -51,6 +51,7 @@ from app.ui.layout_utils import FlowLayout
 from app.wb import cargo_type_label, parse_json_list
 
 _RENDER_BATCH = 50
+_WAIT_ORDERS_TIP = "Дождитесь загрузки заказов"
 
 
 def _enrich_supply_rows(
@@ -167,6 +168,9 @@ class SupplyDetailDialog(QDialog):
         self._last_status_note = ""
         self._load_worker = None  # type: Optional[_SupplyLoadWorker]
         self._loading = False
+        self._actions_ready = False
+        self._action_widgets = []  # type: List[QWidget]
+        self._saved_tooltips = {}  # type: Dict[QWidget, str]
         self.supply_mutated = False
 
         self.setWindowTitle("Поставка {}".format(supply_id))
@@ -264,6 +268,7 @@ class SupplyDetailDialog(QDialog):
         kiz_ref.clicked.connect(self.refresh_kiz_status)
         actions.addWidget(self._split_pair(kiz_btn, kiz_ref))
 
+        extra_action_btns = []  # type: List[QPushButton]
         for text, slot in (
             ("Проверка ШК", self.open_pick),
             ("Грузоместа", self.manage_trbx),
@@ -272,6 +277,7 @@ class SupplyDetailDialog(QDialog):
             btn = _sec(QPushButton(text))
             btn.clicked.connect(slot)
             actions.addWidget(btn)
+            extra_action_btns.append(btn)
 
         portal_btn = QPushButton("Портал ВБ  →")
         portal_btn.setObjectName("portalBtn")
@@ -279,6 +285,17 @@ class SupplyDetailDialog(QDialog):
         portal_btn.clicked.connect(self.open_portal)
         actions.addWidget(portal_btn)
         hv.addLayout(actions)
+
+        self._action_widgets = [
+            pick_btn,
+            pick_caret,
+            st_btn,
+            st_caret,
+            kiz_btn,
+            kiz_ref,
+            *extra_action_btns,
+            self.search_input,
+        ]
         root.addWidget(header)
 
         body = QFrame()
@@ -324,9 +341,40 @@ class SupplyDetailDialog(QDialog):
         except Exception:
             pass
 
+        self._action_widgets.append(self.select_all_cb)
+
         self._apply_supply_header(self.orders.get_supply(self.source_id, self.supply_id))
         self._show_loading_table()
+        self._set_actions_ready(False)
         self._begin_load()
+
+    def _set_actions_ready(self, ready: bool) -> None:
+        """Disable toolbar actions until orders load (web `_wbFbsSupplyDetailSetActionsReady`)."""
+        self._actions_ready = bool(ready)
+        for w in self._action_widgets:
+            if not ready:
+                if w not in self._saved_tooltips:
+                    self._saved_tooltips[w] = w.toolTip()
+                w.setToolTip(_WAIT_ORDERS_TIP)
+                w.setProperty("waitOrders", True)
+                if isinstance(w, QLineEdit):
+                    w.setReadOnly(True)
+                else:
+                    w.setEnabled(False)
+                    w.setAttribute(Qt.WA_AlwaysShowToolTips, True)
+            else:
+                if w in self._saved_tooltips:
+                    w.setToolTip(self._saved_tooltips.pop(w))
+                w.setProperty("waitOrders", False)
+                if isinstance(w, QLineEdit):
+                    w.setReadOnly(False)
+                else:
+                    w.setEnabled(True)
+            w.style().unpolish(w)
+            w.style().polish(w)
+
+    def _require_actions_ready(self) -> bool:
+        return bool(self._actions_ready)
 
     def accept(self) -> None:
         self._stop_load_worker()
@@ -419,6 +467,7 @@ class SupplyDetailDialog(QDialog):
         supply_detail_cache.invalidate(self.source_id, self.supply_id)
         self._apply_supply_header(self.orders.get_supply(self.source_id, self.supply_id))
         self._show_loading_table()
+        self._set_actions_ready(False)
         self._begin_load(force=True)
 
     def _apply_supply_header(self, supply: Optional[Dict[str, Any]]) -> None:
@@ -483,6 +532,7 @@ class SupplyDetailDialog(QDialog):
             return
 
         self._loading = True
+        self._set_actions_ready(False)
         self._stop_load_worker()
         worker = _SupplyLoadWorker(
             self.orders,
@@ -539,6 +589,7 @@ class SupplyDetailDialog(QDialog):
         if self._last_status_note:
             self.meta.setText(self._last_status_note)
             self.meta.show()
+        self._set_actions_ready(True)
         self._render_table()
 
     @staticmethod
@@ -796,6 +847,8 @@ class SupplyDetailDialog(QDialog):
         self._sync_row_checkboxes()
 
     def picking_list(self, variant: str = "summary") -> None:
+        if not self._require_actions_ready():
+            return
         from app.services.print_docs import print_picking_list
 
         preloaded = None
@@ -832,6 +885,8 @@ class SupplyDetailDialog(QDialog):
             QApplication.restoreOverrideCursor()
 
     def print_stickers(self) -> None:
+        if not self._require_actions_ready():
+            return
         from app.services.print_docs import print_supply_stickers
 
         QApplication.setOverrideCursor(QCursor(Qt.WaitCursor))
@@ -864,6 +919,8 @@ class SupplyDetailDialog(QDialog):
         QDesktopServices.openUrl(QUrl(url))
 
     def show_cancelled(self) -> None:
+        if not self._require_actions_ready():
+            return
         from app.services.cancelled import list_cancelled_in_supply
 
         try:
@@ -930,6 +987,8 @@ class SupplyDetailDialog(QDialog):
         dlg.exec_()
 
     def stickers_by_category(self) -> None:
+        if not self._require_actions_ready():
+            return
         from app.services.print_docs import (
             print_supply_stickers,
             sticker_groups_for_category_print,
@@ -1058,6 +1117,8 @@ class SupplyDetailDialog(QDialog):
         self._apply_loaded_payload(payload)
 
     def manage_trbx(self) -> None:
+        if not self._require_actions_ready():
+            return
         dlg = TrbxDialog(
             self.trbx,
             self.source_id,
@@ -1074,6 +1135,8 @@ class SupplyDetailDialog(QDialog):
         self._refresh_local_row_meta()
 
     def refresh_kiz_status(self) -> None:
+        if not self._require_actions_ready():
+            return
         QApplication.setOverrideCursor(QCursor(Qt.WaitCursor))
         try:
             rows = self.kiz.marking_rows(self.source_id, self.supply_id, self.api_key)
@@ -1104,6 +1167,8 @@ class SupplyDetailDialog(QDialog):
             QApplication.restoreOverrideCursor()
 
     def open_kiz(self) -> None:
+        if not self._require_actions_ready():
+            return
         from app.ui.kiz_pick_dialogs import KizDialog
 
         dlg = KizDialog(
@@ -1113,6 +1178,8 @@ class SupplyDetailDialog(QDialog):
         self._refresh_local_row_meta()
 
     def open_pick(self) -> None:
+        if not self._require_actions_ready():
+            return
         from app.ui.kiz_pick_dialogs import PickDialog
 
         dlg = PickDialog(

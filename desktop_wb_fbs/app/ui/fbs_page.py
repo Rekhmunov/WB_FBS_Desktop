@@ -1054,7 +1054,15 @@ class FbsPage(QWidget):
         if not src or not sid:
             QMessageBox.information(self, "Поставка", "Выберите поставку")
             return
-        dlg = SupplyDetailDialog(self.db, self.orders, src, sid, self)
+        fullscreen = self._tab == "assembly"
+        dlg = SupplyDetailDialog(
+            self.db,
+            self.orders,
+            src,
+            sid,
+            None if fullscreen else self,
+            fullscreen=fullscreen,
+        )
         dlg.exec_()
         self.reload_table()
 

@@ -6,6 +6,7 @@ from typing import Any, Dict, List, Optional
 
 from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import (
+    QApplication,
     QCheckBox,
     QDialog,
     QDialogButtonBox,
@@ -42,6 +43,8 @@ class SupplyDetailDialog(QDialog):
         source: Dict[str, Any],
         supply_id: str,
         parent: Optional[QWidget] = None,
+        *,
+        fullscreen: bool = False,
     ) -> None:
         super(SupplyDetailDialog, self).__init__(parent)
         self.db = db
@@ -54,11 +57,24 @@ class SupplyDetailDialog(QDialog):
         self.stickers = StickersService(db)
         self.kiz = KizService(db)
         self.pick = PickVerifyService(db)
+        self._fullscreen = fullscreen
+        self._fullscreen_applied = False
 
         self.setWindowTitle("Поставка {}".format(supply_id))
-        # Natural landscape card (~16:10), not ultra-wide or short
-        self.resize(1040, 720)
-        self.setMinimumSize(880, 600)
+        if fullscreen:
+            self.setWindowFlags(
+                Qt.Window
+                | Qt.WindowTitleHint
+                | Qt.WindowSystemMenuHint
+                | Qt.WindowMinimizeButtonHint
+                | Qt.WindowMaximizeButtonHint
+                | Qt.WindowCloseButtonHint
+            )
+            self.setMinimumSize(640, 480)
+        else:
+            # Natural landscape card (~16:10), not ultra-wide or short
+            self.resize(1040, 720)
+            self.setMinimumSize(880, 600)
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
@@ -186,6 +202,16 @@ class SupplyDetailDialog(QDialog):
         root.addLayout(body, 1)
 
         self.reload()
+
+    def showEvent(self, event) -> None:
+        super(SupplyDetailDialog, self).showEvent(event)
+        if self._fullscreen and not self._fullscreen_applied:
+            self._fullscreen_applied = True
+            screen = QApplication.primaryScreen()
+            if screen is not None:
+                self.setGeometry(screen.availableGeometry())
+            else:
+                self.showMaximized()
 
     def _clear_chips(self) -> None:
         while self.meta_chips.count():

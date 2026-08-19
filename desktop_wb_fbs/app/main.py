@@ -11,6 +11,7 @@ from PyQt5.QtWidgets import (
     QLabel,
     QMainWindow,
     QPushButton,
+    QSizePolicy,
     QStackedWidget,
     QVBoxLayout,
     QWidget,
@@ -66,9 +67,11 @@ class MainWindow(QMainWindow):
         self.btn_fbs = QPushButton("Поставки — ВБ ФБС")
         self.btn_fbs.setCheckable(True)
         self.btn_fbs.setObjectName("navBtn")
+        self.btn_fbs.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Fixed)
         self.btn_settings = QPushButton("Настройки")
         self.btn_settings.setCheckable(True)
         self.btn_settings.setObjectName("navBtn")
+        self.btn_settings.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Fixed)
         top_l.addWidget(self.btn_fbs)
         top_l.addWidget(self.btn_settings)
         top_l.addStretch(1)

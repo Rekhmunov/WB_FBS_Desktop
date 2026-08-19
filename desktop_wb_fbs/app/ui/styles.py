@@ -33,7 +33,7 @@ QMessageBox QLabel {
 QFrame#topBar {
     background: #ffffff;
     border-bottom: 1px solid #d9e8f7;
-    min-height: 56px;
+    min-height: 72px;
 }
 QLabel#brandTitle {
     color: #0f172a;
@@ -49,10 +49,10 @@ QPushButton#navBtn {
     background: transparent;
     color: #5f7691;
     border: none;
-    border-bottom: 2px solid transparent;
+    border-bottom: 3px solid transparent;
     border-radius: 0;
-    padding: 12px 16px;
-    min-height: 44px;
+    padding: 10px 20px 11px 20px;
+    min-height: 28px;
     font-size: 15px;
     font-weight: 500;
     text-align: center;
@@ -64,8 +64,9 @@ QPushButton#navBtn:hover {
 QPushButton#navBtn:checked {
     color: #0f172a;
     font-weight: 700;
-    border-bottom: 2px solid #2495ee;
+    border-bottom: 3px solid #2495ee;
     background: transparent;
+    padding-bottom: 11px;
 }
 
 /* --- Buttons: tap-friendly, clear hierarchy --- */
@@ -164,14 +165,15 @@ QPushButton#bottomPrimary:pressed {
 QPushButton#tabBtn {
     background: transparent;
     border: none;
-    border-bottom: 2px solid transparent;
+    border-bottom: 3px solid transparent;
     border-radius: 0;
-    padding: 10px 14px;
-    min-height: 44px;
+    padding: 8px 16px 11px 16px;
+    min-height: 28px;
+    min-width: 96px;
     color: #64748b;
     font-size: 15px;
     font-weight: 500;
-    text-align: left;
+    text-align: center;
 }
 QPushButton#tabBtn:hover {
     color: #0f172a;
@@ -180,8 +182,9 @@ QPushButton#tabBtn:hover {
 QPushButton#tabBtn:checked {
     color: #0f172a;
     font-weight: 700;
-    border-bottom: 2px solid #2495ee;
+    border-bottom: 3px solid #2495ee;
     background: transparent;
+    padding-bottom: 11px;
 }
 QPushButton#linkBtn {
     background: transparent;
@@ -368,7 +371,7 @@ QLabel#syncPallets {
 QFrame#tabsRow {
     border-bottom: 1px solid #e2e8f0;
     background: transparent;
-    min-height: 48px;
+    min-height: 52px;
 }
 QFrame#bottomBar {
     background: #f8fafc;
@@ -448,31 +451,34 @@ QTabWidget::pane {
     border: 1px solid #d9e8f7;
     border-radius: 12px;
     background: #ffffff;
-    top: -1px;
+    top: 0px;
     padding: 12px;
+}
+QTabBar {
+    qproperty-expanding: false;
+    qproperty-drawBase: 0;
 }
 QTabBar::tab {
     background: transparent;
     color: #64748b;
-    padding: 10px 16px;
+    padding: 8px 18px 11px 18px;
     margin-right: 4px;
     border: none;
-    border-bottom: 2px solid transparent;
-    min-height: 40px;
+    border-bottom: 3px solid transparent;
+    min-height: 28px;
+    min-width: 96px;
     font-size: 15px;
     font-weight: 500;
 }
 QTabBar::tab:selected {
     color: #0f172a;
     font-weight: 700;
-    border-bottom: 2px solid #2495ee;
+    border-bottom: 3px solid #2495ee;
     background: transparent;
+    padding-bottom: 11px;
 }
 QTabBar::tab:hover {
     color: #0f172a;
-}
-QTabBar {
-    qproperty-expanding: false;
 }
 QGroupBox {
     border: 1px solid #e2e8f0;

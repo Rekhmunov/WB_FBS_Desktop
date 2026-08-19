@@ -22,6 +22,7 @@ from PyQt5.QtWidgets import (
     QHeaderView,
     QSpinBox,
     QButtonGroup,
+    QSizePolicy,
 )
 
 from app.db import Database
@@ -232,6 +233,7 @@ class FbsPage(QWidget):
             btn.setObjectName("tabBtn")
             btn.setCheckable(True)
             btn.setCursor(Qt.PointingHandCursor)
+            btn.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Fixed)
             self._tab_group.addButton(btn)
             self.tab_btns[key] = btn
             tabs_row.addWidget(btn)
@@ -488,7 +490,9 @@ class FbsPage(QWidget):
             ("delivery", "В доставке", counts.get("delivery", 0)),
         )
         for key, label, n in mapping:
-            self.tab_btns[key].setText("{}  {}".format(label, n))
+            btn = self.tab_btns[key]
+            btn.setText("{}  {}".format(label, n))
+            btn.updateGeometry()
 
     def reload_table(self) -> None:
         self.update_bottom_visibility()

@@ -61,8 +61,10 @@ class SettingsPage(QWidget):
         layout.addWidget(hint)
 
         tabs = QTabWidget()
+        tabs.setDocumentMode(True)
         tabs.tabBar().setElideMode(Qt.ElideNone)
         tabs.tabBar().setUsesScrollButtons(True)
+        tabs.tabBar().setExpanding(False)
         tabs.addTab(self._build_sources_tab(), "Источники")
         tabs.addTab(self._build_products_tab(), "Товары")
         tabs.addTab(self._build_categories_tab(), "Категории")

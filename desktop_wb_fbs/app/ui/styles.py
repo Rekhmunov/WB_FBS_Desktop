@@ -37,7 +37,7 @@ QMessageBox QLabel {
 QFrame#topBar {
     background: #ffffff;
     border-bottom: 1px solid #e8eef5;
-    min-height: 64px;
+    min-height: 72px;
 }
 QLabel#brandTitle {
     color: #0f172a;
@@ -57,11 +57,10 @@ QPushButton#navBtn {
     border: none;
     border-bottom: 3px solid transparent;
     border-radius: 0;
-    padding: 14px 16px 16px 16px;
-    min-height: 48px;
-    max-height: 64px;
+    padding: 12px 24px 14px 24px;
+    min-height: 52px;
     font-size: 14px;
-    font-weight: 500;
+    font-weight: 600;
     text-align: center;
 }
 QPushButton#navBtn:hover {
@@ -70,8 +69,8 @@ QPushButton#navBtn:hover {
 }
 QPushButton#navBtn:checked {
     color: #0f172a;
-    font-weight: 600;
     border-bottom: 3px solid #2563eb;
+    padding: 12px 24px 11px 24px;
     background: transparent;
 }
 QPushButton#navBtn:pressed {
@@ -186,11 +185,11 @@ QPushButton#tabBtn {
     border: none;
     border-bottom: 3px solid transparent;
     border-radius: 0;
-    padding: 12px 16px 14px 16px;
-    min-height: 44px;
+    padding: 10px 24px 13px 24px;
+    min-height: 48px;
     color: #64748b;
     font-size: 14px;
-    font-weight: 500;
+    font-weight: 600;
     text-align: center;
 }
 QPushButton#tabBtn:hover {
@@ -199,8 +198,8 @@ QPushButton#tabBtn:hover {
 }
 QPushButton#tabBtn:checked {
     color: #0f172a;
-    font-weight: 600;
     border-bottom: 3px solid #2563eb;
+    padding: 10px 24px 10px 24px;
     background: transparent;
 }
 QPushButton#tabBtn:pressed {
@@ -462,7 +461,7 @@ QLabel#syncPallets {
 QFrame#tabsRow {
     border-bottom: 1px solid #e8eef5;
     background: transparent;
-    min-height: 52px;
+    min-height: 56px;
 }
 QFrame#bottomBar {
     background: #ffffff;

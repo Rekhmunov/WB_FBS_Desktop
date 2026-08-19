@@ -112,3 +112,17 @@ class FlowLayout(QLayout):
             line_height = max(line_height, item.sizeHint().height())
 
         return y + line_height - rect.y() + m.bottom()
+
+
+def fit_tab_button(btn, h_pad: int = 48) -> None:
+    """Reserve width for bold label so the active tab state does not clip text."""
+    from PyQt5.QtGui import QFontMetrics
+    from PyQt5.QtWidgets import QPushButton
+
+    if not isinstance(btn, QPushButton):
+        return
+    font = btn.font()
+    font.setBold(True)
+    metrics = QFontMetrics(font)
+    btn.setMinimumWidth(metrics.horizontalAdvance(btn.text()) + h_pad)
+    btn.updateGeometry()

@@ -29,7 +29,7 @@ from app.db import Database
 from app.services import SourceService
 from app.services.orders import OrdersService
 from app.ui.format_helpers import ago_label, make_badge, make_photo_label
-from app.ui.layout_utils import FlowLayout
+from app.ui.layout_utils import FlowLayout, fit_tab_button
 from app.wb.sync import sync_source
 
 
@@ -239,6 +239,7 @@ class FbsPage(QWidget):
             self.tab_btns[key] = btn
             tabs_row.addWidget(btn)
             btn.clicked.connect(lambda _=False, k=key: self._set_tab(k))
+            fit_tab_button(btn)
         self.tab_btns["new"].setChecked(True)
         tabs_row.addStretch(1)
 
@@ -506,7 +507,7 @@ class FbsPage(QWidget):
         for key, label, n in mapping:
             btn = self.tab_btns[key]
             btn.setText("{} · {}".format(label, n))
-            btn.updateGeometry()
+            fit_tab_button(btn)
 
     def reload_table(self) -> None:
         self.update_bottom_visibility()
@@ -850,7 +851,12 @@ class FbsPage(QWidget):
             self.table.setCellWidget(r, 7, actions_cell)
 
             self.table.resizeRowToContents(r)
-            self.table.setRowHeight(r, max(self.table.rowHeight(r), 52))
+            min_row_h = 76 if row.get("pickup_allowed") else 52
+            if row.get("pickup_allowed"):
+                name_widget.adjustSize()
+                widget_h = name_widget.sizeHint().height() + 8
+                min_row_h = max(min_row_h, widget_h)
+            self.table.setRowHeight(r, max(self.table.rowHeight(r), min_row_h))
         self.table.blockSignals(False)
         self._apply_table_col_widths("supplies")
 

@@ -23,6 +23,7 @@ from app.services import SourceService
 from app.services.catalog import CategoryService, ProductService
 from app.services.orders import OrdersService
 from app.ui.fbs_page import FbsPage
+from app.ui.layout_utils import fit_tab_button
 from app.ui.settings_page import SettingsPage
 from app.ui.styles import APP_QSS
 
@@ -76,6 +77,8 @@ class MainWindow(QMainWindow):
         self.btn_settings.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Preferred)
         top_l.addWidget(self.btn_fbs)
         top_l.addWidget(self.btn_settings)
+        fit_tab_button(self.btn_fbs, h_pad=52)
+        fit_tab_button(self.btn_settings, h_pad=52)
         top_l.addStretch(1)
         layout.addWidget(top)
 

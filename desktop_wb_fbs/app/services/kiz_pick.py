@@ -44,6 +44,26 @@ def gtin_matches_skus(gtin: str, skus: List[Any]) -> bool:
     return False
 
 
+def _format_created(iso: object) -> str:
+    raw = str(iso or "").strip()
+    if not raw:
+        return ""
+    try:
+        if raw.endswith("Z"):
+            raw = raw[:-1] + "+00:00"
+        from datetime import datetime
+
+        return datetime.fromisoformat(raw).strftime("%d.%m.%Y")
+    except Exception:
+        if len(raw) >= 10 and raw[4] == "-" and raw[7] == "-":
+            return "{}.{}.{}".format(raw[8:10], raw[5:7], raw[0:4])
+        return raw[:10]
+
+
+def _sticker_number(part_a: str, part_b: str) -> str:
+    return "{}{}".format(str(part_a or "").strip(), str(part_b or "").strip())
+
+
 class KizService:
     def __init__(self, db: Database) -> None:
         self.db = db
@@ -73,6 +93,15 @@ class KizService:
             except (TypeError, ValueError):
                 pass
         skip_map = self.products.skip_gtin_map()
+        by_art = {}  # type: Dict[str, Dict[str, Any]]
+        by_nm = {}  # type: Dict[str, Dict[str, Any]]
+        for p in self.products.list_all():
+            art = str(p.get("supplier_article") or "").strip().lower()
+            nm = str(p.get("wb_nmid") or "").strip()
+            if art:
+                by_art[art] = p
+            if nm:
+                by_nm[nm] = p
         out = []  # type: List[Dict[str, Any]]
         for r in items:
             oid = int(r["order_id"])
@@ -104,19 +133,40 @@ class KizService:
             art = str(r.get("article") or "").strip().lower()
             nm = str(r.get("nm_id") or "").strip()
             skip = bool(skip_map.get(art) or skip_map.get(nm))
+            local = by_art.get(art) or by_nm.get(nm) or {}
+            product_name = str(local.get("name") or "").strip()
+            product_photo = str(local.get("photo_path") or "").strip()
+            has_codes = any(kiz_code_clean(c) for c in codes)
+            kiz_status = "empty"
+            if bool(int(r.get("kiz_wb_synced") or 0)) and has_codes:
+                kiz_status = "ok"
+            elif has_codes:
+                kiz_status = "pending"
             out.append(
                 {
                     "order_id": oid,
                     "article": r.get("article") or "",
                     "nm_id": r.get("nm_id"),
-                    "sticker_number": "",  # filled when stickers fetched
+                    "product_name": product_name,
+                    "product_photo": product_photo,
+                    "brand": "",
+                    "created_date": _format_created(r.get("created_at_wb")) or "—",
+                    "sticker_part_a": "",
+                    "sticker_part_b": "",
+                    "sticker_number": "",
                     "skus": parse_json_list(r.get("skus_json")),
                     "kiz_codes": codes or [""],
                     "kiz_saved_at": r.get("kiz_saved_at"),
                     "kiz_wb_synced": bool(int(r.get("kiz_wb_synced") or 0)),
+                    "kiz_status": kiz_status,
+                    "kiz_decision": "",
                     "skip_kiz_gtin_check": skip,
                     "supplier_status": r.get("supplier_status"),
                     "wb_status": r.get("wb_status"),
+                    "cancel_reason_label": cancel_reason_label(
+                        supplier_status=r.get("supplier_status"),
+                        wb_status=r.get("wb_status"),
+                    ),
                 }
             )
         return out

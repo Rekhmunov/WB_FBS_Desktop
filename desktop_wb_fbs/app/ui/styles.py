@@ -917,4 +917,291 @@ QMenu::separator {
     background: #e8eef5;
     margin: 4px 8px;
 }
+
+/* ========== КИЗ marking modal (web parity) ========== */
+QDialog#kizModal {
+    background: #ffffff;
+    min-width: 0;
+}
+QFrame#kizHeader {
+    background: #ffffff;
+    border-bottom: 1px solid #e2e8f0;
+}
+QLabel#kizTitle {
+    color: #0f172a;
+    font-size: 28px;
+    font-weight: 800;
+    background: transparent;
+}
+QLabel#kizSub {
+    color: #64748b;
+    font-size: 14px;
+    background: transparent;
+    max-width: 640px;
+}
+QFrame#kizHeader QPushButton#bottomPrimary {
+    min-height: 40px;
+    padding: 8px 16px;
+}
+QToolButton#iconBtn {
+    min-width: 36px;
+    max-width: 36px;
+    min-height: 36px;
+    max-height: 36px;
+    padding: 0;
+    color: #64748b;
+    border: 1px solid #dbe3ef;
+    background: #ffffff;
+    border-radius: 8px;
+    font-size: 16px;
+    font-weight: 600;
+}
+QToolButton#iconBtn:hover {
+    background: #f8fafc;
+    color: #0f172a;
+    border-color: #cbd5e1;
+}
+QFrame#kizToolbar {
+    background: #ffffff;
+    border-bottom: 1px solid #e2e8f0;
+}
+QCheckBox#kizFilterCheck {
+    color: #334155;
+    font-size: 14px;
+    spacing: 8px;
+}
+QLineEdit#kizSearch {
+    min-height: 36px;
+    padding: 8px 12px;
+    border: 1px solid #cbd5e1;
+    border-radius: 8px;
+    background: #ffffff;
+    font-size: 14px;
+}
+QLineEdit#kizSearch:focus {
+    border-color: #60a5fa;
+}
+QLabel#kizScanCount {
+    color: #0f172a;
+    font-size: 14px;
+    font-weight: 600;
+    background: transparent;
+}
+QFrame#kizScanBar {
+    background: #f8fafc;
+    border-bottom: 1px solid #e2e8f0;
+}
+QLabel#kizScanLabel {
+    color: #475569;
+    font-size: 14px;
+    font-weight: 600;
+    background: transparent;
+}
+QLineEdit#kizScanInput {
+    min-height: 40px;
+    padding: 8px 12px;
+    border: 1px solid #cbd5e1;
+    border-radius: 8px;
+    background: #ffffff;
+    font-size: 16px;
+}
+QLineEdit#kizScanInput:focus {
+    border-color: #60a5fa;
+}
+QToolButton#kizScanClear {
+    min-width: 40px;
+    max-width: 40px;
+    min-height: 40px;
+    max-height: 40px;
+    padding: 0;
+    color: #64748b;
+    border: 1px solid #cbd5e1;
+    background: #ffffff;
+    border-radius: 8px;
+    font-size: 16px;
+}
+QToolButton#kizScanClear:hover {
+    color: #0f172a;
+    border-color: #94a3b8;
+    background: #f8fafc;
+}
+QFrame#kizInfo {
+    background: #fef2f2;
+    border-bottom: 1px solid #fecaca;
+}
+QFrame#kizInfo[state="ok"] {
+    background: #dcfce7;
+    border-bottom-color: #86efac;
+}
+QLabel#kizInfoText {
+    color: #b91c1c;
+    font-size: 14px;
+    background: transparent;
+}
+QFrame#kizInfo[state="ok"] QLabel#kizInfoText {
+    color: #166534;
+}
+QTableWidget#kizTable {
+    border: none;
+    border-radius: 0;
+    background: #ffffff;
+    alternate-background-color: #ffffff;
+    selection-background-color: #eff6ff;
+}
+QTableWidget#kizTable QHeaderView::section {
+    background: #f8fafc;
+    color: #64748b;
+    font-size: 13px;
+    font-weight: 600;
+    text-transform: uppercase;
+    border: none;
+    border-bottom: 1px solid #e2e8f0;
+    border-right: none;
+    padding: 12px 16px;
+}
+QTableWidget#kizTable::item {
+    padding: 0;
+    border-bottom: 1px solid #e2e8f0;
+}
+QFrame#kizRowCell {
+    background: transparent;
+}
+QFrame#kizRowCell[state="active"] {
+    background: #eff6ff;
+}
+QLabel#kizOrderId {
+    color: #0f172a;
+    font-size: 14px;
+    font-weight: 700;
+    background: transparent;
+}
+QLabel#kizStickerHead {
+    color: #0f172a;
+    font-size: 14px;
+    font-weight: 700;
+    background: transparent;
+}
+QLabel#kizStickerTail {
+    color: #0f172a;
+    font-size: 20px;
+    font-weight: 700;
+    background: transparent;
+}
+QLabel#kizOrderDate {
+    color: #64748b;
+    font-size: 13px;
+    background: transparent;
+}
+QLabel#kizProductName {
+    color: #0f172a;
+    font-size: 14px;
+    font-weight: 600;
+    background: transparent;
+}
+QLabel#kizProductSub {
+    color: #64748b;
+    font-size: 13px;
+    background: transparent;
+}
+QLabel#kizBarcode {
+    color: #0f172a;
+    font-size: 16px;
+    font-weight: 600;
+    font-family: "Segoe UI", "Inter", sans-serif;
+    background: transparent;
+}
+QLabel#kizCodeIdx {
+    color: #94a3b8;
+    font-size: 13px;
+    font-weight: 600;
+    background: transparent;
+}
+QLineEdit#kizCodeInput {
+    min-height: 36px;
+    padding: 6px 10px;
+    border: 1px solid #cbd5e1;
+    border-radius: 8px;
+    background: #ffffff;
+    font-size: 14px;
+}
+QLineEdit#kizCodeInput:focus {
+    border-color: #60a5fa;
+}
+QLineEdit#kizCodeInput[state="error"] {
+    border-color: #f87171;
+    background: #fef2f2;
+}
+QToolButton#kizCodeRemove {
+    min-width: 32px;
+    max-width: 32px;
+    min-height: 32px;
+    max-height: 32px;
+    padding: 0;
+    color: #64748b;
+    border: 1px solid #e2e8f0;
+    background: #ffffff;
+    border-radius: 8px;
+    font-size: 18px;
+}
+QToolButton#kizCodeRemove:hover {
+    color: #b91c1c;
+    border-color: #fecaca;
+    background: #fef2f2;
+}
+QLabel#kizCodeStatus {
+    padding: 2px 8px;
+    border-radius: 6px;
+    font-size: 12px;
+    font-weight: 600;
+    background: transparent;
+}
+QLabel#kizCodeStatus[state="pending"] {
+    color: #92400e;
+    background: #fef3c7;
+    border: 1px solid #fcd34d;
+}
+QLabel#kizCodeStatus[state="ok"] {
+    color: #166534;
+    background: #dcfce7;
+    border: 1px solid #86efac;
+}
+QLabel#kizCodeStatus[state="error"] {
+    color: #991b1b;
+    background: #fee2e2;
+    border: 1px solid #fca5a5;
+}
+QPushButton#kizAddBtn {
+    color: #2563eb;
+    border: none;
+    background: transparent;
+    padding: 4px 10px;
+    min-height: 32px;
+    font-size: 14px;
+    font-weight: 600;
+    text-align: left;
+}
+QPushButton#kizAddBtn:hover {
+    color: #1d4ed8;
+    background: #eff6ff;
+}
+QPushButton#kizAddBtn:pressed {
+    color: #1e40af;
+    background: #dbeafe;
+}
+QLabel#kizRowError {
+    color: #b91c1c;
+    font-size: 13px;
+    background: transparent;
+}
+QLabel#kizPromptTitle {
+    color: #0f172a;
+    font-size: 20px;
+    font-weight: 700;
+    background: transparent;
+}
+QLabel#kizPromptMeta {
+    color: #64748b;
+    font-size: 14px;
+    background: transparent;
+}
 """

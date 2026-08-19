@@ -1008,7 +1008,8 @@ class FbsPage(QWidget):
             fullscreen=fullscreen,
         )
         dlg.exec_()
-        self.reload_table()
+        if dlg.supply_mutated:
+            self.reload_table()
 
     def prev_page(self) -> None:
         if self._page > 0:

@@ -5,7 +5,7 @@ import json
 from functools import partial
 from typing import Any, Dict, List, Optional
 
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import Qt, QThread, pyqtSignal
 from PyQt5.QtGui import QCursor, QDesktopServices
 from PyQt5.QtWidgets import (
     QAbstractItemView,
@@ -33,6 +33,7 @@ from PyQt5.QtCore import QUrl
 from app.db import Database
 from app.services.kiz_pick import KizService, PickVerifyService
 from app.services.orders import OrdersService
+from app.services import supply_detail_cache
 from app.services.trbx_stickers import StickersService, TrbxService
 from app.ui.dialog_utils import (
     apply_fullscreen_on_show,
@@ -48,6 +49,90 @@ from app.ui.format_helpers import (
 )
 from app.ui.layout_utils import FlowLayout
 from app.wb import cargo_type_label, parse_json_list
+
+_RENDER_BATCH = 50
+
+
+def _enrich_supply_rows(
+    rows: List[Dict[str, Any]],
+    api_key: str,
+    supply_pickup_allowed: bool,
+) -> None:
+    from app.services.print_docs import _fetch_picking_stickers
+
+    ids = [int(r["order_id"]) for r in rows if r.get("order_id") is not None]
+    stickers = {}  # type: Dict[int, Dict[str, Any]]
+    if ids and api_key:
+        try:
+            stickers = _fetch_picking_stickers(api_key, ids)
+        except Exception:
+            stickers = {}
+    for r in rows:
+        oid = int(r.get("order_id") or 0)
+        st = stickers.get(oid) or {}
+        part_a = str(st.get("partA") or "").strip()
+        part_b = str(st.get("partB") or "").strip()
+        r["sticker_part_a"] = part_a
+        r["sticker_part_b"] = part_b
+        r["sticker_number"] = "{}{}".format(part_a, part_b)
+        r["created_date"] = format_date_short(r.get("created_at_wb"))
+        r["created_ago"] = ago_label(r.get("created_at_wb"))
+        r["pickup_allowed"] = bool(
+            r.get("pickup_allowed") or supply_pickup_allowed
+        )
+        codes = r.get("kiz_codes")
+        if not isinstance(codes, list):
+            codes = parse_json_list(r.get("kiz_codes_json"))
+        r["kiz_codes"] = codes
+        has_codes = any(str(c).strip() for c in codes)
+        if has_codes:
+            r["kiz_required"] = True
+            if int(r.get("kiz_wb_synced") or 0):
+                r["kiz_status"] = "ok"
+            else:
+                r["kiz_status"] = "pending"
+        else:
+            r["kiz_required"] = False
+            r["kiz_status"] = "empty"
+
+
+class _SupplyLoadWorker(QThread):
+    """Load orders + WB sticker numbers off the UI thread."""
+
+    loaded = pyqtSignal(object)
+    failed = pyqtSignal(str)
+
+    def __init__(
+        self,
+        orders: OrdersService,
+        source_id: int,
+        supply_id: str,
+        api_key: str,
+        supply_pickup_allowed: bool,
+    ) -> None:
+        super(_SupplyLoadWorker, self).__init__()
+        self.orders = orders
+        self.source_id = source_id
+        self.supply_id = supply_id
+        self.api_key = api_key
+        self.supply_pickup_allowed = supply_pickup_allowed
+
+    def run(self) -> None:
+        try:
+            rows = self.orders.orders_in_supply(
+                self.source_id, self.supply_id, api_key=self.api_key
+            )
+            _enrich_supply_rows(rows, self.api_key, self.supply_pickup_allowed)
+            warehouse = ""
+            if rows:
+                warehouse = str(
+                    rows[0].get("warehouse_label")
+                    or rows[0].get("warehouse_id")
+                    or ""
+                )
+            self.loaded.emit({"rows": rows, "warehouse": warehouse})
+        except Exception as exc:
+            self.failed.emit(str(exc))
 
 
 class SupplyDetailDialog(QDialog):
@@ -75,9 +160,14 @@ class SupplyDetailDialog(QDialog):
         self.kiz = KizService(db)
         self.pick = PickVerifyService(db)
         self._all_rows = []  # type: List[Dict[str, Any]]
+        self._row_by_oid = {}  # type: Dict[int, Dict[str, Any]]
+        self._row_order_ids = []  # type: List[int]
         self._selected = set()  # type: set
         self._supply_pickup_allowed = False
         self._last_status_note = ""
+        self._load_worker = None  # type: Optional[_SupplyLoadWorker]
+        self._loading = False
+        self.supply_mutated = False
 
         self.setWindowTitle("Поставка {}".format(supply_id))
         init_fullscreen_dialog(
@@ -126,7 +216,7 @@ class SupplyDetailDialog(QDialog):
         self.search_input.setMinimumWidth(200)
         self.search_input.setMaximumWidth(280)
         self.search_input.setToolTip("Поиск по заказу, стикеру, названию товара и ШК")
-        self.search_input.textChanged.connect(lambda _t: self._render_table())
+        self.search_input.textChanged.connect(lambda _t: self._update_search_visibility())
         meta_row.addWidget(self.search_input, 0, Qt.AlignTop)
         hv.addLayout(meta_row)
 
@@ -234,7 +324,42 @@ class SupplyDetailDialog(QDialog):
         except Exception:
             pass
 
-        self.reload()
+        self._apply_supply_header(self.orders.get_supply(self.source_id, self.supply_id))
+        self._show_loading_table()
+        self._begin_load()
+
+    def accept(self) -> None:
+        self._stop_load_worker()
+        self._teardown_table()
+        super(SupplyDetailDialog, self).accept()
+
+    def reject(self) -> None:
+        self._stop_load_worker()
+        self._teardown_table()
+        super(SupplyDetailDialog, self).reject()
+
+    def closeEvent(self, event) -> None:
+        self._stop_load_worker()
+        self._teardown_table()
+        super(SupplyDetailDialog, self).closeEvent(event)
+
+    def _stop_load_worker(self) -> None:
+        worker = self._load_worker
+        if worker is None:
+            return
+        if worker.isRunning():
+            worker.wait(3000)
+        self._load_worker = None
+        self._loading = False
+
+    def _teardown_table(self) -> None:
+        self.table.blockSignals(True)
+        self.select_all_cb.blockSignals(True)
+        self.table.setRowCount(0)
+        self.table.blockSignals(False)
+        self.select_all_cb.blockSignals(False)
+        self._row_order_ids = []
+        self._row_by_oid = {}
 
     @staticmethod
     def _split_pair(main: QWidget, caret: QWidget) -> QWidget:
@@ -291,9 +416,15 @@ class SupplyDetailDialog(QDialog):
         return lab
 
     def reload(self) -> None:
-        supply = self.orders.get_supply(self.source_id, self.supply_id)
+        supply_detail_cache.invalidate(self.source_id, self.supply_id)
+        self._apply_supply_header(self.orders.get_supply(self.source_id, self.supply_id))
+        self._show_loading_table()
+        self._begin_load(force=True)
+
+    def _apply_supply_header(self, supply: Optional[Dict[str, Any]]) -> None:
         if not supply:
-            QMessageBox.warning(self, "Поставка", "Не найдена локально")
+            self.header.setText("Поставка {}".format(self.supply_id))
+            self.setWindowTitle("Поставка {}".format(self.supply_id))
             return
 
         created = format_date_short(supply.get("created_at_wb"))
@@ -330,78 +461,85 @@ class SupplyDetailDialog(QDialog):
         self._add_chip("Создана {}".format(created or "—"))
         self._add_chip("QR поставки {}".format(self.supply_id), qr=True)
 
-        QApplication.setOverrideCursor(QCursor(Qt.WaitCursor))
-        try:
-            rows = self.orders.orders_in_supply(
-                self.source_id, self.supply_id, api_key=""
-            )
-            if not rows and self.api_key:
-                rows = self.orders.orders_in_supply(
-                    self.source_id, self.supply_id, api_key=self.api_key
-                )
-            self._enrich_rows_with_stickers(rows)
-        finally:
-            QApplication.restoreOverrideCursor()
+    def _show_loading_table(self) -> None:
+        self.table.blockSignals(True)
+        self.table.setRowCount(1)
+        loading = QLabel("Загрузка…")
+        loading.setObjectName("hint")
+        loading.setAlignment(Qt.AlignCenter)
+        self.table.setSpan(0, 0, 1, 4)
+        self.table.setCellWidget(0, 0, loading)
+        self.table.blockSignals(False)
 
+    def _begin_load(self, *, force: bool = False) -> None:
+        if self._loading and not force:
+            return
+
+        cached = None if force else supply_detail_cache.get(
+            self.source_id, self.supply_id
+        )
+        if cached:
+            self._apply_loaded_payload(cached)
+            return
+
+        self._loading = True
+        self._stop_load_worker()
+        worker = _SupplyLoadWorker(
+            self.orders,
+            self.source_id,
+            self.supply_id,
+            self.api_key,
+            self._supply_pickup_allowed,
+        )
+        worker.loaded.connect(self._on_load_finished)
+        worker.failed.connect(self._on_load_failed)
+        self._load_worker = worker
+        worker.start()
+
+    def _on_load_finished(self, payload: object) -> None:
+        self._loading = False
+        self._load_worker = None
+        if not isinstance(payload, dict):
+            return
+        supply_detail_cache.put(self.source_id, self.supply_id, payload)
+        self._apply_loaded_payload(payload)
+
+    def _on_load_failed(self, message: str) -> None:
+        self._loading = False
+        self._load_worker = None
+        self.table.blockSignals(True)
+        self.table.setRowCount(1)
+        self.table.clearSpans()
+        err = QLabel(str(message or "Ошибка загрузки"))
+        err.setObjectName("hint")
+        err.setWordWrap(True)
+        err.setStyleSheet("color:#b91c1c;")
+        self.table.setSpan(0, 0, 1, 4)
+        self.table.setCellWidget(0, 0, err)
+        self.table.blockSignals(False)
+
+    def _apply_loaded_payload(self, payload: Dict[str, Any]) -> None:
+        rows = list(payload.get("rows") or [])
         self._all_rows = rows
-        if self._all_rows:
-            wh = str(
-                self._all_rows[0].get("warehouse_label")
-                or self._all_rows[0].get("warehouse_id")
-                or ""
-            )
-            self.warehouse.setText("📍 {}".format(wh or "—"))
-        else:
+        self._row_by_oid = {
+            int(r["order_id"]): r for r in rows if r.get("order_id") is not None
+        }
+        warehouse = str(payload.get("warehouse") or "").strip()
+        if warehouse:
+            self.warehouse.setText("📍 {}".format(warehouse))
+        elif not rows:
+            supply = self.orders.get_supply(self.source_id, self.supply_id) or {}
             dest = supply.get("destination_office_id")
             self.warehouse.setText(
                 "📍 {}".format(dest) if dest else "📍 —"
             )
 
-        valid_ids = {int(r.get("order_id")) for r in self._all_rows}
+        valid_ids = set(self._row_by_oid.keys())
         self._selected = {oid for oid in self._selected if oid in valid_ids}
         if self._last_status_note:
             self.meta.setText(self._last_status_note)
             self.meta.show()
         self._render_table()
-
-    def _enrich_rows_with_stickers(self, rows: List[Dict[str, Any]]) -> None:
-        from app.services.print_docs import _fetch_picking_stickers
-
-        ids = [int(r["order_id"]) for r in rows if r.get("order_id") is not None]
-        stickers = {}  # type: Dict[int, Dict[str, Any]]
-        if ids and self.api_key:
-            try:
-                stickers = _fetch_picking_stickers(self.api_key, ids)
-            except Exception:
-                stickers = {}
-        for r in rows:
-            oid = int(r.get("order_id") or 0)
-            st = stickers.get(oid) or {}
-            part_a = str(st.get("partA") or "").strip()
-            part_b = str(st.get("partB") or "").strip()
-            r["sticker_part_a"] = part_a
-            r["sticker_part_b"] = part_b
-            r["sticker_number"] = "{}{}".format(part_a, part_b)
-            r["created_date"] = format_date_short(r.get("created_at_wb"))
-            r["created_ago"] = ago_label(r.get("created_at_wb"))
-            r["pickup_allowed"] = bool(
-                r.get("pickup_allowed") or self._supply_pickup_allowed
-            )
-            codes = r.get("kiz_codes")
-            if not isinstance(codes, list):
-                codes = parse_json_list(r.get("kiz_codes_json"))
-            r["kiz_codes"] = codes
-            has_codes = any(str(c).strip() for c in codes)
-            if has_codes:
-                r["kiz_required"] = True
-                if int(r.get("kiz_wb_synced") or 0):
-                    r["kiz_status"] = "ok"
-                else:
-                    r["kiz_status"] = "pending"
-            else:
-                # Unknown without meta — hide badge (web shows empty only when required).
-                r["kiz_required"] = False
-                r["kiz_status"] = "empty"
 
     @staticmethod
     def _row_matches_search(row: Dict[str, Any], query: str) -> bool:
@@ -426,11 +564,25 @@ class SupplyDetailDialog(QDialog):
             return list(self._all_rows)
         return [r for r in self._all_rows if self._row_matches_search(r, query)]
 
+    def _update_search_visibility(self) -> None:
+        if not self._row_order_ids:
+            return
+        query = self.search_input.text()
+        for i, oid in enumerate(self._row_order_ids):
+            row = self._row_by_oid.get(oid)
+            visible = self._row_matches_search(row, query) if row else True
+            self.table.setRowHidden(i, not visible)
+        self._sync_select_all()
+
     def _render_table(self) -> None:
-        rows = self._visible_rows()
+        rows = list(self._all_rows)
+        self.table.clearSpans()
+        self.table.blockSignals(True)
         self.table.setRowCount(len(rows))
+        self._row_order_ids = []
         for i, r in enumerate(rows):
             oid = int(r.get("order_id"))
+            self._row_order_ids.append(oid)
             cb = QCheckBox()
             cb.setChecked(oid in self._selected)
             cb.stateChanged.connect(partial(self._on_row_checked, oid))
@@ -445,8 +597,23 @@ class SupplyDetailDialog(QDialog):
             self.table.setCellWidget(i, 2, self._build_product_cell(r))
             self.table.setCellWidget(i, 3, self._build_row_menu(oid))
             self.table.setRowHeight(i, 120)
-        self._sync_select_all()
+            if i and i % _RENDER_BATCH == 0:
+                QApplication.processEvents()
+        self.table.blockSignals(False)
+        self._update_search_visibility()
         self._place_header_select()
+
+    def _sync_row_checkboxes(self) -> None:
+        for i, oid in enumerate(self._row_order_ids):
+            wrap = self.table.cellWidget(i, 0)
+            if wrap is None:
+                continue
+            cb = wrap.findChild(QCheckBox)
+            if cb is None:
+                continue
+            cb.blockSignals(True)
+            cb.setChecked(oid in self._selected)
+            cb.blockSignals(False)
 
     def _build_order_cell(self, row: Dict[str, Any]) -> QWidget:
         wrap = QWidget()
@@ -626,7 +793,7 @@ class SupplyDetailDialog(QDialog):
             self._selected.update(ids)
         else:
             self._selected.difference_update(ids)
-        self._render_table()
+        self._sync_row_checkboxes()
 
     def picking_list(self, variant: str = "summary") -> None:
         from app.services.print_docs import print_picking_list
@@ -839,6 +1006,57 @@ class SupplyDetailDialog(QDialog):
         lay.addWidget(btns)
         dlg.exec_()
 
+    def _refresh_local_row_meta(self) -> None:
+        """Refresh DB-backed fields without re-fetching WB stickers."""
+        rows = self.orders.orders_in_supply(
+            self.source_id, self.supply_id, api_key=""
+        )
+        sticker_keys = (
+            "sticker_part_a",
+            "sticker_part_b",
+            "sticker_number",
+            "created_date",
+            "created_ago",
+            "pickup_allowed",
+        )
+        for r in rows:
+            oid = int(r.get("order_id") or 0)
+            old = self._row_by_oid.get(oid) or {}
+            for key in sticker_keys:
+                if old.get(key):
+                    r[key] = old[key]
+            if not r.get("created_date"):
+                r["created_date"] = format_date_short(r.get("created_at_wb"))
+            if not r.get("created_ago"):
+                r["created_ago"] = ago_label(r.get("created_at_wb"))
+            r["pickup_allowed"] = bool(
+                r.get("pickup_allowed") or self._supply_pickup_allowed
+            )
+            codes = parse_json_list(r.get("kiz_codes_json"))
+            r["kiz_codes"] = codes
+            has_codes = any(str(c).strip() for c in codes)
+            if has_codes:
+                r["kiz_required"] = True
+                r["kiz_status"] = (
+                    "ok" if int(r.get("kiz_wb_synced") or 0) else "pending"
+                )
+            elif old.get("kiz_required"):
+                r["kiz_required"] = old.get("kiz_required")
+                r["kiz_status"] = old.get("kiz_status") or "empty"
+            else:
+                r["kiz_required"] = False
+                r["kiz_status"] = "empty"
+        payload = {
+            "rows": rows,
+            "warehouse": str(
+                (rows[0].get("warehouse_label") or rows[0].get("warehouse_id") or "")
+                if rows
+                else ""
+            ),
+        }
+        supply_detail_cache.put(self.source_id, self.supply_id, payload)
+        self._apply_loaded_payload(payload)
+
     def manage_trbx(self) -> None:
         dlg = TrbxDialog(
             self.trbx,
@@ -849,7 +1067,11 @@ class SupplyDetailDialog(QDialog):
             parent=self,
         )
         dlg.exec_()
-        self.reload()
+        self.supply_mutated = True
+        self._apply_supply_header(
+            self.orders.get_supply(self.source_id, self.supply_id)
+        )
+        self._refresh_local_row_meta()
 
     def refresh_kiz_status(self) -> None:
         QApplication.setOverrideCursor(QCursor(Qt.WaitCursor))
@@ -888,7 +1110,7 @@ class SupplyDetailDialog(QDialog):
             self.kiz, self.source_id, self.api_key, self.supply_id, fullscreen=True
         )
         dlg.exec_()
-        self.reload()
+        self._refresh_local_row_meta()
 
     def open_pick(self) -> None:
         from app.ui.kiz_pick_dialogs import PickDialog
@@ -897,7 +1119,7 @@ class SupplyDetailDialog(QDialog):
             self.pick, self.source_id, self.api_key, self.supply_id, fullscreen=True
         )
         dlg.exec_()
-        self.reload()
+        self._refresh_local_row_meta()
 
 
 class TrbxDialog(QDialog):

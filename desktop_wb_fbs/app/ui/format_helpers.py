@@ -10,6 +10,8 @@ from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QPixmap
 from PyQt5.QtWidgets import QHBoxLayout, QLabel, QWidget
 
+_pixmap_cache = {}  # type: Dict[tuple, QPixmap]
+
 # Web `_WB_FBS_RU_LAYOUT_TO_EN`
 _RU_LAYOUT_TO_EN = {
     "й": "q", "ц": "w", "у": "e", "к": "r", "е": "t", "н": "y", "г": "u",
@@ -143,11 +145,20 @@ def make_photo_label(path: Optional[str], size: int = 72) -> QLabel:
     )
     p = str(path or "").strip()
     if p:
-        pix = QPixmap(p)
-        if not pix.isNull():
-            lab.setPixmap(
-                pix.scaled(size, size, Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation)
-            )
+        cache_key = (p, int(size))
+        pix = _pixmap_cache.get(cache_key)
+        if pix is None or pix.isNull():
+            loaded = QPixmap(p)
+            if not loaded.isNull():
+                pix = loaded.scaled(
+                    size,
+                    size,
+                    Qt.KeepAspectRatioByExpanding,
+                    Qt.FastTransformation,
+                )
+                _pixmap_cache[cache_key] = pix
+        if pix is not None and not pix.isNull():
+            lab.setPixmap(pix)
             return lab
     lab.setText("—")
     lab.setStyleSheet(

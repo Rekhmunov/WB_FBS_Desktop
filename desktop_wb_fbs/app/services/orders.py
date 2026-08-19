@@ -48,9 +48,15 @@ def _date_short(iso: object) -> str:
 class OrdersService:
     def __init__(self, db: Database) -> None:
         self.db = db
-        self._product_title_cache = None  # type: ignore
+        self._product_maps_cache = None  # type: ignore
+
+    def invalidate_product_cache(self) -> None:
+        self._product_maps_cache = None
 
     def _product_maps(self) -> Tuple[Dict[str, str], Dict[str, str], Dict[str, str]]:
+        cached = self._product_maps_cache
+        if cached is not None:
+            return cached
         by_art = {}  # type: Dict[str, str]
         by_nm = {}  # type: Dict[str, str]
         photo_by = {}  # type: Dict[str, str]
@@ -69,7 +75,8 @@ class OrdersService:
                     photo_by[art] = photo
                 if nm:
                     photo_by[nm] = photo
-        return by_art, by_nm, photo_by
+        self._product_maps_cache = (by_art, by_nm, photo_by)
+        return self._product_maps_cache
 
     def _enrich_order(
         self,

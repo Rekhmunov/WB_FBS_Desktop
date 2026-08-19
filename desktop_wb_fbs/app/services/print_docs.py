@@ -10,7 +10,7 @@ import threading
 import time
 from collections import OrderedDict
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
+from typing import Any, Callable, Dict, List, Optional, Tuple, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from PyQt5.QtWidgets import QWidget
@@ -310,17 +310,25 @@ def fetch_stickers_map(
     *,
     sticker_type: str = "png",
     keep_files: bool = True,
+    progress: Optional[Callable[[int, int], None]] = None,
 ) -> Dict[int, Dict[str, Any]]:
     """Fetch WB order stickers. Picking list only needs partA/partB — use svg + keep_files=False."""
     ids = [int(x) for x in order_ids if x is not None]
     if not ids:
+        if progress:
+            progress(0, 0)
         return {}
+    total = len(ids)
+    if progress:
+        progress(0, total)
     stype = str(sticker_type or "png").strip().lower() or "png"
     cache_key = None
     if api_key:
         cache_key = _stickers_cache_key(api_key, ids, stype, keep_files)
         cached = _cache_get_stickers(cache_key)
         if cached is not None:
+            if progress:
+                progress(total, total)
             return cached
     client = WbFbsClient(api_key)
     out = {}  # type: Dict[int, Dict[str, Any]]
@@ -348,17 +356,33 @@ def fetch_stickers_map(
                     "partB": str(st.get("partB") or ""),
                     "file_b64": "",
                 }
+        if progress:
+            progress(min(i + len(chunk), total), total)
     if cache_key is not None and out:
         _cache_put_stickers(cache_key, out)
     return out
 
 
-def _fetch_picking_stickers(api_key: str, order_ids: List[int]) -> Dict[int, Dict[str, Any]]:
+def _fetch_picking_stickers(
+    api_key: str,
+    order_ids: List[int],
+    *,
+    progress: Optional[Callable[[int, int], None]] = None,
+) -> Dict[int, Dict[str, Any]]:
     """Lightweight sticker numbers for picking list (no PNG payloads)."""
     if not order_ids or not api_key:
+        if progress:
+            progress(0, 0)
         return {}
+    total = len(order_ids)
+    if progress:
+        progress(0, total)
     stickers = fetch_stickers_map(
-        api_key, order_ids, sticker_type="svg", keep_files=False
+        api_key,
+        order_ids,
+        sticker_type="svg",
+        keep_files=False,
+        progress=progress,
     )
     missing = [
         int(oid)
@@ -366,10 +390,22 @@ def _fetch_picking_stickers(api_key: str, order_ids: List[int]) -> Dict[int, Dic
         if not str((stickers.get(int(oid)) or {}).get("partB") or "").strip()
     ]
     if missing:
+        base_done = total - len(missing)
+
+        def _png_progress(done: int, _phase_total: int) -> None:
+            if progress:
+                progress(min(base_done + done, total), total)
+
         png_part = fetch_stickers_map(
-            api_key, missing, sticker_type="png", keep_files=False
+            api_key,
+            missing,
+            sticker_type="png",
+            keep_files=False,
+            progress=_png_progress,
         )
         stickers.update(png_part)
+    elif progress:
+        progress(total, total)
     return stickers
 
 

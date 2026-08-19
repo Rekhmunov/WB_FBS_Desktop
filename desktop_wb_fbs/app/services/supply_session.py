@@ -223,6 +223,12 @@ class SupplySession:
 ProgressCb = Callable[[int, str], None]
 
 
+def _progress_detail(done: int, total: int, *, fallback: str = "") -> str:
+    if total > 0:
+        return "{} из {}".format(int(done), int(total))
+    return str(fallback or "")
+
+
 def preload_supply_core(
     db: Database,
     orders: OrdersService,
@@ -258,11 +264,17 @@ def preload_supply_core(
         )
 
     ids = [int(r["order_id"]) for r in rows if r.get("order_id") is not None]
-    _prog(2, "{} заказов".format(len(ids)))
+    order_total = len(ids)
+
+    def _sticker_progress(done: int, total: int) -> None:
+        _prog(2, _progress_detail(done, order_total or total))
+
     stickers = {}  # type: Dict[int, Dict[str, Any]]
     if ids and api_key:
         try:
-            stickers = _fetch_picking_stickers(api_key, ids)
+            stickers = _fetch_picking_stickers(
+                api_key, ids, progress=_sticker_progress
+            )
         except Exception:
             stickers = {}
     session.sticker_numbers = {
@@ -275,7 +287,7 @@ def preload_supply_core(
     }
     session.apply_sticker_numbers_to_rows()
 
-    _prog(3, "{} заказов".format(len(ids)))
+    _prog(3, _progress_detail(order_total, order_total, fallback="метаданные"))
     if ids and api_key:
         try:
             session.meta_by_id = fetch_orders_meta(api_key, ids)
@@ -295,15 +307,25 @@ def preload_sticker_pngs(
     from app.services.print_docs import fetch_stickers_map
 
     ids = [int(r["order_id"]) for r in session.rows if r.get("order_id") is not None]
+    order_total = len(ids)
+
+    def _png_progress(done: int, total: int) -> None:
+        if progress:
+            progress(4, _progress_detail(done, order_total or total))
+
     if progress:
-        progress(4, "{} заказов".format(len(ids)))
+        progress(4, _progress_detail(0, order_total))
     if not ids or not session.api_key:
         session.png_ready = True
         put_session(session)
         return
     try:
         session.sticker_png = fetch_stickers_map(
-            session.api_key, ids, sticker_type="png", keep_files=True
+            session.api_key,
+            ids,
+            sticker_type="png",
+            keep_files=True,
+            progress=_png_progress,
         )
     except Exception:
         session.sticker_png = {}

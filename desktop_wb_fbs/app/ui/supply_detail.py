@@ -292,6 +292,7 @@ class SupplyDetailDialog(QDialog):
             kiz_btn,
             kiz_ref,
             *extra_action_btns,
+            portal_btn,
             self.search_input,
         ]
         root.addWidget(header)
@@ -672,7 +673,7 @@ class SupplyDetailDialog(QDialog):
         self.load_status.setText("<br>".join(lines))
         self.load_status.show()
         lab = getattr(self, "_loading_table_label", None)
-        if lab is not None and step <= 3:
+        if lab is not None and step > 0:
             current = _LOAD_STEPS[min(step, total) - 1] if step else "данные"
             lab.setText(
                 "Идёт загрузка: {}…{}".format(
@@ -691,10 +692,12 @@ class SupplyDetailDialog(QDialog):
                 self._apply_loaded_payload(supply_session.snapshot_for_ui(session))
                 if session.png_ready:
                     self._set_load_status("")
+                    self._set_actions_ready(True)
                 else:
                     self._load_step = 4
-                    self._load_detail = "ещё идёт"
+                    self._load_detail = "0 из {}".format(len(session.rows))
                     self._render_load_status()
+                    self._set_actions_ready(False)
                     self._start_png_poll()
                 return
 
@@ -732,6 +735,7 @@ class SupplyDetailDialog(QDialog):
             session = supply_session.get_session(self.source_id, self.supply_id)
             if session and session.png_ready:
                 self._set_load_status("")
+                self._set_actions_ready(True)
                 timer.stop()
                 timer.deleteLater()
                 if self._png_poll is timer:
@@ -757,8 +761,10 @@ class SupplyDetailDialog(QDialog):
         supply_detail_cache.put(self.source_id, self.supply_id, data)
         self._apply_loaded_payload(data)
         self._load_step = 4
-        self._load_detail = "ожидайте"
+        order_count = len((data.get("rows") or []))
+        self._load_detail = "0 из {}".format(order_count) if order_count else "ожидайте"
         self._render_load_status()
+        self._set_actions_ready(False)
 
     def _on_png_ready(self, payload: object) -> None:
         if isinstance(payload, dict):
@@ -769,6 +775,7 @@ class SupplyDetailDialog(QDialog):
         self._load_step = 0
         self._load_detail = ""
         self._set_load_status("")
+        self._set_actions_ready(True)
         if self._png_poll is not None:
             self._png_poll.stop()
             self._png_poll.deleteLater()
@@ -813,7 +820,6 @@ class SupplyDetailDialog(QDialog):
         if self._last_status_note:
             self.meta.setText(self._last_status_note)
             self.meta.show()
-        self._set_actions_ready(True)
         self._render_table()
 
     @staticmethod

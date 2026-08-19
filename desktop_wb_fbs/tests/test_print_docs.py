@@ -17,7 +17,7 @@ class FetchPickingStickersTests(unittest.TestCase):
         self.assertEqual(out[2]["partB"], "D")
         fetch_mock.assert_called_once()
         fetch_mock.assert_called_with(
-            "key", [1, 2], sticker_type="svg", keep_files=False
+            "key", [1, 2], sticker_type="svg", keep_files=False, progress=None
         )
 
     @patch("app.services.print_docs.fetch_stickers_map")
@@ -33,8 +33,12 @@ class FetchPickingStickersTests(unittest.TestCase):
         self.assertEqual(out[1]["partB"], "B1")
         self.assertEqual(out[2]["partB"], "B2")
         self.assertEqual(fetch_mock.call_count, 2)
-        fetch_mock.assert_any_call("key", [1, 2], sticker_type="svg", keep_files=False)
-        fetch_mock.assert_any_call("key", [2], sticker_type="png", keep_files=False)
+        fetch_mock.assert_any_call(
+            "key", [1, 2], sticker_type="svg", keep_files=False, progress=None
+        )
+        fetch_mock.assert_any_call(
+            "key", [2], sticker_type="png", keep_files=False, progress=unittest.mock.ANY
+        )
 
     @patch("app.services.print_docs.fetch_stickers_map")
     def test_skips_png_when_svg_has_all_partb(self, fetch_mock):
@@ -45,7 +49,7 @@ class FetchPickingStickersTests(unittest.TestCase):
         out = _fetch_picking_stickers("key", [1, 2])
         self.assertEqual(out[2]["partB"], "D")
         fetch_mock.assert_called_once_with(
-            "key", [1, 2], sticker_type="svg", keep_files=False
+            "key", [1, 2], sticker_type="svg", keep_files=False, progress=None
         )
 
 
@@ -64,6 +68,27 @@ class FetchStickersCacheTests(unittest.TestCase):
         self.assertEqual(first[1]["partB"], "B")
         self.assertEqual(second[1]["partB"], "B")
         client.get_order_stickers.assert_called_once()
+
+    @patch("app.services.print_docs.WbFbsClient")
+    def test_reports_chunk_progress(self, client_cls):
+        from app.services import print_docs
+
+        client = client_cls.return_value
+        client.get_order_stickers.return_value = [
+            {"orderId": i, "partA": "A", "partB": str(i), "file": "ZmlsZQ=="}
+            for i in range(1, 6)
+        ]
+        print_docs._stickers_cache.clear()
+        seen = []
+
+        print_docs.fetch_stickers_map(
+            "secret-key",
+            list(range(1, 251)),
+            progress=lambda done, total: seen.append((done, total)),
+        )
+        self.assertTrue(seen)
+        self.assertEqual(seen[0], (0, 250))
+        self.assertEqual(seen[-1], (250, 250))
 
 
 class PrintPickingListTests(unittest.TestCase):

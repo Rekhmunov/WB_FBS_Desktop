@@ -5,7 +5,13 @@ from __future__ import annotations
 from typing import Optional, Tuple
 
 from PyQt5.QtCore import Qt
-from PyQt5.QtWidgets import QApplication, QDialog, QWidget
+from PyQt5.QtWidgets import QApplication, QDialog, QLineEdit, QMessageBox, QWidget
+
+from app.ui.format_helpers import (
+    RU_LAYOUT_SCAN_MESSAGE,
+    RU_LAYOUT_SCAN_TITLE,
+    scan_has_ru_layout,
+)
 
 
 def fullscreen_parent(
@@ -51,3 +57,20 @@ def apply_fullscreen_on_show(dialog: QDialog) -> None:
         dialog.setGeometry(screen.availableGeometry())
     else:
         dialog.showMaximized()
+
+
+def block_ru_layout_scan(
+    parent: QWidget,
+    field: Optional[QLineEdit] = None,
+    *,
+    text: Optional[str] = None,
+) -> bool:
+    """Warn and reject scan when Russian keyboard layout is detected. Returns True if blocked."""
+    raw = str(text if text is not None else (field.text() if field is not None else ""))
+    if not scan_has_ru_layout(raw):
+        return False
+    if field is not None:
+        field.clear()
+        field.setFocus()
+    QMessageBox.warning(parent, RU_LAYOUT_SCAN_TITLE, RU_LAYOUT_SCAN_MESSAGE)
+    return True

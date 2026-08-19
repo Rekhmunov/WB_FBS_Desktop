@@ -280,8 +280,7 @@ class PickVerifyService:
 
     def rows(self, source_id: int, supply_id: str, api_key: str) -> List[Dict[str, Any]]:
         """Orders WITHOUT КИЗ requirement."""
-        kiz = KizService(self.db)
-        # Reuse meta: those without sgtin key
+        products = ProductService(self.db)
         client = WbFbsClient(api_key)
         with self.db.connect() as conn:
             all_rows = conn.execute(
@@ -303,6 +302,15 @@ class PickVerifyService:
                 meta_by_id[int(m.get("id"))] = m
             except (TypeError, ValueError):
                 pass
+        by_art = {}  # type: Dict[str, Dict[str, Any]]
+        by_nm = {}  # type: Dict[str, Dict[str, Any]]
+        for p in products.list_all():
+            art = str(p.get("supplier_article") or "").strip().lower()
+            nm = str(p.get("wb_nmid") or "").strip()
+            if art:
+                by_art[art] = p
+            if nm:
+                by_nm[nm] = p
         out = []  # type: List[Dict[str, Any]]
         for r in items:
             oid = int(r["order_id"])
@@ -314,14 +322,31 @@ class PickVerifyService:
             local_codes = parse_json_list(r.get("kiz_codes_json"))
             if has_sgtin or any(kiz_code_clean(c) for c in local_codes):
                 continue
+            art = str(r.get("article") or "").strip().lower()
+            nm = str(r.get("nm_id") or "").strip()
+            local = by_art.get(art) or by_nm.get(nm) or {}
             out.append(
                 {
                     "order_id": oid,
                     "article": r.get("article") or "",
+                    "nm_id": r.get("nm_id"),
+                    "product_name": str(local.get("name") or "").strip(),
+                    "product_photo": str(local.get("photo_path") or "").strip(),
+                    "brand": "",
+                    "created_date": _format_created(r.get("created_at_wb")) or "—",
+                    "sticker_part_a": "",
+                    "sticker_part_b": "",
+                    "sticker_number": "",
                     "skus": parse_json_list(r.get("skus_json")),
                     "pick_verified": bool(int(r.get("pick_verified") or 0)),
                     "pick_barcode": str(r.get("pick_barcode") or ""),
                     "pick_verified_at": r.get("pick_verified_at"),
+                    "supplier_status": r.get("supplier_status"),
+                    "wb_status": r.get("wb_status"),
+                    "cancel_reason_label": cancel_reason_label(
+                        supplier_status=r.get("supplier_status"),
+                        wb_status=r.get("wb_status"),
+                    ),
                 }
             )
         return out

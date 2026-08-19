@@ -1226,7 +1226,12 @@ class FbsPage(QWidget):
         QApplication.setOverrideCursor(QCursor(Qt.WaitCursor))
         try:
             print_supply_stickers(
-                self.db, self.orders, int(src["id"]), str(src["api_key"]), sid
+                self.db,
+                self.orders,
+                int(src["id"]),
+                str(src["api_key"]),
+                sid,
+                parent=self,
             )
         except Exception as exc:
             QMessageBox.critical(self, "Стикеры товаров", str(exc))

@@ -1,6 +1,7 @@
 # FeedPilot Desktop — WB FBS (Windows 7+)
 # Python 3.8.x required on Win7. Qt6/PySide6 need Win10+.
 PyQt5>=5.15.0,<5.16
+PyQtWebEngine>=5.15.0,<5.16
 # MSK timezone on Python 3.8
 backports.zoneinfo>=0.2.1; python_version < "3.9"
 tzdata>=2024.1

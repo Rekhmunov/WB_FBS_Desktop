@@ -10,7 +10,10 @@ import threading
 import time
 from collections import OrderedDict
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from PyQt5.QtWidgets import QWidget
 
 from PyQt5.QtCore import QUrl
 from PyQt5.QtGui import QDesktopServices
@@ -87,10 +90,32 @@ def _cache_put_card_meta(fp: str, nm_id: int, card: Dict[str, Any]) -> None:
         _card_meta_cache[(fp, nm_id)] = (time.monotonic(), copy.deepcopy(card))
 
 
-def open_html(html_doc: str, basename: str) -> Path:
+def open_html(
+    html_doc: str,
+    basename: str,
+    *,
+    parent: Optional["QWidget"] = None,
+    title: str = "",
+) -> Path:
+    from PyQt5.QtWidgets import QMessageBox, QWidget
+
     path = Path(tempfile.gettempdir()) / "{}.html".format(basename)
     path.write_text(html_doc, encoding="utf-8")
+    try:
+        from app.ui.html_print_dialog import show_html_print_preview
+
+        if show_html_print_preview(path, title=title or basename, parent=parent):
+            return path
+    except Exception:
+        pass
     QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
+    if parent is not None:
+        QMessageBox.information(
+            parent,
+            "Печать",
+            "Документ открыт в браузере.\n"
+            "Для предпросмотра в приложении установите PyQtWebEngine.",
+        )
     return path
 
 
@@ -639,6 +664,7 @@ def print_picking_list(
     supply_id: str,
     variant: str = "summary",
     preloaded_stickers: Optional[Dict[int, Dict[str, Any]]] = None,
+    parent: Optional["QWidget"] = None,
 ) -> Path:
     supply = orders_svc.get_supply(source_id, supply_id) or {}
     rows = orders_svc.orders_in_supply(source_id, supply_id, api_key="")
@@ -690,7 +716,17 @@ def print_picking_list(
         groups,
         variant=variant,
     )
-    return open_html(html_doc, "feedpilot_picking_{}_{}".format(variant, supply_id))
+    title = (
+        "Расширенный лист подбора"
+        if str(variant).lower() == "extended"
+        else "Лист подбора"
+    )
+    return open_html(
+        html_doc,
+        "feedpilot_picking_{}_{}".format(variant, supply_id),
+        parent=parent,
+        title=title,
+    )
 
 
 def print_supply_stickers(
@@ -700,6 +736,7 @@ def print_supply_stickers(
     api_key: str,
     supply_id: str,
     order_ids: Optional[List[int]] = None,
+    parent: Optional["QWidget"] = None,
 ) -> Path:
     rows = orders_svc.orders_in_supply(source_id, supply_id, api_key="")
     if not rows and api_key:
@@ -714,4 +751,9 @@ def print_supply_stickers(
     products = ProductService(db).list_all()
     groups = build_groups(rows, stickers, cards, products)
     html_doc = render_stickers_print_html(supply_id, groups)
-    return open_html(html_doc, "feedpilot_stickers_{}".format(supply_id))
+    return open_html(
+        html_doc,
+        "feedpilot_stickers_{}".format(supply_id),
+        parent=parent,
+        title="Стикеры поставки",
+    )

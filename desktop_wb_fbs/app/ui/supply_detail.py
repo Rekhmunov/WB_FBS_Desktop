@@ -654,6 +654,7 @@ class SupplyDetailDialog(QDialog):
                 self.supply_id,
                 variant=variant,
                 preloaded_stickers=preloaded,
+                parent=self,
             )
             self._last_status_note = "открыт {}".format(path.name)
             self.meta.setText(self._last_status_note)
@@ -675,6 +676,7 @@ class SupplyDetailDialog(QDialog):
                 self.api_key,
                 self.supply_id,
                 order_ids=sorted(self._selected) if self._selected else None,
+                parent=self,
             )
         except Exception as exc:
             QMessageBox.critical(self, "Стикеры", str(exc))
@@ -824,6 +826,7 @@ class SupplyDetailDialog(QDialog):
                     self.api_key,
                     self.supply_id,
                     order_ids=ids,
+                    parent=self,
                 )
             except Exception as exc:
                 QMessageBox.critical(dlg, "Стикеры", str(exc))

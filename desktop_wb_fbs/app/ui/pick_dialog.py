@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""КИЗ marking modal — web portal layout parity."""
+"""Pick verify modal — KIZ modal layout parity (ШК instead of КИЗ)."""
 from __future__ import annotations
 
 from functools import partial
@@ -17,7 +17,6 @@ from PyQt5.QtWidgets import (
     QMenu,
     QMessageBox,
     QPushButton,
-    QScrollArea,
     QSizePolicy,
     QTableWidget,
     QTableWidgetItem,
@@ -28,7 +27,7 @@ from PyQt5.QtWidgets import (
     QApplication,
 )
 
-from app.services.kiz_pick import KizService
+from app.services.kiz_pick import PickVerifyService
 from app.services import supply_session
 from app.services.print_docs import _fetch_picking_stickers
 from app.services.trbx_stickers import StickersService
@@ -39,10 +38,7 @@ from app.ui.dialog_utils import (
     init_fullscreen_dialog,
 )
 from app.ui.dialogs_extra import show_png_list
-from app.ui.format_helpers import (
-    make_badge,
-    make_photo_label,
-)
+from app.ui.format_helpers import make_badge, make_photo_label
 from app.wb import cancel_reason_label, is_cancelled_status
 
 
@@ -54,8 +50,8 @@ _RENDER_BATCH = 50
 _FILTER_EMPTY_MSG = "Нет строк по выбранным фильтрам"
 
 
-class KizMarkScanDialog(QDialog):
-    """Secondary prompt: scan Data Matrix after order sticker (web scan-prompt)."""
+class PickSkuScanDialog(QDialog):
+    """Secondary prompt: scan product barcode after order sticker."""
 
     def __init__(
         self,
@@ -63,16 +59,16 @@ class KizMarkScanDialog(QDialog):
         sticker_label: str,
         parent: Optional[QWidget] = None,
     ) -> None:
-        super(KizMarkScanDialog, self).__init__(parent)
+        super(PickSkuScanDialog, self).__init__(parent)
         self.order_id = int(order_id)
-        self.mark_code = ""  # type: str
-        self.setWindowTitle("Просканируйте маркировку")
+        self.barcode = ""  # type: str
+        self.setWindowTitle("Просканируйте ШК")
         self.setModal(True)
         self.resize(440, 220)
         lay = QVBoxLayout(self)
         lay.setContentsMargins(24, 24, 24, 24)
         lay.setSpacing(12)
-        title = QLabel("Просканируйте маркировку")
+        title = QLabel("Просканируйте ШК")
         title.setObjectName("kizPromptTitle")
         lay.addWidget(title)
         meta = QLabel("Заказ {} · стикер {}".format(order_id, sticker_label or "—"))
@@ -81,16 +77,16 @@ class KizMarkScanDialog(QDialog):
         lay.addWidget(meta)
         row = QHBoxLayout()
         row.setSpacing(8)
-        self.mark_input = QLineEdit()
-        self.mark_input.setObjectName("kizScanInput")
-        self.mark_input.setPlaceholderText("Сканируйте КИЗ с того же изделия")
-        self.mark_input.returnPressed.connect(self._accept_mark)
+        self.sku_input = QLineEdit()
+        self.sku_input.setObjectName("kizScanInput")
+        self.sku_input.setPlaceholderText("Сканируйте ШК с того же изделия")
+        self.sku_input.returnPressed.connect(self._accept_sku)
         clear_btn = QToolButton()
         clear_btn.setObjectName("kizScanClear")
         clear_btn.setText("✕")
         clear_btn.setToolTip("Очистить")
-        clear_btn.clicked.connect(self.mark_input.clear)
-        row.addWidget(self.mark_input, 1)
+        clear_btn.clicked.connect(self.sku_input.clear)
+        row.addWidget(self.sku_input, 1)
         row.addWidget(clear_btn)
         lay.addLayout(row)
         cancel = QPushButton("Отмена")
@@ -102,22 +98,22 @@ class KizMarkScanDialog(QDialog):
         lay.addLayout(actions)
 
     def showEvent(self, event) -> None:
-        super(KizMarkScanDialog, self).showEvent(event)
-        self.mark_input.setFocus()
+        super(PickSkuScanDialog, self).showEvent(event)
+        self.sku_input.setFocus()
 
-    def _accept_mark(self) -> None:
-        if block_ru_layout_scan(self, self.mark_input):
+    def _accept_sku(self) -> None:
+        if block_ru_layout_scan(self, self.sku_input):
             return
-        self.mark_code = self.mark_input.text()
+        self.barcode = self.sku_input.text()
         self.accept()
 
 
-class KizDialog(QDialog):
-    """КИЗ marking modal — portal layout (header, filters, scan bar, table)."""
+class PickDialog(QDialog):
+    """Проверка ШК — portal layout parity with KIZ modal."""
 
     def __init__(
         self,
-        kiz: KizService,
+        pick: PickVerifyService,
         source_id: int,
         api_key: str,
         supply_id: str,
@@ -125,8 +121,8 @@ class KizDialog(QDialog):
         *,
         fullscreen: bool = True,
     ) -> None:
-        super(KizDialog, self).__init__(fullscreen_parent(parent, fullscreen))
-        self.kiz = kiz
+        super(PickDialog, self).__init__(fullscreen_parent(parent, fullscreen))
+        self.pick = pick
         self.source_id = source_id
         self.api_key = api_key
         self.supply_id = supply_id
@@ -134,18 +130,17 @@ class KizDialog(QDialog):
         self.row_errors = {}  # type: Dict[int, str]
         self._sticker_map = {}  # type: Dict[str, Dict[str, Any]]
         self._pending_order_id = None  # type: Optional[int]
-        self._code_inputs = {}  # type: Dict[int, List[QLineEdit]]
+        self._sku_inputs = {}  # type: Dict[int, QLineEdit]
         self._row_index_by_oid = {}  # type: Dict[int, int]
         self._row_by_oid = {}  # type: Dict[int, Dict[str, Any]]
         self._rows_ready = False
-        self._saving = False
         self._search_timer = QTimer(self)
         self._search_timer.setSingleShot(True)
         self._search_timer.setInterval(200)
         self._search_timer.timeout.connect(self._apply_filters)
 
         self.setObjectName("kizModal")
-        self.setWindowTitle("КИЗ · {}".format(supply_id))
+        self.setWindowTitle("Проверка ШК · {}".format(supply_id))
         init_fullscreen_dialog(
             self,
             fullscreen=fullscreen,
@@ -156,7 +151,6 @@ class KizDialog(QDialog):
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
 
-        # Header — title row (left) + actions (right), subtitle below
         header = QFrame()
         header.setObjectName("kizHeader")
         header_lay = QVBoxLayout(header)
@@ -165,7 +159,7 @@ class KizDialog(QDialog):
 
         title_row = QHBoxLayout()
         title_row.setSpacing(16)
-        title = QLabel("КИЗ")
+        title = QLabel("Проверка ШК")
         title.setObjectName("kizTitle")
         title.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         title_row.addWidget(title, 0, Qt.AlignLeft | Qt.AlignTop)
@@ -174,23 +168,17 @@ class KizDialog(QDialog):
         head_actions = QHBoxLayout()
         head_actions.setSpacing(8)
         head_actions.setAlignment(Qt.AlignRight | Qt.AlignTop)
-        self.save_btn = QPushButton("Сохранить")
-        self.save_btn.setObjectName("bottomPrimary")
-        self.save_btn.setFixedHeight(40)
-        self.save_btn.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
-        self.save_btn.clicked.connect(self.save_all)
         close_btn = QToolButton()
         close_btn.setObjectName("iconBtn")
         close_btn.setText("✕")
         close_btn.setToolTip("Закрыть")
         close_btn.clicked.connect(self.reject)
-        head_actions.addWidget(self.save_btn)
         head_actions.addWidget(close_btn)
         title_row.addLayout(head_actions, 0)
 
         sub = QLabel(
-            "Контрольный идентификационный знак, похожий на QR-код. "
-            "Нужен для маркировки товаров в системе «Честный знак»"
+            "Сверка штрихкода товара с заказом перед сборкой. "
+            "Сначала отсканируйте стикер заказа, затем ШК с изделия."
         )
         sub.setObjectName("kizSub")
         sub.setWordWrap(True)
@@ -200,7 +188,6 @@ class KizDialog(QDialog):
         header_lay.addWidget(sub)
         root.addWidget(header)
 
-        # Toolbar: filters + search + counter
         toolbar = QFrame()
         toolbar.setObjectName("kizToolbar")
         tb = QHBoxLayout(toolbar)
@@ -221,7 +208,7 @@ class KizDialog(QDialog):
         self.search_input.setMinimumWidth(180)
         filters.addWidget(self.search_input)
         tb.addLayout(filters, 1)
-        self.counter = QLabel("Просканировано 0 из 0 КИЗ")
+        self.counter = QLabel("Проверено 0 из 0")
         self.counter.setObjectName("kizScanCount")
         tb.addWidget(self.counter)
         root.addWidget(toolbar)
@@ -232,7 +219,6 @@ class KizDialog(QDialog):
         self.chk_cancelled.toggled.connect(self._apply_filters)
         self.search_input.textChanged.connect(self._schedule_filter)
 
-        # Scan bar
         scan_bar = QFrame()
         scan_bar.setObjectName("kizScanBar")
         scan_lay = QHBoxLayout(scan_bar)
@@ -253,7 +239,6 @@ class KizDialog(QDialog):
         scan_lay.addWidget(sticker_clear)
         root.addWidget(scan_bar)
 
-        # Info banner
         self.info_banner = QFrame()
         self.info_banner.setObjectName("kizInfo")
         self.info_banner.hide()
@@ -265,13 +250,10 @@ class KizDialog(QDialog):
         info_lay.addWidget(self.info)
         root.addWidget(self.info_banner)
 
-        # Table
         self.table = QTableWidget(0, 4)
         self.table.setObjectName("kizTable")
         self.table.setAlternatingRowColors(True)
-        self.table.setHorizontalHeaderLabels(
-            ["Заказ/стикер", "Товар", "КИЗ", ""]
-        )
+        self.table.setHorizontalHeaderLabels(["Заказ/стикер", "Товар", "ШК", ""])
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.table.setShowGrid(False)
@@ -293,7 +275,7 @@ class KizDialog(QDialog):
         self.sticker_input.setFocus()
 
     def showEvent(self, event) -> None:
-        super(KizDialog, self).showEvent(event)
+        super(PickDialog, self).showEvent(event)
         apply_fullscreen_on_show(self)
 
     def _set_filters_ready(self, ready: bool) -> None:
@@ -333,15 +315,31 @@ class KizDialog(QDialog):
     def _schedule_filter(self) -> None:
         self._search_timer.start()
 
+    @staticmethod
+    def _row_is_verified(row: Dict[str, Any]) -> bool:
+        return bool(row.get("pick_verified")) and bool(
+            str(row.get("pick_barcode") or "").strip()
+        )
+
+    def _row_is_empty(self, row: Dict[str, Any]) -> bool:
+        return not self._row_is_verified(row)
+
+    def _row_is_cancelled(self, row: Dict[str, Any]) -> bool:
+        if str(row.get("cancel_reason_label") or "").strip():
+            return True
+        return is_cancelled_status(
+            supplier_status=row.get("supplier_status"),
+            wb_status=row.get("wb_status"),
+        )
+
     def _row_passes_filters(self, row: Dict[str, Any]) -> bool:
         if self.chk_filled.isChecked() and self._row_is_empty(row):
             return False
         if self.chk_empty.isChecked() and not self._row_is_empty(row):
             return False
         oid = int(row["order_id"])
-        if self.chk_errors.isChecked():
-            if oid not in self.row_errors and str(row.get("kiz_status") or "") != "error":
-                return False
+        if self.chk_errors.isChecked() and oid not in self.row_errors:
+            return False
         if self.chk_cancelled.isChecked() and not self._row_is_cancelled(row):
             return False
         if not self._row_matches_search(row, self.search_input.text()):
@@ -366,23 +364,6 @@ class KizDialog(QDialog):
             self._set_info("")
 
     @staticmethod
-    def _row_codes(row: Dict[str, Any]) -> List[str]:
-        codes = row.get("kiz_codes") or [""]
-        return list(codes) if codes else [""]
-
-    @classmethod
-    def _row_is_empty(cls, row: Dict[str, Any]) -> bool:
-        return not any(str(c or "").strip() for c in cls._row_codes(row))
-
-    def _row_is_cancelled(self, row: Dict[str, Any]) -> bool:
-        if str(row.get("cancel_reason_label") or "").strip():
-            return True
-        return is_cancelled_status(
-            supplier_status=row.get("supplier_status"),
-            wb_status=row.get("wb_status"),
-        )
-
-    @staticmethod
     def _row_matches_search(row: Dict[str, Any], query: str) -> bool:
         q = str(query or "").strip().lower()
         if not q:
@@ -395,47 +376,22 @@ class KizDialog(QDialog):
             row.get("sticker_part_a"),
             row.get("sticker_part_b"),
             row.get("product_name"),
-            row.get("brand"),
-            row.get("nm_id"),
+            row.get("pick_barcode"),
             *skus,
         ]
         return any(q in str(v or "").strip().lower() for v in hay)
 
     def _update_counter(self) -> None:
-        filled = 0
-        total = 0
-        for r in self.rows:
-            codes = self._row_codes(r)
-            total += len(codes)
-            filled += sum(1 for c in codes if str(c or "").strip())
-        self.counter.setText("Просканировано {} из {} КИЗ".format(filled, total))
-
-    def _restore_code_input(self, order_id: int, inp: QLineEdit) -> None:
-        row = next((r for r in self.rows if int(r["order_id"]) == order_id), None)
-        if not row:
-            inp.clear()
-            return
-        inputs = self._code_inputs.get(order_id) or []
-        try:
-            idx = inputs.index(inp)
-            codes = self._row_codes(row)
-            inp.setText(str(codes[idx] if idx < len(codes) else ""))
-        except ValueError:
-            inp.clear()
-
-    def _sync_codes_from_inputs(self) -> None:
-        for oid, inputs in list(self._code_inputs.items()):
-            row = next((r for r in self.rows if int(r["order_id"]) == oid), None)
-            if not row:
-                continue
-            row["kiz_codes"] = [inp.text() for inp in inputs] or [""]
+        filled = sum(1 for r in self.rows if self._row_is_verified(r))
+        total = len(self.rows)
+        self.counter.setText("Проверено {} из {}".format(filled, total))
 
     def _clear_table(self) -> None:
         self.table.clearSpans()
         self.table.setRowCount(0)
         self.table.clearContents()
         self._row_index_by_oid = {}
-        self._code_inputs = {}
+        self._sku_inputs = {}
 
     def _show_loading_row(self) -> None:
         self._clear_table()
@@ -448,27 +404,22 @@ class KizDialog(QDialog):
 
     def load_rows(self) -> None:
         self._set_filters_ready(False)
-        self.save_btn.setEnabled(False)
         self._show_loading_row()
         QApplication.processEvents()
         session = supply_session.get_session(self.source_id, self.supply_id)
         try:
-            if session and session.core_ready and session.kiz_rows is not None:
-                self.rows = [dict(r) for r in session.kiz_rows]
+            if session and session.core_ready and session.pick_rows is not None:
+                self.rows = [dict(r) for r in session.pick_rows]
             else:
-                self.rows = self.kiz.marking_rows(
-                    self.source_id, self.supply_id, self.api_key
-                )
+                self.rows = self.pick.rows(self.source_id, self.supply_id, self.api_key)
         except Exception as exc:
             self.rows = []
             self._set_info(str(exc))
             self._render_table()
             self._set_filters_ready(True)
-            self.save_btn.setEnabled(True)
             return
         self.row_errors = {}
         self._sticker_map = {}
-        self._code_inputs = {}
         stickers = {}  # type: Dict[int, Dict[str, Any]]
         if session and session.sticker_numbers:
             stickers = session.sticker_numbers
@@ -493,11 +444,10 @@ class KizDialog(QDialog):
                 self._sticker_map[part_b] = r
         self._render_table()
         if not self.rows:
-            self._set_info("В поставке нет заказов, требующих маркировки КИЗ")
+            self._set_info("В поставке нет заказов для проверки ШК")
         else:
             self._set_info("")
         self._set_filters_ready(True)
-        self.save_btn.setEnabled(True)
         self.sticker_input.setFocus()
 
     @staticmethod
@@ -591,82 +541,50 @@ class KizDialog(QDialog):
         outer.addLayout(text_col, 1)
         return wrap
 
-    def _code_status_label(self, row: Dict[str, Any], code: str, err: str) -> Optional[QLabel]:
-        if not str(code or "").strip():
-            return None
-        status = str(row.get("kiz_status") or "empty")
+    def _sku_status_label(self, row: Dict[str, Any], err: str) -> Optional[QLabel]:
         if err:
-            status = "error"
-        if status == "empty":
-            return None
-        lab = QLabel()
-        lab.setObjectName("kizCodeStatus")
-        if status == "ok":
-            lab.setText("Проверка пройдена")
-            lab.setProperty("state", "ok")
-        elif status == "error":
-            lab.setText(err or "Ошибка проверки")
+            lab = QLabel(err)
+            lab.setObjectName("kizCodeStatus")
             lab.setProperty("state", "error")
+        elif self._row_is_verified(row):
+            lab = QLabel("Проверка пройдена")
+            lab.setObjectName("kizCodeStatus")
+            lab.setProperty("state", "ok")
         else:
-            lab.setText("На проверке")
-            lab.setProperty("state", "pending")
+            return None
         lab.style().unpolish(lab)
         lab.style().polish(lab)
         return lab
 
-    def _build_codes_widget(self, row: Dict[str, Any]) -> QWidget:
+    def _build_sku_widget(self, row: Dict[str, Any]) -> QWidget:
         oid = int(row["order_id"])
-        codes = self._row_codes(row)
         err = self.row_errors.get(oid, "")
+        barcode = str(row.get("pick_barcode") or "")
         wrap = QWidget()
         lay = QVBoxLayout(wrap)
         lay.setContentsMargins(8, 8, 8, 8)
         lay.setSpacing(8)
-        inputs = []  # type: List[QLineEdit]
-        can_remove = len(codes) > 1
-        for idx, code in enumerate(codes):
-            block = QVBoxLayout()
-            block.setSpacing(4)
-            line = QHBoxLayout()
-            line.setSpacing(8)
-            idx_lab = QLabel(str(idx + 1))
-            idx_lab.setObjectName("kizCodeIdx")
-            idx_lab.setFixedWidth(20)
-            idx_lab.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-            inp = QLineEdit(str(code or ""))
-            inp.setObjectName("kizCodeInput")
-            if err and str(code or "").strip():
-                inp.setProperty("state", "error")
-            inp.editingFinished.connect(partial(self._on_code_edited, oid))
-            inp.returnPressed.connect(partial(self._on_code_edited, oid))
-            clear_btn = QToolButton()
-            clear_btn.setObjectName("kizCodeRemove")
-            clear_btn.setText("×")
-            clear_btn.setToolTip(
-                "Удалить строку КИЗ" if can_remove else "Очистить маркировку"
-            )
-            clear_btn.clicked.connect(partial(self._clear_code, oid, idx))
-            line.addWidget(idx_lab)
-            line.addWidget(inp, 1)
-            line.addWidget(clear_btn)
-            block.addLayout(line)
-            chip = self._code_status_label(row, code, err)
-            if chip:
-                block.addWidget(chip)
-            lay.addLayout(block)
-            inputs.append(inp)
-        add_btn = QPushButton("+ Добавить КИЗ")
-        add_btn.setObjectName("kizAddBtn")
-        add_btn.setCursor(Qt.PointingHandCursor)
-        add_btn.clicked.connect(partial(self._add_code, oid))
-        lay.addWidget(add_btn)
-        if err and not any(str(c).strip() for c in codes):
-            err_lab = QLabel(err)
-            err_lab.setObjectName("kizRowError")
-            err_lab.setWordWrap(True)
-            lay.addWidget(err_lab)
+        line = QHBoxLayout()
+        line.setSpacing(8)
+        inp = QLineEdit(barcode)
+        inp.setObjectName("kizCodeInput")
+        if err:
+            inp.setProperty("state", "error")
+        inp.returnPressed.connect(partial(self._on_sku_edited, oid))
+        inp.editingFinished.connect(partial(self._on_sku_edited, oid))
+        clear_btn = QToolButton()
+        clear_btn.setObjectName("kizCodeRemove")
+        clear_btn.setText("×")
+        clear_btn.setToolTip("Сбросить проверку")
+        clear_btn.clicked.connect(partial(self._clear_sku, oid))
+        line.addWidget(inp, 1)
+        line.addWidget(clear_btn)
+        lay.addLayout(line)
+        chip = self._sku_status_label(row, err)
+        if chip:
+            lay.addWidget(chip)
         lay.addStretch(1)
-        self._code_inputs[oid] = inputs
+        self._sku_inputs[oid] = inp
         return wrap
 
     def _build_actions_widget(self, row: Dict[str, Any]) -> QWidget:
@@ -680,79 +598,93 @@ class KizDialog(QDialog):
         btn.setToolTip("Действия")
         btn.setPopupMode(QToolButton.InstantPopup)
         menu = QMenu(btn)
-        menu.addAction(
-            "Напечатать стикер", partial(self._print_sticker, oid)
-        )
+        menu.addAction("Напечатать стикер", partial(self._print_sticker, oid))
         btn.setMenu(menu)
         lay.addWidget(btn)
         return wrap
 
-    def _on_code_edited(self, order_id: int) -> None:
+    def _restore_sku_input(self, order_id: int) -> None:
+        inp = self._sku_inputs.get(int(order_id))
+        row = self._row_by_oid.get(int(order_id))
+        if inp is None or row is None:
+            return
+        inp.setText(str(row.get("pick_barcode") or ""))
+
+    def _on_sku_edited(self, order_id: int) -> None:
         inp = self.sender()
         if not isinstance(inp, QLineEdit):
+            inp = self._sku_inputs.get(int(order_id))
+        if inp is None:
             return
-        if getattr(inp, "_kiz_commit_lock", False):
+        if getattr(inp, "_pick_commit_lock", False):
             return
-        inp._kiz_commit_lock = True
+        inp._pick_commit_lock = True
         try:
             if block_ru_layout_scan(self, inp):
-                self._restore_code_input(order_id, inp)
+                self._restore_sku_input(order_id)
                 return
-            self._sync_codes_from_inputs()
-            row = next((r for r in self.rows if int(r["order_id"]) == order_id), None)
+            code = inp.text().strip()
+            if not code:
+                return
+            row = self._row_by_oid.get(int(order_id))
             if not row:
                 return
-            codes = [c for c in self._row_codes(row) if str(c).strip()]
-            try:
-                self.kiz.save_local(self.source_id, order_id, codes, wb_synced=False)
-                row["kiz_wb_synced"] = False
-                if codes:
-                    row["kiz_status"] = "pending"
-                self._sync_session_kiz_rows()
-            except Exception:
-                pass
-            self._update_counter()
+            if self._row_is_verified(row) and code == str(row.get("pick_barcode") or ""):
+                return
+            self._apply_sku(row, code)
         finally:
-            inp._kiz_commit_lock = False
+            inp._pick_commit_lock = False
 
-    def _add_code(self, order_id: int) -> None:
-        self._sync_codes_from_inputs()
-        row = next((r for r in self.rows if int(r["order_id"]) == order_id), None)
+    def _clear_sku(self, order_id: int) -> None:
+        row = self._row_by_oid.get(int(order_id))
         if not row:
             return
-        codes = self._row_codes(row)
-        codes.append("")
-        row["kiz_codes"] = codes
-        self._refresh_row(order_id)
-
-    def _clear_code(self, order_id: int, idx: int) -> None:
-        self._sync_codes_from_inputs()
-        row = next((r for r in self.rows if int(r["order_id"]) == order_id), None)
-        if not row:
-            return
-        codes = self._row_codes(row)
-        if len(codes) <= 1:
-            codes = [""]
-        else:
-            if 0 <= idx < len(codes):
-                codes.pop(idx)
-            if not codes:
-                codes = [""]
-        row["kiz_codes"] = codes
+        row["pick_verified"] = False
+        row["pick_barcode"] = ""
         self.row_errors.pop(order_id, None)
-        cleaned = [c for c in codes if str(c).strip()]
         try:
-            self.kiz.save_local(self.source_id, order_id, cleaned, wb_synced=False)
-            self._sync_session_kiz_rows()
+            self.pick.save(self.source_id, order_id, False, "")
         except Exception:
             pass
-        self._refresh_row(order_id)
+        self._sync_session_pick_rows()
         self._update_counter()
+        self._refresh_row(order_id)
+        self._apply_filters()
+
+    def _apply_sku(self, row: Dict[str, Any], code: str) -> None:
+        oid = int(row["order_id"])
+        ok, err = self.pick.validate_barcode(code, row.get("skus") or [])
+        if not ok:
+            self.row_errors[oid] = err
+            self._set_info(err)
+            self._refresh_row(oid)
+            self._apply_filters()
+            return
+        self.row_errors.pop(oid, None)
+        try:
+            self.pick.save(self.source_id, oid, True, code)
+        except Exception as exc:
+            self.row_errors[oid] = str(exc)
+            self._set_info(str(exc))
+            self._refresh_row(oid)
+            self._apply_filters()
+            return
+        row["pick_verified"] = True
+        row["pick_barcode"] = code
+        for r in self.rows:
+            if int(r["order_id"]) == oid:
+                r["pick_verified"] = True
+                r["pick_barcode"] = code
+                break
+        self._sync_session_pick_rows()
+        self._set_info("", ok=True)
+        self._update_counter()
+        self._refresh_row(oid)
         self._apply_filters()
 
     def _print_sticker(self, order_id: int) -> None:
         try:
-            items = StickersService(self.kiz.db).order_stickers_png(
+            items = StickersService(self.pick.db).order_stickers_png(
                 self.api_key, [int(order_id)]
             )
             pngs = [it["png"] for it in items if it.get("png")]
@@ -775,7 +707,7 @@ class KizDialog(QDialog):
             table_idx, 1, self._wrap_cell(self._build_product_widget(row), active=active)
         )
         self.table.setCellWidget(
-            table_idx, 2, self._wrap_cell(self._build_codes_widget(row), active=active)
+            table_idx, 2, self._wrap_cell(self._build_sku_widget(row), active=active)
         )
         self.table.setCellWidget(
             table_idx, 3, self._wrap_cell(self._build_actions_widget(row), active=active)
@@ -795,12 +727,7 @@ class KizDialog(QDialog):
         self._set_row_widgets(idx, row)
         self._resize_table_row(idx)
 
-    def _refresh_changed_rows(self, order_ids: List[int]) -> None:
-        for oid in order_ids:
-            self._refresh_row(oid)
-
     def _render_table(self) -> None:
-        self._sync_codes_from_inputs()
         self._update_counter()
         self._clear_table()
         self._row_by_oid = {int(r["order_id"]): r for r in self.rows}
@@ -849,7 +776,7 @@ class KizDialog(QDialog):
         found = self._find_by_sticker(raw)
         if not found:
             self._set_info(
-                "Заказ со стикером «{}» не найден среди товаров с маркировкой.".format(
+                "Заказ со стикером «{}» не найден среди товаров для проверки ШК.".format(
                     raw
                 )
             )
@@ -863,7 +790,7 @@ class KizDialog(QDialog):
         if prev_pending and prev_pending != pending_oid:
             self._refresh_row(prev_pending)
         self._refresh_row(pending_oid)
-        dlg = KizMarkScanDialog(
+        dlg = PickSkuScanDialog(
             pending_oid,
             str(found.get("sticker_number") or "—"),
             self,
@@ -875,129 +802,37 @@ class KizDialog(QDialog):
                 self._refresh_row(prev_pending)
             self.sticker_input.setFocus()
             return
-        self._apply_mark_scan(found, dlg.mark_code)
+        self._apply_sku_scan(found, dlg.barcode)
         self._pending_order_id = None
         self.sticker_input.setFocus()
 
-    def _apply_mark_scan(self, row: Dict[str, Any], raw_mark: str) -> None:
-        if block_ru_layout_scan(self, text=raw_mark):
+    def _apply_sku_scan(self, row: Dict[str, Any], raw_barcode: str) -> None:
+        if block_ru_layout_scan(self, text=raw_barcode):
             return
-        oid = int(row["order_id"])
-        code = raw_mark.strip(" \t\r\n").replace("\u2194", "\u001d")
-        ok, err = self.kiz.validate_mark(
-            code,
-            row.get("skus") or [],
-            bool(row.get("skip_kiz_gtin_check")),
-        )
-        if not ok:
-            self.row_errors[oid] = err
-            self._set_info(err)
-            self._refresh_row(oid)
-            self._apply_filters()
+        code = str(raw_barcode or "").strip()
+        if not code:
             return
-        self.row_errors.pop(oid, None)
-        codes = [c for c in self._row_codes(row) if str(c).strip()]
-        if code in codes:
-            self._set_info("Этот КИЗ уже добавлен")
-            self._refresh_row(oid)
-            return
-        placed = False
-        mutable = self._row_codes(row)
-        for i, c in enumerate(mutable):
-            if not str(c or "").strip():
-                mutable[i] = code
-                placed = True
-                break
-        if not placed:
-            mutable.append(code)
-        row["kiz_codes"] = mutable
-        row["kiz_status"] = "pending"
-        row["kiz_wb_synced"] = False
-        self.kiz.save_local(self.source_id, oid, [c for c in mutable if str(c).strip()], wb_synced=False)
-        self._sync_session_kiz_rows()
-        self._set_info("", ok=True)
-        self._update_counter()
-        self._refresh_row(oid)
-        self._apply_filters()
+        self._apply_sku(row, code)
 
-    def save_all(self) -> None:
-        if self._saving:
-            return
-        self._sync_codes_from_inputs()
-        self._saving = True
-        self.save_btn.setEnabled(False)
-        errors = []
-        saved = 0
-        touched = []  # type: List[int]
-        try:
-            for r in self.rows:
-                codes = [c for c in self._row_codes(r) if str(c).strip(" \t\r\n")]
-                if not codes:
-                    continue
-                oid = int(r["order_id"])
-                for code in codes:
-                    ok, err = self.kiz.validate_mark(
-                        code,
-                        r.get("skus") or [],
-                        bool(r.get("skip_kiz_gtin_check")),
-                    )
-                    if not ok:
-                        self.row_errors[oid] = err
-                        errors.append("{}: {}".format(oid, err))
-                        touched.append(oid)
-                        break
-                else:
-                    try:
-                        self.kiz.save_to_wb(
-                            self.source_id, self.api_key, oid, codes
-                        )
-                        self.row_errors.pop(oid, None)
-                        r["kiz_wb_synced"] = True
-                        r["kiz_status"] = "ok"
-                        saved += 1
-                        touched.append(oid)
-                    except Exception as exc:
-                        self.row_errors[oid] = str(exc)
-                        errors.append("{}: {}".format(oid, exc))
-                        touched.append(oid)
-            self._sync_session_kiz_rows()
-            self._refresh_changed_rows(sorted(set(touched)))
-            self._apply_filters()
-            if errors:
-                self._set_info("\n".join(errors[:3]))
-                if len(errors) > 3:
-                    QMessageBox.warning(
-                        self, "КИЗ", "\n".join(errors[:12])
-                    )
-            elif saved:
-                self._set_info("Сохранено в WB: {} заказ(ов)".format(saved), ok=True)
-            else:
-                self._set_info("Нет изменений для сохранения")
-        finally:
-            self._saving = False
-            self.save_btn.setEnabled(True)
-
-    def _sync_session_kiz_rows(self) -> None:
+    def _sync_session_pick_rows(self) -> None:
         session = supply_session.get_session(self.source_id, self.supply_id)
         if not session:
             return
         by_oid = {int(r["order_id"]): r for r in self.rows}
         updated = []
-        for r in session.kiz_rows or []:
+        for r in session.pick_rows or []:
             oid = int(r.get("order_id") or 0)
             src = by_oid.get(oid)
             if src:
                 updated.append(dict(src))
             else:
                 updated.append(r)
-        session.kiz_rows = updated
+        session.pick_rows = updated
         for r in session.rows or []:
             oid = int(r.get("order_id") or 0)
             src = by_oid.get(oid)
             if not src:
                 continue
-            r["kiz_codes"] = list(src.get("kiz_codes") or [])
-            r["kiz_wb_synced"] = bool(src.get("kiz_wb_synced"))
-            r["kiz_status"] = src.get("kiz_status") or r.get("kiz_status")
-            r["kiz_required"] = True
+            r["pick_verified"] = bool(src.get("pick_verified"))
+            r["pick_barcode"] = str(src.get("pick_barcode") or "")
         supply_session.put_session(session)

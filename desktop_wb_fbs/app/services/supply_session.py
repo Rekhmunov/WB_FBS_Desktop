@@ -203,17 +203,37 @@ class SupplySession:
             else:
                 r["kiz_required"] = False
                 r["kiz_status"] = "empty"
+                art = str(r.get("article") or "").strip().lower()
+                nm = str(r.get("nm_id") or "").strip()
+                local = by_art.get(art) or by_nm.get(nm) or {}
                 pick_out.append(
                     {
                         "order_id": oid,
                         "article": r.get("article") or "",
-                        "skus": list(r.get("skus") or parse_json_list(r.get("skus_json"))),
+                        "nm_id": r.get("nm_id"),
+                        "product_name": str(
+                            local.get("name") or r.get("product_name") or ""
+                        ).strip(),
+                        "product_photo": str(
+                            local.get("photo_path") or r.get("product_photo") or ""
+                        ).strip(),
+                        "brand": "",
+                        "created_date": r.get("created_date") or "—",
+                        "skus": list(
+                            r.get("skus") or parse_json_list(r.get("skus_json"))
+                        ),
                         "pick_verified": bool(int(r.get("pick_verified") or 0)),
                         "pick_barcode": str(r.get("pick_barcode") or ""),
                         "pick_verified_at": r.get("pick_verified_at"),
                         "sticker_part_a": r.get("sticker_part_a") or "",
                         "sticker_part_b": r.get("sticker_part_b") or "",
                         "sticker_number": r.get("sticker_number") or "",
+                        "supplier_status": r.get("supplier_status"),
+                        "wb_status": r.get("wb_status"),
+                        "cancel_reason_label": cancel_reason_label(
+                            supplier_status=r.get("supplier_status"),
+                            wb_status=r.get("wb_status"),
+                        ),
                     }
                 )
         self.kiz_rows = kiz_out

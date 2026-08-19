@@ -51,6 +51,7 @@ def _sticker_number(part_a: str, part_b: str) -> str:
 
 
 _RENDER_BATCH = 50
+_FILTER_EMPTY_MSG = "Нет строк по выбранным фильтрам"
 
 
 class KizMarkScanDialog(QDialog):

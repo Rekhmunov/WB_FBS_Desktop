@@ -34,6 +34,8 @@ from app.ui.dialog_utils import (
 )
 from app.wb import cancel_reason_label, is_cancelled_status
 
+_FILTER_EMPTY_MSG = "Нет строк по выбранным фильтрам"
+
 
 class _ClickableLabel(QLabel):
     """QLabel that emits doubleClicked — used for the quick clear gesture."""

@@ -316,52 +316,12 @@ def preload_supply_core(
             session.meta_by_id = {}
     session.build_kiz_and_pick_rows(db)
     session.core_ready = True
-    put_session(session)
-    return session
-
-
-def preload_sticker_pngs(
-    session: SupplySession,
-    progress: Optional[ProgressCb] = None,
-) -> None:
-    """Heavy PNG stickers for print — after core UI is ready."""
-    import gc
-
-    from app.services.print_docs import fetch_stickers_map
-
-    ids = [int(r["order_id"]) for r in session.rows if r.get("order_id") is not None]
-    order_total = len(ids)
-
-    def _png_progress(done: int, total: int) -> None:
-        if progress:
-            progress(4, _progress_detail(done, order_total or total))
-
-    if progress:
-        progress(4, _progress_detail(0, order_total))
+    # PNG stickers for print are fetched on demand (see print_supply_stickers).
+    session.png_ready = True
     session.sticker_png = {}
     session.sticker_png_count = 0
-    if not ids or not session.api_key:
-        session.png_ready = True
-        put_session(session)
-        return
-    try:
-        cached = fetch_stickers_map(
-            session.api_key,
-            ids,
-            sticker_type="png",
-            keep_files=True,
-            progress=_png_progress,
-            cache_only=True,
-        )
-        session.sticker_png_count = len(cached or {})
-    except MemoryError:
-        session.sticker_png_count = 0
-    except Exception:
-        session.sticker_png_count = 0
-    finally:
-        gc.collect()
-    session.png_ready = True
     put_session(session)
+    return session
 
 
 def snapshot_for_ui(session: SupplySession) -> Dict[str, Any]:

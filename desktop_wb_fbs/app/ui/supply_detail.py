@@ -5,7 +5,7 @@ import json
 from functools import partial
 from typing import Any, Dict, List, Optional, Tuple
 
-from PyQt5.QtCore import Qt, QThread, QTimer, pyqtSignal
+from PyQt5.QtCore import Qt, QThread, pyqtSignal
 from PyQt5.QtGui import QCursor, QDesktopServices
 from PyQt5.QtWidgets import (
     QAbstractItemView,
@@ -58,16 +58,14 @@ _LOAD_STEPS = (
     "Заказы",
     "Номера стикеров",
     "КИЗ и проверка ШК",
-    "Стикеры для печати",
 )
 
 
 class _SupplyLoadWorker(QThread):
-    """Staged preload: orders → sticker numbers → KIZ/pick meta → PNG stickers."""
+    """Staged preload: orders → sticker numbers → KIZ/pick meta."""
 
     progress = pyqtSignal(int, int, str)  # step (1-based), total, detail
     core_ready = pyqtSignal(object)
-    png_ready = pyqtSignal(object)
     failed = pyqtSignal(str)
 
     def __init__(
@@ -111,14 +109,6 @@ class _SupplyLoadWorker(QThread):
                     "payload": supply_session.snapshot_for_ui(session),
                 }
             )
-            supply_session.preload_sticker_pngs(session, progress=_progress)
-            self.png_ready.emit(
-                {
-                    "generation": self.generation,
-                    "png_ready": True,
-                    "count": int(getattr(session, "sticker_png_count", 0) or 0),
-                }
-            )
         except Exception as exc:
             self.failed.emit(str(exc))
 
@@ -156,7 +146,6 @@ class SupplyDetailDialog(QDialog):
         self._load_worker = None  # type: Optional[_SupplyLoadWorker]
         self._alive_workers = []  # type: List[_SupplyLoadWorker]
         self._load_gen = 0
-        self._png_poll = None  # type: Optional[QTimer]
         self._loading = False
         self._load_step = 0
         self._load_detail = ""
@@ -376,21 +365,18 @@ class SupplyDetailDialog(QDialog):
         return bool(self._actions_ready)
 
     def _preloaded_sticker_png(self) -> Optional[Dict[int, Dict[str, Any]]]:
-        """PNG stickers preloaded in print cache (avoids repeat WB API calls)."""
+        """PNG stickers from print cache when already fetched (e.g. after first print)."""
         from app.services.print_docs import get_cached_stickers_map
 
-        session = supply_session.get_session(self.source_id, self.supply_id)
-        if not session or not session.png_ready:
-            return None
         ids = [
             int(r["order_id"])
-            for r in (session.rows or [])
+            for r in self._all_rows
             if r.get("order_id") is not None
         ]
         if not ids:
             return None
         cached = get_cached_stickers_map(
-            session.api_key or self.api_key,
+            self.api_key,
             ids,
             sticker_type="png",
             keep_files=True,
@@ -399,18 +385,7 @@ class SupplyDetailDialog(QDialog):
 
     def _sticker_png_for_print(self) -> Tuple[Optional[Dict[int, Dict[str, Any]]], bool]:
         """Return ``(preloaded_map, abort)`` for sticker print actions."""
-        session = supply_session.get_session(self.source_id, self.supply_id)
-        if session and not session.png_ready:
-            self._set_load_status("Стикеры ещё готовятся — подождите…")
-            QMessageBox.information(
-                self,
-                "Стикеры",
-                "Стикеры для печати ещё загружаются.\n"
-                "Дождитесь окончания статуса в шапке и нажмите снова.",
-            )
-            return None, True
-        preloaded = self._preloaded_sticker_png()
-        return preloaded, False
+        return self._preloaded_sticker_png(), False
 
     def _sync_kiz_session(self, marking_rows: List[Dict[str, Any]]) -> None:
         """Keep supply session / cache aligned after KIZ status refresh."""
@@ -469,17 +444,12 @@ class SupplyDetailDialog(QDialog):
     def _stop_load_worker(self) -> None:
         worker = self._load_worker
         self._load_gen += 1  # ignore further signals from old workers
-        if self._png_poll is not None:
-            self._png_poll.stop()
-            self._png_poll.deleteLater()
-            self._png_poll = None
         if worker is None:
             self._loading = False
             return
         for signal in (
             worker.progress,
             worker.core_ready,
-            worker.png_ready,
             worker.failed,
         ):
             try:
@@ -705,15 +675,8 @@ class SupplyDetailDialog(QDialog):
             session = supply_session.get_session(self.source_id, self.supply_id)
             if session and session.core_ready:
                 self._apply_loaded_payload(supply_session.snapshot_for_ui(session))
-                if session.png_ready:
-                    self._set_load_status("")
-                    self._set_actions_ready(True)
-                else:
-                    self._load_step = 4
-                    self._load_detail = "0 из {}".format(len(session.rows))
-                    self._render_load_status()
-                    self._set_actions_ready(False)
-                    self._start_png_poll()
+                self._set_load_status("")
+                self._set_actions_ready(True)
                 return
 
         self._loading = True
@@ -732,33 +695,11 @@ class SupplyDetailDialog(QDialog):
         )
         worker.progress.connect(self._on_load_progress)
         worker.core_ready.connect(self._on_core_ready)
-        worker.png_ready.connect(self._on_png_ready)
         worker.failed.connect(self._on_load_failed)
         self._load_worker = worker
         if worker not in self._alive_workers:
             self._alive_workers.append(worker)
         worker.start()
-
-    def _start_png_poll(self) -> None:
-        if self._png_poll is not None:
-            self._png_poll.stop()
-            self._png_poll.deleteLater()
-        timer = QTimer(self)
-        timer.setInterval(700)
-
-        def _tick() -> None:
-            session = supply_session.get_session(self.source_id, self.supply_id)
-            if session and session.png_ready:
-                self._set_load_status("")
-                self._set_actions_ready(True)
-                timer.stop()
-                timer.deleteLater()
-                if self._png_poll is timer:
-                    self._png_poll = None
-
-        timer.timeout.connect(_tick)
-        self._png_poll = timer
-        timer.start()
 
     def _on_load_progress(self, step: int, total: int, detail: str) -> None:
         self._load_step = int(step or 0)
@@ -775,26 +716,12 @@ class SupplyDetailDialog(QDialog):
             return
         supply_detail_cache.put(self.source_id, self.supply_id, data)
         self._apply_loaded_payload(data)
-        self._load_step = 4
-        order_count = len((data.get("rows") or []))
-        self._load_detail = "0 из {}".format(order_count) if order_count else "ожидайте"
-        self._render_load_status()
-        self._set_actions_ready(False)
-
-    def _on_png_ready(self, payload: object) -> None:
-        if isinstance(payload, dict):
-            if int(payload.get("generation") or 0) != self._load_gen:
-                return
         self._loading = False
         self._load_worker = None
         self._load_step = 0
         self._load_detail = ""
         self._set_load_status("")
         self._set_actions_ready(True)
-        if self._png_poll is not None:
-            self._png_poll.stop()
-            self._png_poll.deleteLater()
-            self._png_poll = None
 
     def _on_load_failed(self, message: str) -> None:
         self._loading = False

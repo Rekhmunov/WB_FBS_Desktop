@@ -5,7 +5,7 @@ import json
 from functools import partial
 from typing import Any, Dict, List, Optional
 
-from PyQt5.QtCore import Qt, QThread, pyqtSignal
+from PyQt5.QtCore import Qt, QThread, QTimer, pyqtSignal
 from PyQt5.QtGui import QCursor, QDesktopServices
 from PyQt5.QtWidgets import (
     QAbstractItemView,
@@ -78,6 +78,7 @@ class _SupplyLoadWorker(QThread):
         supply_id: str,
         api_key: str,
         supply_pickup_allowed: bool,
+        generation: int = 0,
     ) -> None:
         super(_SupplyLoadWorker, self).__init__()
         self.db = db
@@ -86,6 +87,7 @@ class _SupplyLoadWorker(QThread):
         self.supply_id = supply_id
         self.api_key = api_key
         self.supply_pickup_allowed = supply_pickup_allowed
+        self.generation = int(generation)
 
     def run(self) -> None:
         try:
@@ -103,9 +105,20 @@ class _SupplyLoadWorker(QThread):
                 supply_pickup_allowed=self.supply_pickup_allowed,
                 progress=_progress,
             )
-            self.core_ready.emit(supply_session.snapshot_for_ui(session))
+            self.core_ready.emit(
+                {
+                    "generation": self.generation,
+                    "payload": supply_session.snapshot_for_ui(session),
+                }
+            )
             supply_session.preload_sticker_pngs(session, progress=_progress)
-            self.png_ready.emit({"png_ready": True, "count": len(session.sticker_png)})
+            self.png_ready.emit(
+                {
+                    "generation": self.generation,
+                    "png_ready": True,
+                    "count": len(session.sticker_png),
+                }
+            )
         except Exception as exc:
             self.failed.emit(str(exc))
 
@@ -141,6 +154,9 @@ class SupplyDetailDialog(QDialog):
         self._supply_pickup_allowed = False
         self._last_status_note = ""
         self._load_worker = None  # type: Optional[_SupplyLoadWorker]
+        self._alive_workers = []  # type: List[_SupplyLoadWorker]
+        self._load_gen = 0
+        self._png_poll = None  # type: Optional[QTimer]
         self._loading = False
         self._load_step = 0
         self._load_detail = ""
@@ -375,7 +391,13 @@ class SupplyDetailDialog(QDialog):
 
     def _stop_load_worker(self) -> None:
         worker = self._load_worker
+        self._load_gen += 1  # ignore further signals from old workers
+        if self._png_poll is not None:
+            self._png_poll.stop()
+            self._png_poll.deleteLater()
+            self._png_poll = None
         if worker is None:
+            self._loading = False
             return
         for signal in (
             worker.progress,
@@ -387,7 +409,18 @@ class SupplyDetailDialog(QDialog):
                 signal.disconnect()
             except Exception:
                 pass
-        # Do not block UI on PNG stage — session keeps filling in background.
+        if worker not in self._alive_workers:
+            self._alive_workers.append(worker)
+
+        def _cleanup(w=worker) -> None:
+            if w in self._alive_workers:
+                self._alive_workers.remove(w)
+            w.deleteLater()
+
+        if worker.isRunning():
+            worker.finished.connect(_cleanup)
+        else:
+            _cleanup()
         self._load_worker = None
         self._loading = False
 
@@ -601,11 +634,14 @@ class SupplyDetailDialog(QDialog):
                     self._load_step = 4
                     self._load_detail = "ещё идёт"
                     self._render_load_status()
+                    self._start_png_poll()
                 return
 
         self._loading = True
         self._set_actions_ready(False)
         self._stop_load_worker()
+        self._load_gen += 1
+        gen = self._load_gen
         worker = _SupplyLoadWorker(
             self.db,
             self.orders,
@@ -613,13 +649,36 @@ class SupplyDetailDialog(QDialog):
             self.supply_id,
             self.api_key,
             self._supply_pickup_allowed,
+            generation=gen,
         )
         worker.progress.connect(self._on_load_progress)
         worker.core_ready.connect(self._on_core_ready)
         worker.png_ready.connect(self._on_png_ready)
         worker.failed.connect(self._on_load_failed)
         self._load_worker = worker
+        if worker not in self._alive_workers:
+            self._alive_workers.append(worker)
         worker.start()
+
+    def _start_png_poll(self) -> None:
+        if self._png_poll is not None:
+            self._png_poll.stop()
+            self._png_poll.deleteLater()
+        timer = QTimer(self)
+        timer.setInterval(700)
+
+        def _tick() -> None:
+            session = supply_session.get_session(self.source_id, self.supply_id)
+            if session and session.png_ready:
+                self._set_load_status("")
+                timer.stop()
+                timer.deleteLater()
+                if self._png_poll is timer:
+                    self._png_poll = None
+
+        timer.timeout.connect(_tick)
+        self._png_poll = timer
+        timer.start()
 
     def _on_load_progress(self, step: int, total: int, detail: str) -> None:
         self._load_step = int(step or 0)
@@ -629,18 +688,30 @@ class SupplyDetailDialog(QDialog):
     def _on_core_ready(self, payload: object) -> None:
         if not isinstance(payload, dict):
             return
-        supply_detail_cache.put(self.source_id, self.supply_id, payload)
-        self._apply_loaded_payload(payload)
+        if int(payload.get("generation") or 0) != self._load_gen:
+            return
+        data = payload.get("payload")
+        if not isinstance(data, dict):
+            return
+        supply_detail_cache.put(self.source_id, self.supply_id, data)
+        self._apply_loaded_payload(data)
         self._load_step = 4
         self._load_detail = "ожидайте"
         self._render_load_status()
 
-    def _on_png_ready(self, _payload: object) -> None:
+    def _on_png_ready(self, payload: object) -> None:
+        if isinstance(payload, dict):
+            if int(payload.get("generation") or 0) != self._load_gen:
+                return
         self._loading = False
         self._load_worker = None
         self._load_step = 0
         self._load_detail = ""
         self._set_load_status("")
+        if self._png_poll is not None:
+            self._png_poll.stop()
+            self._png_poll.deleteLater()
+            self._png_poll = None
 
     def _on_load_failed(self, message: str) -> None:
         self._loading = False

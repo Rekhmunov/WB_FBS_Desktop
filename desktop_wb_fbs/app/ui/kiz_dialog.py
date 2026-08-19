@@ -38,7 +38,6 @@ from app.ui.dialog_utils import (
 )
 from app.ui.dialogs_extra import show_png_list
 from app.ui.format_helpers import (
-    fix_ru_keyboard_layout,
     has_cyrillic,
     make_badge,
     make_photo_label,
@@ -774,12 +773,16 @@ class KizDialog(QDialog):
         self.sticker_input.setFocus()
 
     def _apply_mark_scan(self, row: Dict[str, Any], raw_mark: str) -> None:
-        if self._block_ru_layout_from_text(raw_mark):
+        if has_cyrillic(raw_mark):
+            QMessageBox.warning(
+                self,
+                "Русская раскладка!",
+                "Сейчас у вас установлена русская раскладка клавиатуры. "
+                "Переключите раскладку на английскую (EN) и отсканируйте код снова.",
+            )
             return
         oid = int(row["order_id"])
         code = raw_mark.strip(" \t\r\n").replace("\u2194", "\u001d")
-        if has_cyrillic(code):
-            code = fix_ru_keyboard_layout(code)
         ok, err = self.kiz.validate_mark(
             code,
             row.get("skus") or [],
@@ -809,12 +812,9 @@ class KizDialog(QDialog):
         row["kiz_status"] = "pending"
         row["kiz_wb_synced"] = False
         self.kiz.save_local(self.source_id, oid, [c for c in mutable if str(c).strip()], wb_synced=False)
+        self._sync_session_kiz_rows()
         self._set_info("", ok=True)
         self._render_table()
-
-    @staticmethod
-    def _block_ru_layout_from_text(text: str) -> bool:
-        return has_cyrillic(text)
 
     def save_all(self) -> None:
         if self._saving:
@@ -846,11 +846,14 @@ class KizDialog(QDialog):
                             self.source_id, self.api_key, oid, codes
                         )
                         self.row_errors.pop(oid, None)
+                        r["kiz_wb_synced"] = True
+                        r["kiz_status"] = "ok"
                         saved += 1
                     except Exception as exc:
                         self.row_errors[oid] = str(exc)
                         errors.append("{}: {}".format(oid, exc))
-            self.load_rows()
+            self._sync_session_kiz_rows()
+            self._render_table()
             if errors:
                 self._set_info("\n".join(errors[:3]))
                 if len(errors) > 3:
@@ -864,3 +867,28 @@ class KizDialog(QDialog):
         finally:
             self._saving = False
             self.save_btn.setEnabled(True)
+
+    def _sync_session_kiz_rows(self) -> None:
+        session = supply_session.get_session(self.source_id, self.supply_id)
+        if not session:
+            return
+        by_oid = {int(r["order_id"]): r for r in self.rows}
+        updated = []
+        for r in session.kiz_rows or []:
+            oid = int(r.get("order_id") or 0)
+            src = by_oid.get(oid)
+            if src:
+                updated.append(dict(src))
+            else:
+                updated.append(r)
+        session.kiz_rows = updated
+        for r in session.rows or []:
+            oid = int(r.get("order_id") or 0)
+            src = by_oid.get(oid)
+            if not src:
+                continue
+            r["kiz_codes"] = list(src.get("kiz_codes") or [])
+            r["kiz_wb_synced"] = bool(src.get("kiz_wb_synced"))
+            r["kiz_status"] = src.get("kiz_status") or r.get("kiz_status")
+            r["kiz_required"] = True
+        supply_session.put_session(session)

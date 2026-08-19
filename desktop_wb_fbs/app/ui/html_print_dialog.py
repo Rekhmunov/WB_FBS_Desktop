@@ -159,7 +159,7 @@ def show_html_print_preview(
     title: str = "",
     parent: Optional[QWidget] = None,
 ) -> bool:
-    """Open modal preview. Returns True when WebEngine preview was shown."""
+    """Open modal preview. Returns True only when document loaded successfully."""
     if not _HAS_WEBENGINE:
         return False
     app = QApplication.instance()
@@ -171,4 +171,4 @@ def show_html_print_preview(
     except Exception:
         raise
     dlg.exec_()
-    return True
+    return bool(getattr(dlg, "_loaded", False))

@@ -310,6 +310,14 @@ class PickDialog(QDialog):
             self.pick.save(self.source_id, order_id, False, "")
         except Exception:
             pass
+        session = supply_session.get_session(self.source_id, self.supply_id)
+        if session:
+            for r in session.pick_rows or []:
+                if int(r.get("order_id") or 0) == int(order_id):
+                    r["pick_verified"] = False
+                    r["pick_barcode"] = ""
+                    break
+            supply_session.put_session(session)
         self.info.setText("Заказ {}: проверка сброшена".format(order_id))
         self._render_table()
 
@@ -377,7 +385,30 @@ class PickDialog(QDialog):
             return
         self.row_errors.pop(oid, None)
         self.pick.save(self.source_id, oid, True, code)
+        # Update live row + session (do not reload from stale session cache).
+        self.current["pick_verified"] = True
+        self.current["pick_barcode"] = code
+        for r in self.rows:
+            if int(r["order_id"]) == oid:
+                r["pick_verified"] = True
+                r["pick_barcode"] = code
+                break
+        session = supply_session.get_session(self.source_id, self.supply_id)
+        if session:
+            for r in session.pick_rows or []:
+                if int(r.get("order_id") or 0) == oid:
+                    r["pick_verified"] = True
+                    r["pick_barcode"] = code
+                    break
+            for r in session.rows or []:
+                if int(r.get("order_id") or 0) == oid:
+                    r["pick_verified"] = True
+                    r["pick_barcode"] = code
+                    break
+            supply_session.put_session(session)
         self.info.setText("Проверено: заказ {}".format(oid))
-        self.load_rows()
+        self._render_table()
         self._select_order_row(oid)
         self.sticker_input.setFocus()
+        self.sku_input.setEnabled(False)
+        self.current = None

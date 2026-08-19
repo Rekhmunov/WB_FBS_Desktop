@@ -33,6 +33,23 @@ def has_cyrillic(value: object) -> bool:
     return bool(_CYRILLIC_RE.search(str(value or "")))
 
 
+def scan_has_ru_layout(value: object) -> bool:
+    """True when scan text was typed/scanned with Russian keyboard layout."""
+    text = str(value or "")
+    if not text.strip():
+        return False
+    if has_cyrillic(text):
+        return True
+    return any(ch in _RU_LAYOUT_TO_EN for ch in text)
+
+
+RU_LAYOUT_SCAN_TITLE = "Русская раскладка!"
+RU_LAYOUT_SCAN_MESSAGE = (
+    "Сейчас у вас установлена русская раскладка клавиатуры. "
+    "Переключите раскладку на английскую (EN) и отсканируйте код снова."
+)
+
+
 def fix_ru_keyboard_layout(value: object) -> str:
     text = str(value or "")
     out = []

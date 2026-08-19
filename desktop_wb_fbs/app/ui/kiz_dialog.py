@@ -34,12 +34,12 @@ from app.services.print_docs import _fetch_picking_stickers
 from app.services.trbx_stickers import StickersService
 from app.ui.dialog_utils import (
     apply_fullscreen_on_show,
+    block_ru_layout_scan,
     fullscreen_parent,
     init_fullscreen_dialog,
 )
 from app.ui.dialogs_extra import show_png_list
 from app.ui.format_helpers import (
-    has_cyrillic,
     make_badge,
     make_photo_label,
 )
@@ -105,6 +105,8 @@ class KizMarkScanDialog(QDialog):
         self.mark_input.setFocus()
 
     def _accept_mark(self) -> None:
+        if block_ru_layout_scan(self, self.mark_input):
+            return
         self.mark_code = self.mark_input.text()
         self.accept()
 
@@ -397,18 +399,18 @@ class KizDialog(QDialog):
             filled += sum(1 for c in codes if str(c or "").strip())
         self.counter.setText("Просканировано {} из {} КИЗ".format(filled, total))
 
-    def _block_ru_layout(self, widget: QLineEdit) -> bool:
-        text = widget.text()
-        if not has_cyrillic(text):
-            return False
-        widget.clear()
-        QMessageBox.warning(
-            self,
-            "Русская раскладка!",
-            "Сейчас у вас установлена русская раскладка клавиатуры. "
-            "Переключите раскладку на английскую (EN) и отсканируйте код снова.",
-        )
-        return True
+    def _restore_code_input(self, order_id: int, inp: QLineEdit) -> None:
+        row = next((r for r in self.rows if int(r["order_id"]) == order_id), None)
+        if not row:
+            inp.clear()
+            return
+        inputs = self._code_inputs.get(order_id) or []
+        try:
+            idx = inputs.index(inp)
+            codes = self._row_codes(row)
+            inp.setText(str(codes[idx] if idx < len(codes) else ""))
+        except ValueError:
+            inp.clear()
 
     def _sync_codes_from_inputs(self) -> None:
         for oid, inputs in list(self._code_inputs.items()):
@@ -625,6 +627,7 @@ class KizDialog(QDialog):
             if err and str(code or "").strip():
                 inp.setProperty("state", "error")
             inp.editingFinished.connect(partial(self._on_code_edited, oid))
+            inp.returnPressed.connect(partial(self._on_code_edited, oid))
             clear_btn = QToolButton()
             clear_btn.setObjectName("kizCodeRemove")
             clear_btn.setText("×")
@@ -674,20 +677,32 @@ class KizDialog(QDialog):
         return wrap
 
     def _on_code_edited(self, order_id: int) -> None:
-        self._sync_codes_from_inputs()
-        row = next((r for r in self.rows if int(r["order_id"]) == order_id), None)
-        if not row:
+        inp = self.sender()
+        if not isinstance(inp, QLineEdit):
             return
-        codes = [c for c in self._row_codes(row) if str(c).strip()]
+        if getattr(inp, "_kiz_commit_lock", False):
+            return
+        inp._kiz_commit_lock = True
         try:
-            self.kiz.save_local(self.source_id, order_id, codes, wb_synced=False)
-            row["kiz_wb_synced"] = False
-            if codes:
-                row["kiz_status"] = "pending"
-            self._sync_session_kiz_rows()
-        except Exception:
-            pass
-        self._update_counter()
+            if block_ru_layout_scan(self, inp):
+                self._restore_code_input(order_id, inp)
+                return
+            self._sync_codes_from_inputs()
+            row = next((r for r in self.rows if int(r["order_id"]) == order_id), None)
+            if not row:
+                return
+            codes = [c for c in self._row_codes(row) if str(c).strip()]
+            try:
+                self.kiz.save_local(self.source_id, order_id, codes, wb_synced=False)
+                row["kiz_wb_synced"] = False
+                if codes:
+                    row["kiz_status"] = "pending"
+                self._sync_session_kiz_rows()
+            except Exception:
+                pass
+            self._update_counter()
+        finally:
+            inp._kiz_commit_lock = False
 
     def _add_code(self, order_id: int) -> None:
         self._sync_codes_from_inputs()
@@ -815,7 +830,7 @@ class KizDialog(QDialog):
     def on_sticker(self) -> None:
         if not self._rows_ready:
             return
-        if self._block_ru_layout(self.sticker_input):
+        if block_ru_layout_scan(self, self.sticker_input):
             return
         raw = self.sticker_input.text().replace(" ", "").strip()
         if not raw:
@@ -854,13 +869,7 @@ class KizDialog(QDialog):
         self.sticker_input.setFocus()
 
     def _apply_mark_scan(self, row: Dict[str, Any], raw_mark: str) -> None:
-        if has_cyrillic(raw_mark):
-            QMessageBox.warning(
-                self,
-                "Русская раскладка!",
-                "Сейчас у вас установлена русская раскладка клавиатуры. "
-                "Переключите раскладку на английскую (EN) и отсканируйте код снова.",
-            )
+        if block_ru_layout_scan(self, text=raw_mark):
             return
         oid = int(row["order_id"])
         code = raw_mark.strip(" \t\r\n").replace("\u2194", "\u001d")

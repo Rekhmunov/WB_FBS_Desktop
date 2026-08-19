@@ -28,10 +28,10 @@ from app.services.kiz_pick import PickVerifyService
 from app.services import supply_session
 from app.ui.dialog_utils import (
     apply_fullscreen_on_show,
+    block_ru_layout_scan,
     fullscreen_parent,
     init_fullscreen_dialog,
 )
-from app.ui.format_helpers import fix_ru_keyboard_layout, has_cyrillic
 from app.wb import cancel_reason_label, is_cancelled_status
 
 
@@ -213,19 +213,6 @@ class PickDialog(QDialog):
         total = len(self.rows)
         self.counter.setText("Проверено {} из {}".format(filled, total))
 
-    def _block_ru_layout(self, widget: QLineEdit) -> bool:
-        text = widget.text()
-        if not has_cyrillic(text):
-            return False
-        widget.clear()
-        QMessageBox.warning(
-            self,
-            "Русская раскладка!",
-            "Сканирование выполнено в русской раскладке клавиатуры.\n"
-            "Переключите раскладку на английскую (EN) и отсканируйте код ещё раз.",
-        )
-        return True
-
     def load_rows(self) -> None:
         session = supply_session.get_session(self.source_id, self.supply_id)
         try:
@@ -337,7 +324,7 @@ class PickDialog(QDialog):
             self.info.setText("Нет строк по выбранным фильтрам")
 
     def on_sticker(self) -> None:
-        if self._block_ru_layout(self.sticker_input):
+        if block_ru_layout_scan(self, self.sticker_input):
             return
         raw = self.sticker_input.text().replace(" ", "").strip()
         self.sticker_input.clear()
@@ -370,7 +357,7 @@ class PickDialog(QDialog):
                 return
 
     def on_sku(self) -> None:
-        if self._block_ru_layout(self.sku_input):
+        if block_ru_layout_scan(self, self.sku_input):
             return
         if not self.current:
             return

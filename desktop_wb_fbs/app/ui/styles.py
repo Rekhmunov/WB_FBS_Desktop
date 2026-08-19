@@ -970,12 +970,15 @@ QLabel#kizTitle {
     font-size: 28px;
     font-weight: 800;
     background: transparent;
+    padding: 0;
+    margin: 0;
 }
 QLabel#kizSub {
     color: #64748b;
     font-size: 14px;
     background: transparent;
-    max-width: 640px;
+    padding: 0;
+    margin: 0;
 }
 QFrame#kizHeader QPushButton#bottomPrimary {
     min-width: 0;

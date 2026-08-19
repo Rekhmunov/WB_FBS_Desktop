@@ -155,27 +155,24 @@ class KizDialog(QDialog):
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
 
-        # Header
+        # Header — title row (left) + actions (right), subtitle below
         header = QFrame()
         header.setObjectName("kizHeader")
-        header_lay = QHBoxLayout(header)
+        header_lay = QVBoxLayout(header)
         header_lay.setContentsMargins(24, 20, 24, 16)
-        header_lay.setSpacing(16)
-        head_main = QVBoxLayout()
-        head_main.setSpacing(8)
+        header_lay.setSpacing(8)
+
+        title_row = QHBoxLayout()
+        title_row.setSpacing(16)
         title = QLabel("КИЗ")
         title.setObjectName("kizTitle")
-        sub = QLabel(
-            "Контрольный идентификационный знак, похожий на QR-код. "
-            "Нужен для маркировки товаров в системе «Честный знак»"
-        )
-        sub.setObjectName("kizSub")
-        sub.setWordWrap(True)
-        head_main.addWidget(title)
-        head_main.addWidget(sub)
-        header_lay.addLayout(head_main, 1)
+        title.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        title_row.addWidget(title, 0, Qt.AlignLeft | Qt.AlignTop)
+        title_row.addStretch(1)
+
         head_actions = QHBoxLayout()
         head_actions.setSpacing(8)
+        head_actions.setAlignment(Qt.AlignRight | Qt.AlignTop)
         self.save_btn = QPushButton("Сохранить")
         self.save_btn.setObjectName("bottomPrimary")
         self.save_btn.setFixedHeight(40)
@@ -188,7 +185,18 @@ class KizDialog(QDialog):
         close_btn.clicked.connect(self.reject)
         head_actions.addWidget(self.save_btn)
         head_actions.addWidget(close_btn)
-        header_lay.addLayout(head_actions)
+        title_row.addLayout(head_actions, 0)
+
+        sub = QLabel(
+            "Контрольный идентификационный знак, похожий на QR-код. "
+            "Нужен для маркировки товаров в системе «Честный знак»"
+        )
+        sub.setObjectName("kizSub")
+        sub.setWordWrap(True)
+        sub.setAlignment(Qt.AlignLeft | Qt.AlignTop)
+
+        header_lay.addLayout(title_row)
+        header_lay.addWidget(sub)
         root.addWidget(header)
 
         # Toolbar: filters + search + counter

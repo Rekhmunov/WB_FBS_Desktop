@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Optional
 
 from PyQt5.QtCore import QEventLoop, QUrl, Qt
-from PyQt5.QtPrintSupport import QPrintDialog, QPrintPreviewDialog, QPrinter
+from PyQt5.QtPrintSupport import QPrintPreviewDialog, QPrinter
 from PyQt5.QtWidgets import (
     QApplication,
     QDialog,
@@ -65,11 +65,7 @@ class HtmlPrintPreviewDialog(QDialog):
         self.btn_print = QPushButton("Печать…")
         self.btn_print.setObjectName("bottomPrimary")
         self.btn_print.setEnabled(False)
-        self.btn_print.clicked.connect(self._print)
-        self.btn_preview = QPushButton("Предпросмотр печати")
-        self.btn_preview.setObjectName("secondary")
-        self.btn_preview.setEnabled(False)
-        self.btn_preview.clicked.connect(self._print_preview)
+        self.btn_print.clicked.connect(self._print_preview)
         self.btn_pdf = QPushButton("Сохранить PDF")
         self.btn_pdf.setObjectName("secondary")
         self.btn_pdf.setEnabled(False)
@@ -78,7 +74,6 @@ class HtmlPrintPreviewDialog(QDialog):
         self.btn_close.setObjectName("secondary")
         self.btn_close.clicked.connect(self.reject)
         toolbar.addWidget(self.btn_print)
-        toolbar.addWidget(self.btn_preview)
         toolbar.addWidget(self.btn_pdf)
         toolbar.addStretch(1)
         toolbar.addWidget(self.btn_close)
@@ -91,7 +86,7 @@ class HtmlPrintPreviewDialog(QDialog):
 
     def _on_load_finished(self, ok: bool) -> None:
         self._loaded = bool(ok)
-        for btn in (self.btn_print, self.btn_preview, self.btn_pdf):
+        for btn in (self.btn_print, self.btn_pdf):
             btn.setEnabled(ok)
         if not ok:
             QMessageBox.warning(
@@ -114,21 +109,11 @@ class HtmlPrintPreviewDialog(QDialog):
         loop.exec_()
         return result["ok"]
 
-    def _print(self) -> None:
-        printer = QPrinter(QPrinter.HighResolution)
-        dlg = QPrintDialog(printer, self)
-        if dlg.exec_() != QDialog.Accepted:
-            return
-        if self._print_to_printer(printer):
-            QMessageBox.information(self, "Печать", "Документ отправлен на печать.")
-        else:
-            QMessageBox.warning(self, "Печать", "Не удалось отправить документ на печать.")
-
     def _print_preview(self) -> None:
         printer = QPrinter(QPrinter.HighResolution)
         preview = QPrintPreviewDialog(printer, self)
         preview.setWindowFlags(preview.windowFlags() | Qt.WindowMaximizeButtonHint)
-        preview.setWindowTitle("Предпросмотр печати")
+        preview.setWindowTitle("Печать")
         preview.paintRequested.connect(self._print_to_printer)
         preview.exec_()
 

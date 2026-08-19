@@ -20,7 +20,6 @@ from PyQt5.QtWidgets import (
     QWidget,
     QAbstractItemView,
     QHeaderView,
-    QSpinBox,
     QButtonGroup,
     QSizePolicy,
 )
@@ -136,7 +135,7 @@ class FbsPage(QWidget):
 
         root = QVBoxLayout(self)
         root.setContentsMargins(24, 20, 24, 16)
-        root.setSpacing(16)
+        root.setSpacing(12)
 
         # Title row: section title + source select (web .wb-fbs-title-row)
         title_row = QHBoxLayout()
@@ -146,6 +145,7 @@ class FbsPage(QWidget):
         title_row.addWidget(title)
         title_row.addStretch(1)
         self.source_combo = QComboBox()
+        self.source_combo.setObjectName("sourceCombo")
         self.source_combo.setMinimumWidth(180)
         self.source_combo.setMaximumWidth(280)
         self.source_combo.setToolTip("Источник")
@@ -229,11 +229,11 @@ class FbsPage(QWidget):
             ("assembly", "На сборке"),
             ("delivery", "В доставке"),
         ):
-            btn = QPushButton("{}  0".format(label))
+            btn = QPushButton("{} · 0".format(label))
             btn.setObjectName("tabBtn")
             btn.setCheckable(True)
             btn.setCursor(Qt.PointingHandCursor)
-            btn.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Fixed)
+            btn.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Preferred)
             self._tab_group.addButton(btn)
             self.tab_btns[key] = btn
             tabs_row.addWidget(btn)
@@ -324,33 +324,38 @@ class FbsPage(QWidget):
         bottom_outer.addLayout(bottom)
         root.addWidget(self.bottom_bar)
 
-        # Pagination (quiet row under bar — web has infinite scroll; we keep pages)
-        pager = QHBoxLayout()
+        # Pagination — compact modern strip (combo instead of XP spinbox)
+        pager_frame = QFrame()
+        pager_frame.setObjectName("pagerBar")
+        pager = QHBoxLayout(pager_frame)
+        pager.setContentsMargins(0, 0, 0, 0)
         pager.setSpacing(8)
         pager.addStretch(1)
         pager_hint = QLabel("На стр.")
         pager_hint.setObjectName("hint")
         pager.addWidget(pager_hint)
-        self.page_size = QSpinBox()
-        self.page_size.setRange(30, 100)
-        self.page_size.setSingleStep(10)
-        self.page_size.setValue(50)
-        self.page_size.valueChanged.connect(self.reload_table)
+        self.page_size = QComboBox()
+        self.page_size.setObjectName("pageSizeCombo")
+        for n in (30, 50, 100):
+            self.page_size.addItem(str(n), n)
+        self.page_size.setCurrentIndex(1)  # 50
+        self.page_size.currentIndexChanged.connect(self.reload_table)
         pager.addWidget(self.page_size)
         self.prev_btn = QPushButton("←")
-        self.prev_btn.setObjectName("secondary")
-        self.prev_btn.setFixedWidth(40)
+        self.prev_btn.setObjectName("pagerBtn")
+        self.prev_btn.setCursor(Qt.PointingHandCursor)
         self.prev_btn.clicked.connect(self.prev_page)
         self.next_btn = QPushButton("→")
-        self.next_btn.setObjectName("secondary")
-        self.next_btn.setFixedWidth(40)
+        self.next_btn.setObjectName("pagerBtn")
+        self.next_btn.setCursor(Qt.PointingHandCursor)
         self.next_btn.clicked.connect(self.next_page)
-        self.page_label = QLabel("1")
-        self.page_label.setObjectName("hint")
+        self.page_label = QLabel("1/1 · 0")
+        self.page_label.setObjectName("pageMeta")
+        self.page_label.setAlignment(Qt.AlignCenter)
         pager.addWidget(self.prev_btn)
         pager.addWidget(self.page_label)
         pager.addWidget(self.next_btn)
-        root.addLayout(pager)
+        root.addWidget(pager_frame)
 
         # Web parity: live search waits 400ms after the last keystroke before
         # re-querying (Enter still searches immediately via returnPressed).
@@ -491,7 +496,7 @@ class FbsPage(QWidget):
         )
         for key, label, n in mapping:
             btn = self.tab_btns[key]
-            btn.setText("{}  {}".format(label, n))
+            btn.setText("{} · {}".format(label, n))
             btn.updateGeometry()
 
     def reload_table(self) -> None:
@@ -503,7 +508,7 @@ class FbsPage(QWidget):
         counts = self.orders.tab_counts(sid)
         self._update_tab_labels(counts)
 
-        limit = int(self.page_size.value())
+        limit = int(self.page_size.currentData() or 50)
         offset = self._page * limit
         search = self.search.text().strip()
 

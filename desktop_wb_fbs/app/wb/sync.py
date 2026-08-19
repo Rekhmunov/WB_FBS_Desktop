@@ -15,6 +15,7 @@ from app.wb import (
     friendly_sync_error,
     is_marketplace_scope_error,
     lookback_window,
+    normalize_api_key,
     order_b2b_flag,
     parse_dt,
     resolve_order_price,
@@ -209,6 +210,14 @@ def sync_source(
     stop_requested: Optional[Callable[[], bool]] = None,
     progress: Optional[Callable[[str, int], None]] = None,
 ) -> Dict[str, Any]:
+    api_key = normalize_api_key(api_key)
+    if not api_key:
+        return {
+            "orders": 0,
+            "supplies": 0,
+            "errors": ["Пустой API-ключ Marketplace"],
+            "stopped": False,
+        }
     client = WbFbsClient(api_key)
     stopped = False
     seen_order_ids = set()  # type: Set[int]
@@ -221,6 +230,28 @@ def sync_source(
     def _prog(msg: str, n: Optional[int] = None) -> None:
         if progress:
             progress(msg, len(seen_order_ids) if n is None else n)
+
+    _prog("Проверка ключа…")
+    try:
+        client.ping()
+        time.sleep(0.21)
+    except Exception as exc:
+        _log.warning("ping failed: %s", exc)
+        if is_marketplace_scope_error(exc):
+            return {
+                "orders": 0,
+                "supplies": 0,
+                "errors": [],
+                "stopped": False,
+                "scope_error": True,
+                "message": SCOPE_ERROR_MESSAGE,
+            }
+        return {
+            "orders": 0,
+            "supplies": 0,
+            "errors": [friendly_sync_error("проверка ключа", exc)],
+            "stopped": False,
+        }
 
     _prog("Новые заказы…")
     try:

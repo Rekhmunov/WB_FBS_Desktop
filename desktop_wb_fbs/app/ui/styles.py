@@ -51,8 +51,8 @@ QPushButton#navBtn {
     border: none;
     border-bottom: 3px solid transparent;
     border-radius: 0;
-    padding: 10px 20px 11px 20px;
-    min-height: 28px;
+    padding: 10px 24px 12px 24px;
+    min-height: 32px;
     font-size: 15px;
     font-weight: 500;
     text-align: center;
@@ -66,7 +66,7 @@ QPushButton#navBtn:checked {
     font-weight: 700;
     border-bottom: 3px solid #2495ee;
     background: transparent;
-    padding-bottom: 11px;
+    padding-bottom: 12px;
 }
 
 /* --- Buttons: tap-friendly, clear hierarchy --- */
@@ -167,9 +167,8 @@ QPushButton#tabBtn {
     border: none;
     border-bottom: 3px solid transparent;
     border-radius: 0;
-    padding: 8px 16px 11px 16px;
-    min-height: 28px;
-    min-width: 96px;
+    padding: 8px 20px 12px 20px;
+    min-height: 32px;
     color: #64748b;
     font-size: 15px;
     font-weight: 500;
@@ -184,7 +183,7 @@ QPushButton#tabBtn:checked {
     font-weight: 700;
     border-bottom: 3px solid #2495ee;
     background: transparent;
-    padding-bottom: 11px;
+    padding-bottom: 12px;
 }
 QPushButton#linkBtn {
     background: transparent;

@@ -4,7 +4,7 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional
 
 from app.db import Database
-from app.wb import is_fbs_source_name, utc_now
+from app.wb import is_fbs_source_name, normalize_api_key, utc_now
 
 
 class SourceService:
@@ -37,7 +37,7 @@ class SourceService:
 
     def create(self, name: str, api_key: str, is_enabled: bool = True) -> int:
         name = str(name or "").strip()
-        api_key = str(api_key or "").strip()
+        api_key = normalize_api_key(api_key)
         if not name:
             raise ValueError("Укажите название источника")
         if not is_fbs_source_name(name):
@@ -63,7 +63,7 @@ class SourceService:
         is_enabled: bool = True,
     ) -> None:
         name = str(name or "").strip()
-        api_key = str(api_key or "").strip()
+        api_key = normalize_api_key(api_key)
         if not name:
             raise ValueError("Укажите название источника")
         if not is_fbs_source_name(name):

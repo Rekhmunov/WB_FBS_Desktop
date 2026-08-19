@@ -49,7 +49,7 @@ class MainWindow(QMainWindow):
         top = QFrame()
         top.setObjectName("topBar")
         top_l = QHBoxLayout(top)
-        top_l.setContentsMargins(20, 0, 20, 0)
+        top_l.setContentsMargins(20, 4, 20, 4)
         top_l.setSpacing(16)
 
         brand_col = QVBoxLayout()

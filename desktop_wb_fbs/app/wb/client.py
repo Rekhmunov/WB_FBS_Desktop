@@ -12,7 +12,7 @@ from urllib.error import HTTPError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
-from app.wb import kiz_code_clean
+from app.wb import kiz_code_clean, normalize_api_key
 
 _log = logging.getLogger(__name__)
 
@@ -23,8 +23,13 @@ TRBX_DELETE_PER_REQUEST = 100
 
 class WbFbsClient:
     def __init__(self, api_key: str, timeout: int = 30) -> None:
-        self.api_key = str(api_key or "").strip()
+        self.api_key = normalize_api_key(api_key)
         self.timeout = timeout
+
+    def ping(self) -> Dict[str, Any]:
+        """Official connectivity check for Marketplace token."""
+        data = self._request("GET", "/ping")
+        return data if isinstance(data, dict) else {}
 
     def _request(
         self,

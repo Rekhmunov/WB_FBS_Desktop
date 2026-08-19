@@ -34,6 +34,31 @@ _CANCELLED_WB = {
 SCOPE_ERROR_MESSAGE = "Нет ни одного источника с нужным API (Marketplace)."
 
 
+def normalize_api_key(value: object) -> str:
+    """Strip wrappers users often paste from docs/UI (Bearer, quotes, spaces)."""
+    key = str(value or "").strip()
+    if key.lower().startswith("bearer "):
+        key = key[7:].strip()
+    if len(key) >= 2 and key[0] == key[-1] and key[0] in "\"'":
+        key = key[1:-1].strip()
+    return key
+
+
+def _wb_error_detail(exc: object) -> str:
+    text = str(exc or "")
+    start = text.find("{")
+    if start < 0:
+        return ""
+    try:
+        data = json.loads(text[start:])
+    except Exception:
+        return ""
+    if not isinstance(data, dict):
+        return ""
+    detail = data.get("detail") or data.get("title") or data.get("message")
+    return str(detail or "").strip()[:220]
+
+
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -160,12 +185,14 @@ def is_fbs_source_name(name: object) -> bool:
 
 def is_marketplace_scope_error(exc: object) -> bool:
     text = str(exc or "").lower()
-    return (
-        "token scope not allowed" in text
-        or "s2s-api-auth-marketplace" in text
-        or ("http 401" in text and "unauthorized" in text and "marketplace" in text)
-        or ("http 403" in text and "scope" in text)
-    )
+    detail = _wb_error_detail(exc).lower()
+    if "token scope not allowed" in text or "token scope not allowed" in detail:
+        return True
+    if "category" in detail and "token" in detail:
+        return True
+    if "http 403" in text and ("scope" in text or "access denied" in detail):
+        return True
+    return False
 
 
 def friendly_sync_error(prefix: str, exc: object) -> str:
@@ -173,17 +200,40 @@ def friendly_sync_error(prefix: str, exc: object) -> str:
         return SCOPE_ERROR_MESSAGE
     text = str(exc or "")
     lower = text.lower()
+    detail = _wb_error_detail(exc)
+    if "certificate verify failed" in lower or "ssl: " in lower:
+        return "{}: ошибка SSL при подключении к WB API".format(prefix)
+    if "timed out" in lower or "timeout" in lower:
+        return "{}: таймаут подключения к WB API".format(prefix)
+    if (
+        "connection refused" in lower
+        or "network is unreachable" in lower
+        or "getaddrinfo failed" in lower
+        or "name or service not known" in lower
+    ):
+        return "{}: нет связи с marketplace-api.wildberries.ru".format(prefix)
     if "incorrectparameter" in lower or "incorrect parameter" in lower:
         return "{}: некорректные параметры запроса к WB".format(prefix)
     if "http 429" in lower:
         return "{}: превышен лимит запросов WB, попробуйте позже".format(prefix)
     if "http 401" in lower or "http 403" in lower:
-        return "{}: нет доступа к API WB".format(prefix)
+        if detail:
+            return "{}: ключ API отклонён — {}".format(prefix, detail)
+        return "{}: неверный или просроченный ключ API (категория Marketplace)".format(
+            prefix
+        )
     if "http 5" in lower:
         return "{}: временная ошибка WB API".format(prefix)
     m = re.search(r"HTTP\s+(\d+)", text, flags=re.IGNORECASE)
     if m:
-        return "{}: ошибка WB API (HTTP {})".format(prefix, m.group(1))
+        code = m.group(1)
+        if detail:
+            return "{}: ошибка WB API (HTTP {}) — {}".format(prefix, code, detail)
+        return "{}: ошибка WB API (HTTP {})".format(prefix, code)
+    if detail:
+        return "{}: {}".format(prefix, detail)
+    if text.strip():
+        return "{}: {}".format(prefix, text.strip()[:220])
     return "{}: не удалось загрузить данные".format(prefix)
 
 

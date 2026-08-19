@@ -35,6 +35,7 @@ from app.ui.fbs_page import FbsPage
 from app.ui.layout_utils import fit_tab_button
 from app.ui.settings_page import SettingsPage
 from app.ui.styles import APP_QSS
+from app.ui.text_copy import install_text_copy_support, walk_copyable_labels
 
 
 class MainWindow(QMainWindow):
@@ -126,10 +127,12 @@ def run() -> int:
     app.setApplicationName(APP_NAME)
     app.setStyle("Fusion")
     app.setStyleSheet(APP_QSS)
+    install_text_copy_support(app)
 
     db = Database()
     db.init_schema()
 
     win = MainWindow(db)
+    walk_copyable_labels(win)
     win.showMaximized()
     return app.exec_()

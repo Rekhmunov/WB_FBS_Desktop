@@ -55,10 +55,10 @@ QPushButton#navBtn {
     background: transparent;
     color: #64748b;
     border: none;
-    border-bottom: 2px solid transparent;
+    border-bottom: 3px solid transparent;
     border-radius: 0;
-    padding: 16px 16px 14px 16px;
-    min-height: 0;
+    padding: 14px 16px 16px 16px;
+    min-height: 48px;
     max-height: 64px;
     font-size: 14px;
     font-weight: 500;
@@ -71,7 +71,7 @@ QPushButton#navBtn:hover {
 QPushButton#navBtn:checked {
     color: #0f172a;
     font-weight: 600;
-    border-bottom: 2px solid #2563eb;
+    border-bottom: 3px solid #2563eb;
     background: transparent;
 }
 QPushButton#navBtn:pressed {
@@ -184,10 +184,10 @@ QPushButton#bottomPrimary:pressed {
 QPushButton#tabBtn {
     background: transparent;
     border: none;
-    border-bottom: 2px solid transparent;
+    border-bottom: 3px solid transparent;
     border-radius: 0;
-    padding: 12px 16px 10px 16px;
-    min-height: 0;
+    padding: 12px 16px 14px 16px;
+    min-height: 44px;
     color: #64748b;
     font-size: 14px;
     font-weight: 500;
@@ -200,7 +200,7 @@ QPushButton#tabBtn:hover {
 QPushButton#tabBtn:checked {
     color: #0f172a;
     font-weight: 600;
-    border-bottom: 2px solid #2563eb;
+    border-bottom: 3px solid #2563eb;
     background: transparent;
 }
 QPushButton#tabBtn:pressed {
@@ -462,7 +462,7 @@ QLabel#syncPallets {
 QFrame#tabsRow {
     border-bottom: 1px solid #e8eef5;
     background: transparent;
-    min-height: 48px;
+    min-height: 52px;
 }
 QFrame#bottomBar {
     background: #ffffff;
@@ -536,8 +536,11 @@ QTableWidget {
     outline: none;
 }
 QTableWidget::item {
-    padding: 8px 12px;
+    padding: 10px 12px;
     border-bottom: 1px solid #f1f5f9;
+}
+QTableWidget QWidget {
+    background: transparent;
 }
 QTableWidget::item:selected {
     background: #eff6ff;

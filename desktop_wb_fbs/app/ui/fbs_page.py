@@ -572,6 +572,21 @@ class FbsPage(QWidget):
         lab.setFont(f)
         return lab
 
+    @staticmethod
+    def _table_text_item(
+        text: str, *, bold: bool = False, tooltip: str = ""
+    ) -> QTableWidgetItem:
+        item = QTableWidgetItem(text)
+        item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        if bold:
+            f = item.font()
+            f.setBold(True)
+            item.setFont(f)
+        tip = tooltip or text
+        if tip:
+            item.setToolTip(tip)
+        return item
+
     def _fill_orders_table(self, rows: List[Dict[str, Any]]) -> None:
         """Rich rows mirror web: photo / bold order+age / product+badges."""
         try:
@@ -710,49 +725,52 @@ class FbsPage(QWidget):
         self.table.setRowCount(len(rows))
         self.table.horizontalHeader().setStretchLastSection(False)
         self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
-        self.table.verticalHeader().setDefaultSectionSize(44)
+        self.table.verticalHeader().setDefaultSectionSize(52)
         for r, row in enumerate(rows):
             sid = str(row.get("supply_id") or "")
-            item0 = QTableWidgetItem(sid)
+            item0 = self._table_text_item(sid, bold=True, tooltip=sid)
             item0.setData(Qt.UserRole, sid)
-            f = item0.font()
-            f.setBold(True)
-            item0.setFont(f)
             self.table.setItem(r, 0, item0)
 
-            name_widget = QWidget()
-            name_lay = QVBoxLayout(name_widget)
-            name_lay.setContentsMargins(10, 8, 10, 8)
-            name_lay.setSpacing(4)
-            name_lay.addWidget(self._bold_label(str(row.get("name") or ""), wrap=True))
+            name_text = str(row.get("name") or "")
             if row.get("pickup_allowed"):
+                name_widget = QWidget()
+                name_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
+                name_lay = QVBoxLayout(name_widget)
+                name_lay.setContentsMargins(12, 6, 12, 6)
+                name_lay.setSpacing(4)
+                name_lay.addWidget(self._bold_label(name_text, wrap=True))
                 pvz_row = QHBoxLayout()
                 pvz_row.setContentsMargins(0, 0, 0, 0)
                 pvz_row.setSpacing(4)
                 pvz_row.addWidget(make_badge("Можно в ПВЗ", "pvz"))
                 pvz_row.addStretch(1)
                 name_lay.addLayout(pvz_row)
-            self.table.setCellWidget(r, 1, name_widget)
+                self.table.setCellWidget(r, 1, name_widget)
+            else:
+                self.table.setItem(
+                    r, 1, self._table_text_item(name_text, bold=True, tooltip=name_text)
+                )
 
+            for col, key, tip in (
+                (2, "order_count", ""),
+                (3, "boxes_count", ""),
+                (4, "cargo_label", "cargo_label"),
+                (5, "status_label", "status_label"),
+            ):
+                val = str(row.get(key) or (0 if key.endswith("_count") else ""))
+                item = self._table_text_item(val, tooltip=str(row.get(tip) or val))
+                self.table.setItem(r, col, item)
             self.table.setItem(
-                r, 2, QTableWidgetItem(str(row.get("order_count") or 0))
-            )
-            self.table.setItem(
-                r, 3, QTableWidgetItem(str(row.get("boxes_count") or 0))
-            )
-            self.table.setItem(
-                r, 4, QTableWidgetItem(str(row.get("cargo_label") or ""))
-            )
-            self.table.setItem(
-                r, 5, QTableWidgetItem(str(row.get("status_label") or ""))
-            )
-            self.table.setItem(
-                r, 6, QTableWidgetItem("да" if row.get("is_b2b") else "")
+                r,
+                6,
+                self._table_text_item("да" if row.get("is_b2b") else ""),
             )
 
             actions_cell = QWidget()
+            actions_cell.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Minimum)
             actions_lay = QHBoxLayout(actions_cell)
-            actions_lay.setContentsMargins(4, 4, 4, 4)
+            actions_lay.setContentsMargins(8, 6, 8, 6)
             actions_btn = QToolButton()
             actions_btn.setObjectName("iconBtn")
             actions_btn.setText("⋮")
@@ -762,8 +780,11 @@ class FbsPage(QWidget):
             actions_lay.addWidget(actions_btn)
             actions_lay.addStretch(1)
             self.table.setCellWidget(r, 7, actions_cell)
+
+            self.table.resizeRowToContents(r)
+            self.table.setRowHeight(r, max(self.table.rowHeight(r), 52))
         self.table.blockSignals(False)
-        self.table.setColumnWidth(0, 120)
+        self.table.setColumnWidth(0, 168)
         self.table.setColumnWidth(7, 56)
 
     def prev_page(self) -> None:

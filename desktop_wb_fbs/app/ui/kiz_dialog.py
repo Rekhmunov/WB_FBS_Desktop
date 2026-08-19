@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 from functools import partial
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set
 
-from PyQt5.QtCore import Qt, QTimer
+from PyQt5.QtCore import Qt, QThread, QTimer, pyqtSignal
 from PyQt5.QtWidgets import (
     QCheckBox,
     QDialog,
@@ -28,7 +28,8 @@ from PyQt5.QtWidgets import (
     QApplication,
 )
 
-from app.services.kiz_pick import KizService
+from app.db import Database
+from app.services.kiz_pick import KizService, pending_wb_save_jobs
 from app.services import supply_session
 from app.services.print_docs import _fetch_picking_stickers
 from app.services.trbx_stickers import StickersService
@@ -53,6 +54,75 @@ def _sticker_number(part_a: str, part_b: str) -> str:
 
 _RENDER_BATCH = 50
 _FILTER_EMPTY_MSG = "Нет строк по выбранным фильтрам"
+
+
+class _KizSaveWorker(QThread):
+    """Upload pending KIZ codes to WB without blocking the UI."""
+
+    progress = pyqtSignal(int, int, int, bool, str)  # done, total, order_id, ok, error
+    finished_ok = pyqtSignal(object)
+    failed = pyqtSignal(str)
+
+    def __init__(
+        self,
+        db: Database,
+        source_id: int,
+        api_key: str,
+        jobs: List[Dict[str, Any]],
+        parent: Optional[QWidget] = None,
+    ) -> None:
+        super(_KizSaveWorker, self).__init__(parent)
+        self.db = db
+        self.source_id = int(source_id)
+        self.api_key = str(api_key or "")
+        self.jobs = list(jobs or [])
+        self._stop = False
+
+    def request_stop(self) -> None:
+        self._stop = True
+
+    def run(self) -> None:
+        try:
+            kiz = KizService(self.db)
+            total = len(self.jobs)
+            saved = 0
+            errors = []  # type: List[Dict[str, Any]]
+            for index, job in enumerate(self.jobs, start=1):
+                if self._stop:
+                    break
+                oid = int(job.get("order_id") or 0)
+                codes = list(job.get("codes") or [])
+                err = ""
+                ok = False
+                for code in codes:
+                    valid, msg = kiz.validate_mark(
+                        code,
+                        job.get("skus") or [],
+                        bool(job.get("skip_kiz_gtin_check")),
+                    )
+                    if not valid:
+                        err = msg
+                        break
+                else:
+                    try:
+                        kiz.save_to_wb(self.source_id, self.api_key, oid, codes)
+                        ok = True
+                        saved += 1
+                    except Exception as exc:
+                        err = str(exc)
+                if not ok:
+                    errors.append({"order_id": oid, "error": err or "Ошибка сохранения"})
+                self.progress.emit(index, total, oid, ok, err)
+            self.finished_ok.emit(
+                {
+                    "saved": saved,
+                    "errors": errors,
+                    "stopped": self._stop,
+                    "total": total,
+                }
+            )
+        except Exception as exc:
+            self.failed.emit(str(exc))
 
 
 class KizMarkScanDialog(QDialog):
@@ -144,6 +214,10 @@ class KizDialog(QDialog):
         self._row_by_oid = {}  # type: Dict[int, Dict[str, Any]]
         self._rows_ready = False
         self._saving = False
+        self._save_worker = None  # type: Optional[_KizSaveWorker]
+        self._alive_workers = []  # type: List[QThread]
+        self._save_failed_oids = set()  # type: Set[int]
+        self._save_retry_mode = False
         self._search_timer = QTimer(self)
         self._search_timer.setSingleShot(True)
         self._search_timer.setInterval(200)
@@ -301,6 +375,62 @@ class KizDialog(QDialog):
         super(KizDialog, self).showEvent(event)
         apply_fullscreen_on_show(self)
 
+    def reject(self) -> None:
+        self._stop_save_worker()
+        super(KizDialog, self).reject()
+
+    def accept(self) -> None:
+        self._stop_save_worker()
+        super(KizDialog, self).accept()
+
+    def closeEvent(self, event) -> None:
+        self._stop_save_worker()
+        super(KizDialog, self).closeEvent(event)
+
+    def _disconnect_worker(self, worker: QThread, *signal_names: str) -> None:
+        for name in signal_names:
+            signal = getattr(worker, name, None)
+            if signal is None:
+                continue
+            try:
+                signal.disconnect()
+            except Exception:
+                pass
+        if worker not in self._alive_workers:
+            self._alive_workers.append(worker)
+
+        def _cleanup(w=worker) -> None:
+            if w in self._alive_workers:
+                self._alive_workers.remove(w)
+            w.deleteLater()
+
+        if worker.isRunning():
+            worker.finished.connect(_cleanup)
+        else:
+            _cleanup()
+
+    def _stop_save_worker(self) -> None:
+        worker = self._save_worker
+        self._save_worker = None
+        if worker is None:
+            return
+        worker.request_stop()
+        self._disconnect_worker(worker, "progress", "finished_ok", "failed")
+
+    def _update_save_button(self) -> None:
+        if self._saving:
+            return
+        pending = pending_wb_save_jobs(self.rows, row_errors=self.row_errors)
+        pending_ids = {int(j["order_id"]) for j in pending}
+        failed_pending = self._save_failed_oids & pending_ids
+        if failed_pending and pending_ids <= self._save_failed_oids:
+            self._save_retry_mode = True
+            self.save_btn.setText("Повторить ошибки ({})".format(len(failed_pending)))
+        else:
+            self._save_retry_mode = False
+            self.save_btn.setText("Сохранить")
+        self.save_btn.setEnabled(self._rows_ready)
+
     def _set_filters_ready(self, ready: bool) -> None:
         self._rows_ready = bool(ready)
         for w in (
@@ -312,6 +442,8 @@ class KizDialog(QDialog):
             w.setEnabled(ready)
         self.search_input.setReadOnly(not ready)
         self.sticker_input.setEnabled(ready)
+        if not self._saving:
+            self._update_save_button()
 
     def _set_info(self, text: str = "", ok: bool = False) -> None:
         msg = str(text or "").strip()
@@ -924,63 +1056,132 @@ class KizDialog(QDialog):
         self._update_counter()
         self._refresh_row(oid)
         self._apply_filters()
+        self._update_save_button()
 
     def save_all(self) -> None:
         if self._saving:
             return
         self._sync_codes_from_inputs()
+        only_ids = (
+            sorted(self._save_failed_oids)
+            if self._save_retry_mode and self._save_failed_oids
+            else None
+        )
+        jobs = pending_wb_save_jobs(
+            self.rows,
+            row_errors=self.row_errors,
+            only_order_ids=only_ids,
+        )
+        if not jobs:
+            self._save_retry_mode = False
+            self._save_failed_oids.clear()
+            self._update_save_button()
+            self._set_info("Нет изменений для сохранения")
+            return
+
         self._saving = True
         self.save_btn.setEnabled(False)
-        errors = []
-        saved = 0
-        touched = []  # type: List[int]
-        try:
-            for r in self.rows:
-                codes = [c for c in self._row_codes(r) if str(c).strip(" \t\r\n")]
-                if not codes:
-                    continue
-                oid = int(r["order_id"])
-                for code in codes:
-                    ok, err = self.kiz.validate_mark(
-                        code,
-                        r.get("skus") or [],
-                        bool(r.get("skip_kiz_gtin_check")),
-                    )
-                    if not ok:
-                        self.row_errors[oid] = err
-                        errors.append("{}: {}".format(oid, err))
-                        touched.append(oid)
-                        break
-                else:
-                    try:
-                        self.kiz.save_to_wb(
-                            self.source_id, self.api_key, oid, codes
-                        )
-                        self.row_errors.pop(oid, None)
-                        r["kiz_wb_synced"] = True
-                        r["kiz_status"] = "ok"
-                        saved += 1
-                        touched.append(oid)
-                    except Exception as exc:
-                        self.row_errors[oid] = str(exc)
-                        errors.append("{}: {}".format(oid, exc))
-                        touched.append(oid)
-            self._sync_session_kiz_rows()
-            self._refresh_changed_rows(sorted(set(touched)))
-            self._apply_filters()
-            if errors:
-                self._set_info("\n".join(errors[:3]))
-                if len(errors) > 3:
-                    QMessageBox.warning(
-                        self, "КИЗ", "\n".join(errors[:12])
-                    )
-            elif saved:
-                self._set_info("Сохранено в WB: {} заказ(ов)".format(saved), ok=True)
-            else:
-                self._set_info("Нет изменений для сохранения")
-        finally:
-            self._saving = False
-            self.save_btn.setEnabled(True)
+        total = len(jobs)
+        self.save_btn.setText("0 из {}".format(total))
+        self._set_info("Сохранение в WB: 0 из {}".format(total), ok=True)
+
+        worker = _KizSaveWorker(
+            self.kiz.db,
+            self.source_id,
+            self.api_key,
+            jobs,
+        )
+        self._save_worker = worker
+        if worker not in self._alive_workers:
+            self._alive_workers.append(worker)
+        worker.progress.connect(self._on_save_progress)
+        worker.finished_ok.connect(self._on_save_finished)
+        worker.failed.connect(self._on_save_failed)
+        worker.start()
+
+    def _on_save_progress(
+        self, done: int, total: int, order_id: int, ok: bool, error: str
+    ) -> None:
+        self.save_btn.setText("{} из {}".format(done, total))
+        self._set_info(
+            "Сохранение в WB: {} из {}".format(done, total),
+            ok=True,
+        )
+        oid = int(order_id)
+        row = self._row_by_oid.get(oid)
+        if row is None:
+            return
+        if ok:
+            self.row_errors.pop(oid, None)
+            self._save_failed_oids.discard(oid)
+            row["kiz_wb_synced"] = True
+            row["kiz_status"] = "ok"
+        else:
+            msg = str(error or "Ошибка сохранения")
+            self.row_errors[oid] = msg
+            self._save_failed_oids.add(oid)
+            row["kiz_wb_synced"] = False
+            row["kiz_status"] = "error"
+        self._refresh_row(oid)
+
+    def _on_save_finished(self, result: object) -> None:
+        payload = result if isinstance(result, dict) else {}
+        worker = self._save_worker
+        self._save_worker = None
+        if worker is not None:
+            self._disconnect_worker(worker, "progress", "finished_ok", "failed")
+
+        self._saving = False
+        saved = int(payload.get("saved") or 0)
+        errors = list(payload.get("errors") or [])
+        stopped = bool(payload.get("stopped"))
+        failed_oids = {int(e.get("order_id") or 0) for e in errors if e.get("order_id")}
+        self._save_failed_oids = {oid for oid in failed_oids if oid}
+        self._save_retry_mode = bool(self._save_failed_oids)
+        self._sync_session_kiz_rows()
+        self._apply_filters()
+        self._update_save_button()
+
+        if stopped:
+            self._set_info(
+                "Сохранение остановлено. Успешно: {}, ошибок: {}".format(
+                    saved, len(self._save_failed_oids)
+                )
+            )
+            return
+        if self._save_failed_oids:
+            lines = [
+                "{}: {}".format(e.get("order_id"), e.get("error"))
+                for e in errors[:3]
+            ]
+            self._set_info(
+                "Сохранено: {}. Ошибки ({}):\n{}".format(
+                    saved, len(self._save_failed_oids), "\n".join(lines)
+                )
+            )
+            if len(errors) > 3:
+                QMessageBox.warning(
+                    self,
+                    "КИЗ",
+                    "\n".join(
+                        "{}: {}".format(e.get("order_id"), e.get("error"))
+                        for e in errors[:12]
+                    ),
+                )
+            return
+        if saved:
+            self._set_info("Сохранено в WB: {} заказ(ов)".format(saved), ok=True)
+        else:
+            self._set_info("Нет изменений для сохранения")
+
+    def _on_save_failed(self, message: str) -> None:
+        worker = self._save_worker
+        self._save_worker = None
+        if worker is not None:
+            self._disconnect_worker(worker, "progress", "finished_ok", "failed")
+        self._saving = False
+        self._update_save_button()
+        self._set_info(str(message or "Ошибка сохранения"))
 
     def _sync_session_kiz_rows(self) -> None:
         session = supply_session.get_session(self.source_id, self.supply_id)

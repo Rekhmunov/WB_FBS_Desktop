@@ -8,6 +8,7 @@ from app.services.kiz_pick import (
     PickVerifyService,
     extract_gtin,
     gtin_matches_skus,
+    pending_wb_save_jobs,
 )
 
 
@@ -28,6 +29,61 @@ class GtinValidationTests(unittest.TestCase):
         )
         self.assertFalse(ok)
         self.assertIn("GTIN", err)
+
+
+class PendingWbSaveJobsTests(unittest.TestCase):
+    def test_skips_already_synced(self):
+        rows = [
+            {
+                "order_id": 1,
+                "kiz_codes": ["0104604060004010215A"],
+                "kiz_wb_synced": True,
+                "kiz_status": "ok",
+                "skus": [],
+            },
+            {
+                "order_id": 2,
+                "kiz_codes": ["0104604060004010215B"],
+                "kiz_wb_synced": False,
+                "kiz_status": "pending",
+                "skus": ["1"],
+            },
+        ]
+        jobs = pending_wb_save_jobs(rows)
+        self.assertEqual([j["order_id"] for j in jobs], [2])
+
+    def test_includes_synced_with_error_for_retry(self):
+        rows = [
+            {
+                "order_id": 3,
+                "kiz_codes": ["0104604060004010215C"],
+                "kiz_wb_synced": True,
+                "kiz_status": "ok",
+                "skus": [],
+            }
+        ]
+        jobs = pending_wb_save_jobs(rows, row_errors={3: "timeout"})
+        self.assertEqual([j["order_id"] for j in jobs], [3])
+
+    def test_only_order_ids_filters_retry_set(self):
+        rows = [
+            {
+                "order_id": 10,
+                "kiz_codes": ["a"],
+                "kiz_wb_synced": False,
+                "kiz_status": "error",
+                "skus": [],
+            },
+            {
+                "order_id": 11,
+                "kiz_codes": ["b"],
+                "kiz_wb_synced": False,
+                "kiz_status": "pending",
+                "skus": [],
+            },
+        ]
+        jobs = pending_wb_save_jobs(rows, only_order_ids=[10])
+        self.assertEqual([j["order_id"] for j in jobs], [10])
 
 
 class PickRowsSplitTests(unittest.TestCase):

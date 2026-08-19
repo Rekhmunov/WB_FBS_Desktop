@@ -44,6 +44,49 @@ def gtin_matches_skus(gtin: str, skus: List[Any]) -> bool:
     return False
 
 
+def pending_wb_save_jobs(
+    rows: List[Dict[str, Any]],
+    *,
+    row_errors: Optional[Dict[int, str]] = None,
+    only_order_ids: Optional[List[int]] = None,
+) -> List[Dict[str, Any]]:
+    """Build WB save jobs for orders that still need upload.
+
+    Skips already synced rows. When ``only_order_ids`` is set, only those
+    orders are considered (retry-failed flow).
+    """
+    errors = row_errors or {}
+    only = set(int(x) for x in only_order_ids) if only_order_ids is not None else None
+    jobs = []  # type: List[Dict[str, Any]]
+    for row in rows or []:
+        oid = int(row.get("order_id") or 0)
+        if not oid:
+            continue
+        if only is not None and oid not in only:
+            continue
+        codes = [
+            str(c).strip(" \t\r\n")
+            for c in (row.get("kiz_codes") or [])
+            if str(c).strip(" \t\r\n")
+        ]
+        if not codes:
+            continue
+        synced = bool(row.get("kiz_wb_synced"))
+        status = str(row.get("kiz_status") or "")
+        has_error = oid in errors or status == "error"
+        if synced and not has_error and status != "pending":
+            continue
+        jobs.append(
+            {
+                "order_id": oid,
+                "codes": codes,
+                "skus": list(row.get("skus") or []),
+                "skip_kiz_gtin_check": bool(row.get("skip_kiz_gtin_check")),
+            }
+        )
+    return jobs
+
+
 def _format_created(iso: object) -> str:
     raw = str(iso or "").strip()
     if not raw:

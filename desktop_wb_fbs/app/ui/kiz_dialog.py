@@ -18,6 +18,7 @@ from PyQt5.QtWidgets import (
     QMessageBox,
     QPushButton,
     QScrollArea,
+    QSizePolicy,
     QTableWidget,
     QTableWidgetItem,
     QToolButton,
@@ -162,16 +163,21 @@ class KizDialog(QDialog):
         head_main.addWidget(title)
         head_main.addWidget(sub)
         header_lay.addLayout(head_main, 1)
+        head_actions = QHBoxLayout()
+        head_actions.setSpacing(8)
         self.save_btn = QPushButton("Сохранить")
         self.save_btn.setObjectName("bottomPrimary")
+        self.save_btn.setFixedHeight(40)
+        self.save_btn.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
         self.save_btn.clicked.connect(self.save_all)
         close_btn = QToolButton()
         close_btn.setObjectName("iconBtn")
         close_btn.setText("✕")
         close_btn.setToolTip("Закрыть")
         close_btn.clicked.connect(self.reject)
-        header_lay.addWidget(self.save_btn)
-        header_lay.addWidget(close_btn)
+        head_actions.addWidget(self.save_btn)
+        head_actions.addWidget(close_btn)
+        header_lay.addLayout(head_actions)
         root.addWidget(header)
 
         # Toolbar: filters + search + counter
@@ -390,11 +396,24 @@ class KizDialog(QDialog):
                 continue
             row["kiz_codes"] = [inp.text() for inp in inputs] or [""]
 
+    def _clear_table(self) -> None:
+        self.table.clearSpans()
+        self.table.setRowCount(0)
+        self.table.clearContents()
+
+    def _show_loading_row(self) -> None:
+        self._clear_table()
+        self.table.setRowCount(1)
+        self.table.setSpan(0, 0, 1, self.table.columnCount())
+        loading = QTableWidgetItem("Загрузка…")
+        loading.setTextAlignment(Qt.AlignCenter)
+        loading.setFlags(Qt.ItemIsEnabled)
+        self.table.setItem(0, 0, loading)
+
     def load_rows(self) -> None:
         self._set_filters_ready(False)
         self.save_btn.setEnabled(False)
-        self.table.setRowCount(1)
-        self.table.setItem(0, 0, QTableWidgetItem("Загрузка…"))
+        self._show_loading_row()
         QApplication.processEvents()
         session = supply_session.get_session(self.source_id, self.supply_id)
         try:
@@ -694,6 +713,7 @@ class KizDialog(QDialog):
         self._code_inputs = {}
         self._update_counter()
         rows = self._visible_rows()
+        self._clear_table()
         self.table.setRowCount(len(rows))
         pending = self._pending_order_id
         for i, r in enumerate(rows):

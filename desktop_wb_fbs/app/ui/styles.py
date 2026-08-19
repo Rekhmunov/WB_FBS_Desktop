@@ -978,7 +978,10 @@ QLabel#kizSub {
     max-width: 640px;
 }
 QFrame#kizHeader QPushButton#bottomPrimary {
+    min-width: 0;
+    max-width: 140px;
     min-height: 40px;
+    max-height: 40px;
     padding: 8px 16px;
 }
 QToolButton#iconBtn {

@@ -27,9 +27,16 @@ def _esc(value: object) -> str:
     return html.escape(str(value or ""), quote=True)
 
 
+_CARD_META_CACHE_TTL_SEC = 1800.0
+_card_meta_cache = {}  # type: Dict[tuple, tuple]
+_card_meta_cache_lock = threading.Lock()
+
 _STICKERS_CACHE_TTL_SEC = 120.0
 _stickers_cache = {}  # type: Dict[tuple, tuple]
 _stickers_cache_lock = threading.Lock()
+
+_PICKING_MAX_EMBEDDED_PHOTOS = 40
+_PICKING_PHOTO_MAX_BYTES = 512 * 1024
 
 
 def _api_key_fp(api_key: str) -> str:
@@ -61,6 +68,23 @@ def _cache_put_stickers(key: tuple, data: Dict[int, Dict[str, Any]]) -> None:
         return
     with _stickers_cache_lock:
         _stickers_cache[key] = (time.monotonic(), copy.deepcopy(data))
+
+
+def _cache_get_card_meta(fp: str, nm_id: int) -> Optional[Dict[str, Any]]:
+    with _card_meta_cache_lock:
+        item = _card_meta_cache.get((fp, nm_id))
+        if not item:
+            return None
+        ts, data = item
+        if time.monotonic() - ts > _CARD_META_CACHE_TTL_SEC:
+            _card_meta_cache.pop((fp, nm_id), None)
+            return None
+        return copy.deepcopy(data)
+
+
+def _cache_put_card_meta(fp: str, nm_id: int, card: Dict[str, Any]) -> None:
+    with _card_meta_cache_lock:
+        _card_meta_cache[(fp, nm_id)] = (time.monotonic(), copy.deepcopy(card))
 
 
 def open_html(html_doc: str, basename: str) -> Path:
@@ -164,11 +188,13 @@ def build_groups(
     return list(grouped.values())
 
 
-def _photo_data_uri(path: str) -> str:
+def _photo_data_uri(path: str, max_bytes: int = _PICKING_PHOTO_MAX_BYTES) -> str:
     p = Path(path)
     if not p.is_file():
         return ""
     try:
+        if p.stat().st_size > max_bytes:
+            return ""
         raw = p.read_bytes()
     except Exception:
         return ""
@@ -268,32 +294,61 @@ def _fetch_picking_stickers(api_key: str, order_ids: List[int]) -> Dict[int, Dic
     stickers = fetch_stickers_map(
         api_key, order_ids, sticker_type="svg", keep_files=False
     )
-    missing = sum(
-        1
+    missing = [
+        int(oid)
         for oid in order_ids
-        if not str((stickers.get(oid) or {}).get("partB") or "").strip()
-    )
-    if order_ids and missing > max(1, len(order_ids) // 2):
-        stickers = fetch_stickers_map(
-            api_key, order_ids, sticker_type="png", keep_files=False
+        if not str((stickers.get(int(oid)) or {}).get("partB") or "").strip()
+    ]
+    if missing:
+        png_part = fetch_stickers_map(
+            api_key, missing, sticker_type="png", keep_files=False
         )
+        stickers.update(png_part)
     return stickers
 
 
-def fetch_cards(api_key: str, orders: List[Dict[str, Any]]) -> Dict[int, Dict[str, Any]]:
-    nm_ids = []
+def fetch_cards(
+    api_key: str,
+    orders: List[Dict[str, Any]],
+    *,
+    network: bool = True,
+) -> Dict[int, Dict[str, Any]]:
+    nm_ids = []  # type: List[int]
+    seen = set()  # type: set
     for o in orders:
         try:
-            if o.get("nm_id") is not None:
-                nm_ids.append(int(o["nm_id"]))
+            nm = int(o.get("nm_id"))
         except (TypeError, ValueError):
-            pass
+            continue
+        if nm in seen:
+            continue
+        seen.add(nm)
+        nm_ids.append(nm)
     if not nm_ids:
         return {}
+
+    fp = _api_key_fp(api_key) if api_key else ""
+    out = {}  # type: Dict[int, Dict[str, Any]]
+    missing = []  # type: List[int]
+    for nm in nm_ids:
+        cached = _cache_get_card_meta(fp, nm) if fp else None
+        if cached is not None:
+            out[nm] = cached
+        else:
+            missing.append(nm)
+
+    if not network or not missing or not api_key:
+        return out
+
     try:
-        return WbContentClient(api_key).get_cards_by_nm_ids(nm_ids)
+        fetched = WbContentClient(api_key).get_cards_by_nm_ids(missing)
     except Exception:
-        return {}
+        fetched = {}
+    for nm, card in fetched.items():
+        out[int(nm)] = card
+        if fp:
+            _cache_put_card_meta(fp, int(nm), card)
+    return out
 
 
 def render_picking_list_html(
@@ -583,6 +638,7 @@ def print_picking_list(
     api_key: str,
     supply_id: str,
     variant: str = "summary",
+    preloaded_stickers: Optional[Dict[int, Dict[str, Any]]] = None,
 ) -> Path:
     supply = orders_svc.get_supply(source_id, supply_id) or {}
     rows = orders_svc.orders_in_supply(source_id, supply_id, api_key="")
@@ -592,20 +648,42 @@ def print_picking_list(
     products = ProductService(db).list_all()
     is_extended = str(variant).lower() == "extended"
     if is_extended:
-        stickers = _fetch_picking_stickers(api_key, ids)
-        cards = fetch_cards(api_key, rows)
+        if preloaded_stickers is not None:
+            stickers = {
+                int(oid): dict(meta)
+                for oid, meta in preloaded_stickers.items()
+                if oid is not None
+            }
+            missing = [
+                oid
+                for oid in ids
+                if not str((stickers.get(oid) or {}).get("partB") or "").strip()
+            ]
+            if missing and api_key:
+                stickers.update(_fetch_picking_stickers(api_key, missing))
+        else:
+            stickers = _fetch_picking_stickers(api_key, ids)
+        # Extended list uses local catalog names; Content API is optional (slow).
+        cards = {}
     else:
         # Summary list only needs local product names and counts — no WB API.
         stickers = {}
         cards = {}
     groups = build_groups(rows, stickers, cards, products)
-    # Embed local photos as data URIs for browser print
-    for g in groups:
-        photo = str(g.get("product_photo") or "").strip()
-        if photo and not photo.startswith("data:"):
-            data_uri = _photo_data_uri(photo)
-            if data_uri:
-                g["product_photo"] = data_uri
+    if is_extended:
+        embedded = 0
+        for g in groups:
+            if embedded >= _PICKING_MAX_EMBEDDED_PHOTOS:
+                g["product_photo"] = ""
+                continue
+            photo = str(g.get("product_photo") or "").strip()
+            if photo and not photo.startswith("data:"):
+                data_uri = _photo_data_uri(photo)
+                if data_uri:
+                    g["product_photo"] = data_uri
+                    embedded += 1
+                else:
+                    g["product_photo"] = ""
     html_doc = render_picking_list_html(
         supply_id,
         str(supply.get("name") or ""),

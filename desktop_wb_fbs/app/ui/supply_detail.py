@@ -631,6 +631,19 @@ class SupplyDetailDialog(QDialog):
     def picking_list(self, variant: str = "summary") -> None:
         from app.services.print_docs import print_picking_list
 
+        preloaded = None
+        if str(variant).lower() == "extended" and self._all_rows:
+            preloaded = {}
+            for row in self._all_rows:
+                oid = row.get("order_id")
+                if oid is None:
+                    continue
+                preloaded[int(oid)] = {
+                    "partA": row.get("sticker_part_a") or "",
+                    "partB": row.get("sticker_part_b") or "",
+                    "file_b64": "",
+                }
+
         QApplication.setOverrideCursor(QCursor(Qt.WaitCursor))
         try:
             path = print_picking_list(
@@ -640,6 +653,7 @@ class SupplyDetailDialog(QDialog):
                 self.api_key,
                 self.supply_id,
                 variant=variant,
+                preloaded_stickers=preloaded,
             )
             self._last_status_note = "открыт {}".format(path.name)
             self.meta.setText(self._last_status_note)

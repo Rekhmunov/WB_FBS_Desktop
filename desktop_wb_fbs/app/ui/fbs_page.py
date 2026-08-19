@@ -28,8 +28,14 @@ from PyQt5.QtWidgets import (
 from app.db import Database
 from app.services import SourceService
 from app.services.orders import OrdersService
-from app.ui.format_helpers import ago_label, make_badge, make_photo_label
-from app.ui.layout_utils import FlowLayout, fit_tab_button
+from app.ui.format_helpers import (
+    ago_label,
+    format_date_short,
+    make_badge,
+    make_photo_label,
+    make_status_pill,
+)
+from app.ui.layout_utils import FlowLayout, FbsTabButton, fit_tab_button
 from app.wb.sync import sync_source
 
 
@@ -224,17 +230,13 @@ class FbsPage(QWidget):
 
         self._tab_group = QButtonGroup(self)
         self._tab_group.setExclusive(True)
-        self.tab_btns = {}  # type: Dict[str, QPushButton]
+        self.tab_btns = {}  # type: Dict[str, FbsTabButton]
         for key, label in (
             ("new", "Новые"),
             ("assembly", "На сборке"),
             ("delivery", "В доставке"),
         ):
-            btn = QPushButton("{} · 0".format(label))
-            btn.setObjectName("tabBtn")
-            btn.setCheckable(True)
-            btn.setCursor(Qt.PointingHandCursor)
-            btn.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Preferred)
+            btn = FbsTabButton(label)
             self._tab_group.addButton(btn)
             self.tab_btns[key] = btn
             tabs_row.addWidget(btn)
@@ -245,6 +247,7 @@ class FbsPage(QWidget):
 
         self.collect_mgt_btn = QPushButton("Собрать все МГТ-заказы")
         self.collect_mgt_btn.setObjectName("mgtBtn")
+        self.collect_mgt_btn.setCursor(Qt.PointingHandCursor)
         self.collect_mgt_btn.setToolTip("Собрать все МГТ-заказы текущего кабинета")
         self.collect_mgt_btn.clicked.connect(self.collect_mgt)
         tabs_row.addWidget(self.collect_mgt_btn)
@@ -334,37 +337,37 @@ class FbsPage(QWidget):
         bottom_outer.addLayout(bottom)
         root.addWidget(self.bottom_bar)
 
-        # Pagination — compact modern strip (combo instead of XP spinbox)
+        # Pagination — portal-like: total left, nav + page size right
         pager_frame = QFrame()
         pager_frame.setObjectName("pagerBar")
         pager = QHBoxLayout(pager_frame)
-        pager.setContentsMargins(0, 0, 0, 0)
+        pager.setContentsMargins(0, 4, 0, 0)
         pager.setSpacing(8)
+        self.pager_total = QLabel("Заказов: 0")
+        self.pager_total.setObjectName("pagerTotal")
+        pager.addWidget(self.pager_total)
         pager.addStretch(1)
-        pager_hint = QLabel("На стр.")
-        pager_hint.setObjectName("hint")
-        pager.addWidget(pager_hint)
-        self.page_size = QComboBox()
-        self.page_size.setObjectName("pageSizeCombo")
-        for n in (30, 50, 100):
-            self.page_size.addItem(str(n), n)
-        self.page_size.setCurrentIndex(1)  # 50
-        self.page_size.currentIndexChanged.connect(self.reload_table)
-        pager.addWidget(self.page_size)
-        self.prev_btn = QPushButton("←")
+        self.prev_btn = QPushButton("← Назад")
         self.prev_btn.setObjectName("pagerBtn")
         self.prev_btn.setCursor(Qt.PointingHandCursor)
         self.prev_btn.clicked.connect(self.prev_page)
-        self.next_btn = QPushButton("→")
+        self.next_btn = QPushButton("Вперёд →")
         self.next_btn.setObjectName("pagerBtn")
         self.next_btn.setCursor(Qt.PointingHandCursor)
         self.next_btn.clicked.connect(self.next_page)
-        self.page_label = QLabel("1/1 · 0")
+        self.page_label = QLabel("1 / 1")
         self.page_label.setObjectName("pageMeta")
         self.page_label.setAlignment(Qt.AlignCenter)
         pager.addWidget(self.prev_btn)
         pager.addWidget(self.page_label)
         pager.addWidget(self.next_btn)
+        self.page_size = QComboBox()
+        self.page_size.setObjectName("pageSizeCombo")
+        for n in (30, 50, 100):
+            self.page_size.addItem("{} / стр.".format(n), n)
+        self.page_size.setCurrentIndex(1)  # 50
+        self.page_size.currentIndexChanged.connect(self.reload_table)
+        pager.addWidget(self.page_size)
         root.addWidget(pager_frame)
 
         # Web parity: live search waits 400ms after the last keystroke before
@@ -462,7 +465,8 @@ class FbsPage(QWidget):
         sid = self._selected_supply_id() if (is_asm or is_del) else None
         has_new_sel = bool(self._selected_order_ids) or self._select_all_matching
 
-        self.collect_mgt_btn.setVisible(is_new)
+        # Web: MGT button stays available on all operational tabs when mgt_new > 0.
+        # Visibility is driven by reload_table via counts; keep enabled here.
         self.btn_select_page.setVisible(is_new)
         self.btn_select_all_matching.setVisible(is_new)
         self.btn_clear_sel.setVisible(is_new and bool(self._selected_order_ids))
@@ -500,14 +504,18 @@ class FbsPage(QWidget):
 
     def _update_tab_labels(self, counts: Dict[str, int]) -> None:
         mapping = (
-            ("new", "Новые", counts.get("new", 0)),
-            ("assembly", "На сборке", counts.get("assembly", 0)),
-            ("delivery", "В доставке", counts.get("delivery", 0)),
+            ("new", counts.get("new", 0)),
+            ("assembly", counts.get("assembly", 0)),
+            ("delivery", counts.get("delivery", 0)),
         )
-        for key, label, n in mapping:
+        for key, n in mapping:
             btn = self.tab_btns[key]
-            btn.setText("{} · {}".format(label, n))
-            fit_tab_button(btn)
+            btn.set_count(int(n))
+            btn.setChecked(key == self._tab)
+
+        mgt_new = int(counts.get("mgt_new") or 0)
+        show_mgt = mgt_new > 0 and self._tab in ("new", "assembly", "delivery")
+        self.collect_mgt_btn.setVisible(show_mgt)
 
     def reload_table(self) -> None:
         self.update_bottom_visibility()
@@ -517,6 +525,11 @@ class FbsPage(QWidget):
         sid = int(src["id"])
         counts = self.orders.tab_counts(sid)
         self._update_tab_labels(counts)
+
+        if self._tab == "new":
+            self.search.setPlaceholderText("Поиск по заказу, артикулу, ШК…")
+        else:
+            self.search.setPlaceholderText("Поиск по поставке, заказу, складу…")
 
         limit = int(self.page_size.currentData() or 50)
         offset = self._page * limit
@@ -551,6 +564,7 @@ class FbsPage(QWidget):
                     n_sel, "заказ" if n_sel == 1 else "заказов"
                 )
             )
+            self.pager_total.setText("Заказов: {}".format(total))
         elif self._tab == "assembly":
             rows, total = self.orders.list_supplies(
                 sid, done=False, search=search, limit=limit, offset=offset
@@ -558,6 +572,7 @@ class FbsPage(QWidget):
             self._last_total = total
             self._fill_supplies_table(rows)
             self.sel_label.setText("Поставки на сборке")
+            self.pager_total.setText("Поставок: {}".format(total))
         else:
             rows, total = self.orders.list_supplies(
                 sid, done=True, search=search, limit=limit, offset=offset
@@ -565,15 +580,22 @@ class FbsPage(QWidget):
             self._last_total = total
             self._fill_supplies_table(rows)
             self.sel_label.setText("Поставки в доставке")
+            self.pager_total.setText("Поставок: {}".format(total))
 
         pages = max(1, (total + limit - 1) // limit)
         if self._page >= pages:
             self._page = pages - 1
-        self.page_label.setText("{}/{} · {}".format(self._page + 1, pages, total))
+        self.page_label.setText("{} / {}".format(self._page + 1, pages))
+        self.prev_btn.setEnabled(self._page > 0)
+        self.next_btn.setEnabled(self._page + 1 < pages)
         self.update_bottom_visibility()
 
     def _table_layout(self) -> str:
-        return "new" if self._tab == "new" else "supplies"
+        if self._tab == "new":
+            return "new"
+        if self._tab == "assembly":
+            return "supplies_assembly"
+        return "supplies_delivery"
 
     @staticmethod
     def _col_settings_key(layout: str) -> str:
@@ -582,7 +604,10 @@ class FbsPage(QWidget):
     @staticmethod
     def _default_col_widths(layout: str, count: int) -> List[int]:
         defaults = {
-            "new": [40, 92, 120, 320, 100, 88, 140],
+            "new": [40, 180, 420, 200],
+            "supplies_assembly": [40, 280, 180, 140, 160, 160],
+            "supplies_delivery": [40, 220, 160, 140, 160, 140, 160, 48],
+            # Legacy key kept for older installs that still have saved widths.
             "supplies": [168, 280, 72, 72, 88, 160, 48, 56],
         }
         base = list(defaults.get(layout, []))
@@ -661,18 +686,18 @@ class FbsPage(QWidget):
         return item
 
     def _fill_orders_table(self, rows: List[Dict[str, Any]]) -> None:
-        """Rich rows mirror web: photo / bold order+age / product+badges."""
+        """Web «Новые»: checkbox | Заказ | Товар (photo+text) | Склад."""
         try:
             self.table.itemChanged.disconnect(self._on_check_change)
         except Exception:
             pass
-        cols = ["", "Фото", "Заказ", "Товар", "Склад", "Цена", "ШК"]
+        cols = ["", "Заказ", "Товар", "Склад"]
         self.table.blockSignals(True)
         self.table.clear()
         self.table.setColumnCount(len(cols))
         self.table.setHorizontalHeaderLabels(cols)
         self.table.setRowCount(len(rows))
-        self.table.verticalHeader().setDefaultSectionSize(88)
+        self.table.verticalHeader().setDefaultSectionSize(120)
         for r, row in enumerate(rows):
             oid = int(row["order_id"])
             chk = QTableWidgetItem()
@@ -683,66 +708,81 @@ class FbsPage(QWidget):
             chk.setData(Qt.UserRole, oid)
             self.table.setItem(r, 0, chk)
 
-            photo_wrap = QWidget()
-            photo_lay = QVBoxLayout(photo_wrap)
-            photo_lay.setContentsMargins(8, 8, 8, 8)
-            photo_lay.setAlignment(Qt.AlignCenter)
-            photo_lay.addWidget(make_photo_label(row.get("product_photo"), 72))
-            self.table.setCellWidget(r, 1, photo_wrap)
-
             order_widget = QWidget()
             order_lay = QVBoxLayout(order_widget)
             order_lay.setContentsMargins(10, 10, 10, 10)
             order_lay.setSpacing(4)
-            order_lay.addWidget(self._bold_label(str(oid)))
+            oid_lab = QLabel(str(oid))
+            oid_lab.setObjectName("orderIdLabel")
+            order_lay.addWidget(oid_lab)
+            created = format_date_short(row.get("created_at_wb"))
+            if created:
+                meta = QLabel("от {}".format(created))
+                meta.setObjectName("supplyMeta")
+                order_lay.addWidget(meta)
+            badges_row = QHBoxLayout()
+            badges_row.setContentsMargins(0, 0, 0, 0)
+            badges_row.setSpacing(4)
             ago = ago_label(row.get("created_at_wb"))
             if ago:
-                order_lay.addWidget(make_badge(ago, "time"))
-            order_lay.addStretch(1)
-            self.table.setCellWidget(r, 2, order_widget)
-
-            prod_widget = QWidget()
-            prod_lay = QVBoxLayout(prod_widget)
-            prod_lay.setContentsMargins(10, 10, 10, 10)
-            prod_lay.setSpacing(4)
-            article = str(row.get("article") or "")
-            name = str(row.get("product_name") or article or "—")
-            prod_lay.addWidget(self._bold_label(name, wrap=True))
-            if article and row.get("product_name"):
-                sub = QLabel("Арт. {}".format(article))
-                sub.setObjectName("hint")
-                prod_lay.addWidget(sub)
-            badge_pairs = []
+                badges_row.addWidget(make_badge(ago, "time"))
             cargo = row.get("cargo_label")
             if cargo:
-                badge_pairs.append((cargo, "cargo"))
+                badges_row.addWidget(make_badge(str(cargo), "cargo"))
             if row.get("is_b2b"):
-                badge_pairs.append(("B2B", ""))
-            if badge_pairs:
-                badges_row = QHBoxLayout()
-                badges_row.setContentsMargins(0, 0, 0, 0)
-                badges_row.setSpacing(4)
-                for text, kind in badge_pairs:
-                    badges_row.addWidget(make_badge(text, kind))
-                badges_row.addStretch(1)
-                prod_lay.addLayout(badges_row)
-            prod_lay.addStretch(1)
-            self.table.setCellWidget(r, 3, prod_widget)
+                badges_row.addWidget(make_badge("B2B", ""))
+            badges_row.addStretch(1)
+            order_lay.addLayout(badges_row)
+            order_lay.addStretch(1)
+            self.table.setCellWidget(r, 1, order_widget)
 
-            self.table.setItem(
-                r,
-                4,
-                QTableWidgetItem(
-                    str(row.get("warehouse_label") or row.get("warehouse_id") or "")
-                ),
-            )
-            self.table.setItem(
-                r, 5, QTableWidgetItem(str(row.get("price_label") or ""))
-            )
+            prod_widget = QWidget()
+            prod_outer = QHBoxLayout(prod_widget)
+            prod_outer.setContentsMargins(10, 10, 10, 10)
+            prod_outer.setSpacing(12)
+            prod_outer.setAlignment(Qt.AlignTop)
+            prod_outer.addWidget(make_photo_label(row.get("product_photo"), 96))
+            text_col = QVBoxLayout()
+            text_col.setSpacing(4)
+            article = str(row.get("article") or "")
+            name = str(row.get("product_name") or article or "—")
+            name_lab = QLabel(name)
+            name_lab.setObjectName("productName")
+            name_lab.setWordWrap(True)
+            text_col.addWidget(name_lab)
+            sub_parts = ["Арт. {}".format(article or "—")]
+            if row.get("nm_id"):
+                sub_parts.append("nmId {}".format(row.get("nm_id")))
+            sub = QLabel(" · ".join(sub_parts))
+            sub.setObjectName("productSub")
+            text_col.addWidget(sub)
             skus = row.get("skus") or []
-            self.table.setItem(
-                r, 6, QTableWidgetItem(", ".join(str(s) for s in skus[:3]))
-            )
+            for s in skus[:4]:
+                bc = QLabel(str(s))
+                bc.setObjectName("barcodeLine")
+                text_col.addWidget(bc)
+            text_col.addStretch(1)
+            prod_outer.addLayout(text_col, 1)
+            self.table.setCellWidget(r, 2, prod_widget)
+
+            wh_widget = QWidget()
+            wh_lay = QVBoxLayout(wh_widget)
+            wh_lay.setContentsMargins(10, 10, 10, 10)
+            wh_lay.setSpacing(4)
+            wh_name = str(row.get("warehouse_label") or "—")
+            wh_lab = QLabel(wh_name)
+            wh_lab.setObjectName("whName")
+            wh_lab.setWordWrap(True)
+            wh_lay.addWidget(wh_lab)
+            if row.get("warehouse_id") is not None:
+                wh_id = QLabel("ID {}".format(row.get("warehouse_id")))
+                wh_id.setObjectName("supplyMeta")
+                wh_lay.addWidget(wh_id)
+            wh_lay.addStretch(1)
+            self.table.setCellWidget(r, 3, wh_widget)
+
+            self.table.resizeRowToContents(r)
+            self.table.setRowHeight(r, max(self.table.rowHeight(r), 120))
         self.table.blockSignals(False)
         self.table.itemChanged.connect(self._on_check_change)
         self._apply_table_col_widths("new")
@@ -752,6 +792,10 @@ class FbsPage(QWidget):
             return
         oid = item.data(Qt.UserRole)
         if oid is None:
+            return
+        # Supplies table also uses col-0 checkboxes with string supply ids.
+        if self._tab != "new":
+            self.update_bottom_visibility()
             return
         if item.checkState() == Qt.Checked:
             self._selected_order_ids.add(int(oid))
@@ -783,82 +827,188 @@ class FbsPage(QWidget):
             )
         return menu
 
+    @staticmethod
+    def _boxes_label(n: int) -> str:
+        if n == 1:
+            return "1 грузоместо"
+        if 2 <= n <= 4:
+            return "{} грузоместа".format(n)
+        return "{} грузомест".format(n)
+
     def _fill_supplies_table(self, rows: List[Dict[str, Any]]) -> None:
+        """Portal columns for «На сборке» / «В доставке»."""
         try:
             self.table.itemChanged.disconnect(self._on_check_change)
         except Exception:
             pass
-        cols = ["Поставка", "Название", "Заказов", "Коробов", "Тип", "Статус", "B2B", ""]
+        is_assembly = self._tab == "assembly"
+        if is_assembly:
+            cols = [
+                "",
+                "Поставка",
+                "QR-код поставки",
+                "Заказы и грузоместа",
+                "Этап сборки",
+                "Склад",
+            ]
+        else:
+            cols = [
+                "",
+                "Поставка",
+                "QR-код поставки",
+                "Статус",
+                "Время сканирования QR-кода поставки",
+                "Заказы и грузоместа",
+                "Склад",
+                "",
+            ]
+        layout = "supplies_assembly" if is_assembly else "supplies_delivery"
         self.table.blockSignals(True)
         self.table.clear()
         self.table.setColumnCount(len(cols))
         self.table.setHorizontalHeaderLabels(cols)
         self.table.setRowCount(len(rows))
-        self.table.verticalHeader().setDefaultSectionSize(52)
+        self.table.verticalHeader().setDefaultSectionSize(88)
         for r, row in enumerate(rows):
             sid = str(row.get("supply_id") or "")
-            item0 = self._table_text_item(sid, bold=True, tooltip=sid)
-            item0.setData(Qt.UserRole, sid)
-            self.table.setItem(r, 0, item0)
+            chk = QTableWidgetItem()
+            chk.setFlags(Qt.ItemIsUserCheckable | Qt.ItemIsEnabled | Qt.ItemIsSelectable)
+            chk.setCheckState(Qt.Unchecked)
+            chk.setData(Qt.UserRole, sid)
+            self.table.setItem(r, 0, chk)
 
-            name_text = str(row.get("name") or "")
-            if row.get("pickup_allowed"):
-                name_widget = QWidget()
-                name_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
-                name_lay = QVBoxLayout(name_widget)
-                name_lay.setContentsMargins(12, 6, 12, 6)
-                name_lay.setSpacing(4)
-                name_lay.addWidget(self._bold_label(name_text, wrap=True))
-                pvz_row = QHBoxLayout()
-                pvz_row.setContentsMargins(0, 0, 0, 0)
-                pvz_row.setSpacing(4)
-                pvz_row.addWidget(make_badge("Можно в ПВЗ", "pvz"))
-                pvz_row.addStretch(1)
-                name_lay.addLayout(pvz_row)
-                self.table.setCellWidget(r, 1, name_widget)
-            else:
-                self.table.setItem(
-                    r, 1, self._table_text_item(name_text, bold=True, tooltip=name_text)
+            name_widget = QWidget()
+            name_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
+            name_lay = QVBoxLayout(name_widget)
+            name_lay.setContentsMargins(12, 8, 12, 8)
+            name_lay.setSpacing(4)
+            name_lab = QLabel(str(row.get("name") or ("Поставка " + sid)))
+            name_lab.setObjectName("supplyLink" if is_assembly else "whName")
+            name_lab.setWordWrap(True)
+            if is_assembly:
+                name_lab.setCursor(Qt.PointingHandCursor)
+                name_lab.mousePressEvent = (  # type: ignore[method-assign]
+                    lambda _ev, s=sid: self._open_supply_by_id(s)
                 )
+            name_lay.addWidget(name_lab)
+            created = format_date_short(row.get("created_at_wb"))
+            if created:
+                meta = QLabel("от {}".format(created))
+                meta.setObjectName("supplyMeta")
+                name_lay.addWidget(meta)
+            badges_row = QHBoxLayout()
+            badges_row.setContentsMargins(0, 0, 0, 0)
+            badges_row.setSpacing(4)
+            cargo = row.get("cargo_label")
+            if cargo:
+                badges_row.addWidget(make_badge(str(cargo), "cargo"))
+            if row.get("pickup_allowed"):
+                badges_row.addWidget(make_badge("Можно в ПВЗ", "pvz"))
+            badges_row.addStretch(1)
+            name_lay.addLayout(badges_row)
+            self.table.setCellWidget(r, 1, name_widget)
 
-            for col, key, tip in (
-                (2, "order_count", ""),
-                (3, "boxes_count", ""),
-                (4, "cargo_label", "cargo_label"),
-                (5, "status_label", "status_label"),
-            ):
-                val = str(row.get(key) or (0 if key.endswith("_count") else ""))
-                item = self._table_text_item(val, tooltip=str(row.get(tip) or val))
-                self.table.setItem(r, col, item)
-            self.table.setItem(
-                r,
-                6,
-                self._table_text_item("да" if row.get("is_b2b") else ""),
+            qr_lab = QLabel(sid or "—")
+            qr_lab.setObjectName("supplyQr")
+            qr_lab.setWordWrap(True)
+            qr_lab.setToolTip(sid)
+            qr_wrap = QWidget()
+            qr_lay = QVBoxLayout(qr_wrap)
+            qr_lay.setContentsMargins(12, 8, 12, 8)
+            qr_lay.addWidget(qr_lab)
+            qr_lay.addStretch(1)
+            self.table.setCellWidget(r, 2, qr_wrap)
+
+            orders_count = int(row.get("order_count") or 0)
+            boxes_count = int(row.get("boxes_count") or 0)
+            orders_widget = QWidget()
+            orders_lay = QVBoxLayout(orders_widget)
+            orders_lay.setContentsMargins(12, 8, 12, 8)
+            orders_lay.setSpacing(2)
+            oc = QLabel(str(orders_count))
+            oc.setObjectName("supplyOrders")
+            orders_lay.addWidget(oc)
+            boxes_meta = QLabel(self._boxes_label(boxes_count))
+            boxes_meta.setObjectName("supplyMeta")
+            orders_lay.addWidget(boxes_meta)
+            orders_lay.addStretch(1)
+
+            status_text = str(
+                row.get("status_label")
+                or ("Сборка заказов" if is_assembly else "Отгрузите поставку")
             )
+            status_kind = str(row.get("status_kind") or ("assembly" if is_assembly else "ship"))
+            status_wrap = QWidget()
+            status_lay = QVBoxLayout(status_wrap)
+            status_lay.setContentsMargins(12, 8, 12, 8)
+            status_lay.addWidget(make_status_pill(status_text, status_kind))
+            status_lay.addStretch(1)
 
-            actions_cell = QWidget()
-            actions_cell.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Minimum)
-            actions_lay = QHBoxLayout(actions_cell)
-            actions_lay.setContentsMargins(8, 6, 8, 6)
-            actions_btn = QToolButton()
-            actions_btn.setObjectName("iconBtn")
-            actions_btn.setText("⋮")
-            actions_btn.setToolTip("Действия")
-            actions_btn.setPopupMode(QToolButton.InstantPopup)
-            actions_btn.setMenu(self._supply_row_menu(sid))
-            actions_lay.addWidget(actions_btn)
-            actions_lay.addStretch(1)
-            self.table.setCellWidget(r, 7, actions_cell)
+            wh_widget = QWidget()
+            wh_lay = QVBoxLayout(wh_widget)
+            wh_lay.setContentsMargins(12, 8, 12, 8)
+            wh_lay.setSpacing(2)
+            wh_lab = QLabel(str(row.get("warehouse_label") or "—"))
+            wh_lab.setObjectName("whName")
+            wh_lab.setWordWrap(True)
+            wh_lay.addWidget(wh_lab)
+            wh_lay.addStretch(1)
+
+            if is_assembly:
+                self.table.setCellWidget(r, 3, orders_widget)
+                self.table.setCellWidget(r, 4, status_wrap)
+                self.table.setCellWidget(r, 5, wh_widget)
+            else:
+                self.table.setCellWidget(r, 3, status_wrap)
+                scan_wrap = QWidget()
+                scan_lay = QVBoxLayout(scan_wrap)
+                scan_lay.setContentsMargins(12, 8, 12, 8)
+                scan_lab = QLabel(format_date_short(row.get("scan_dt")) or "—")
+                scan_lab.setObjectName("supplyMeta")
+                scan_lay.addWidget(scan_lab)
+                scan_lay.addStretch(1)
+                self.table.setCellWidget(r, 4, scan_wrap)
+                self.table.setCellWidget(r, 5, orders_widget)
+                self.table.setCellWidget(r, 6, wh_widget)
+
+                actions_cell = QWidget()
+                actions_cell.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Minimum)
+                actions_lay = QHBoxLayout(actions_cell)
+                actions_lay.setContentsMargins(8, 6, 8, 6)
+                actions_btn = QToolButton()
+                actions_btn.setObjectName("iconBtn")
+                actions_btn.setText("⋮")
+                actions_btn.setToolTip("Действия")
+                actions_btn.setPopupMode(QToolButton.InstantPopup)
+                actions_btn.setMenu(self._supply_row_menu(sid))
+                actions_lay.addWidget(actions_btn)
+                actions_lay.addStretch(1)
+                self.table.setCellWidget(r, 7, actions_cell)
 
             self.table.resizeRowToContents(r)
-            min_row_h = 76 if row.get("pickup_allowed") else 52
-            if row.get("pickup_allowed"):
-                name_widget.adjustSize()
-                widget_h = name_widget.sizeHint().height() + 8
-                min_row_h = max(min_row_h, widget_h)
-            self.table.setRowHeight(r, max(self.table.rowHeight(r), min_row_h))
+            min_h = 88 if row.get("pickup_allowed") or row.get("cargo_label") else 76
+            self.table.setRowHeight(r, max(self.table.rowHeight(r), min_h))
         self.table.blockSignals(False)
-        self._apply_table_col_widths("supplies")
+        self.table.itemChanged.connect(self._on_check_change)
+        self._apply_table_col_widths(layout)
+
+    def _open_supply_by_id(self, sid: str) -> None:
+        from app.ui.supply_detail import SupplyDetailDialog
+
+        src = self.current_source()
+        if not src or not sid:
+            return
+        fullscreen = self._tab == "assembly"
+        dlg = SupplyDetailDialog(
+            self.db,
+            self.orders,
+            src,
+            sid,
+            None if fullscreen else self,
+            fullscreen=fullscreen,
+        )
+        dlg.exec_()
+        self.reload_table()
 
     def prev_page(self) -> None:
         if self._page > 0:
@@ -1050,27 +1200,14 @@ class FbsPage(QWidget):
         item = self.table.item(row, 0)
         if not item:
             return None
-        return str(item.data(Qt.UserRole) or item.text() or "")
+        return str(item.data(Qt.UserRole) or "").strip() or None
 
     def open_selected_supply(self) -> None:
-        from app.ui.supply_detail import SupplyDetailDialog
-
-        src = self.current_source()
         sid = self._selected_supply_id()
-        if not src or not sid:
+        if not sid:
             QMessageBox.information(self, "Поставка", "Выберите поставку")
             return
-        fullscreen = self._tab == "assembly"
-        dlg = SupplyDetailDialog(
-            self.db,
-            self.orders,
-            src,
-            sid,
-            None if fullscreen else self,
-            fullscreen=fullscreen,
-        )
-        dlg.exec_()
-        self.reload_table()
+        self._open_supply_by_id(sid)
 
     def on_row_double_click(self) -> None:
         if self._tab in ("assembly", "delivery"):

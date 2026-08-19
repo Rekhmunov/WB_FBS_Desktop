@@ -108,8 +108,30 @@ def _badge_qss(kind: str) -> str:
     if kind == "cargo":
         return base + " QLabel { background:#e0f2fe; color:#075985; }"
     if kind == "pvz":
-        return base + " QLabel { background:#fef3c7; color:#92400e; }"
+        # Web `.wb-fbs-badge.pvz` — slate, not amber.
+        return base + " QLabel { background:#f1f5f9; color:#334155; }"
     return base + " QLabel { background:#f1f5f9; color:#475569; }"
+
+
+def make_status_pill(text: str, kind: str = "assembly") -> QLabel:
+    """Portal supply status chip (Сборка заказов / Отгрузите поставку / …)."""
+    lab = QLabel(text)
+    lab.setObjectName("fbsStatusPill")
+    lab.setProperty("kind", kind)
+    colors = {
+        "assembly": ("#eff6ff", "#1d4ed8", "#93c5fd"),
+        "ship": ("#fff7ed", "#c2410c", "#fdba74"),
+        "scanned": ("#eff6ff", "#1d4ed8", "#93c5fd"),
+        "done": ("#f0fdf4", "#166534", "#86efac"),
+    }
+    bg, fg, border = colors.get(kind, colors["assembly"])
+    lab.setStyleSheet(
+        "QLabel {{ padding: 4px 10px; border-radius: 8px; font-size: 13px;"
+        " font-weight: 600; background: {}; color: {}; border: 1px solid {}; }}".format(
+            bg, fg, border
+        )
+    )
+    return lab
 
 
 def make_photo_label(path: Optional[str], size: int = 72) -> QLabel:

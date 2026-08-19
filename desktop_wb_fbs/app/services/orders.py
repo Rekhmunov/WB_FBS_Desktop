@@ -9,6 +9,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from app.db import Database
 from app.services.catalog import ProductService
 from app.wb import (
+    assembly_stage_label,
     cargo_type_label,
     format_price_rub,
     parse_json_list,
@@ -26,6 +27,22 @@ def _warehouse_label(row: Dict[str, Any]) -> str:
         return ", ".join(names)
     wh = row.get("warehouse_id")
     return str(wh) if wh is not None else ""
+
+
+def _date_short(iso: object) -> str:
+    raw = str(iso or "").strip()
+    if not raw:
+        return ""
+    try:
+        if raw.endswith("Z"):
+            raw = raw[:-1] + "+00:00"
+        from datetime import datetime
+
+        return datetime.fromisoformat(raw).strftime("%d.%m.%Y")
+    except Exception:
+        if len(raw) >= 10 and raw[4] == "-" and raw[7] == "-":
+            return "{}.{}.{}".format(raw[8:10], raw[5:7], raw[0:4])
+        return raw[:10]
 
 
 class OrdersService:
@@ -76,12 +93,20 @@ class OrdersService:
         return it
 
     def tab_counts(self, source_id: int) -> Dict[str, int]:
-        out = {"new": 0, "assembly": 0, "delivery": 0}
+        out = {"new": 0, "assembly": 0, "delivery": 0, "mgt_new": 0}
         with self.db.connect() as conn:
             n = conn.execute(
                 """
                 SELECT COUNT(*) AS c FROM wb_fbs_orders
                 WHERE source_id = ? AND tab = 'new' AND is_archive = 0
+                """,
+                (source_id,),
+            ).fetchone()
+            mgt = conn.execute(
+                """
+                SELECT COUNT(*) AS c FROM wb_fbs_orders
+                WHERE source_id = ? AND tab = 'new' AND is_archive = 0
+                  AND cargo_type = 1
                 """,
                 (source_id,),
             ).fetchone()
@@ -100,6 +125,7 @@ class OrdersService:
                 (source_id,),
             ).fetchone()
         out["new"] = int(n["c"] if n else 0)
+        out["mgt_new"] = int(mgt["c"] if mgt else 0)
         out["assembly"] = int(a["c"] if a else 0)
         out["delivery"] = int(d["c"] if d else 0)
         return out
@@ -199,15 +225,14 @@ class OrdersService:
                 params + [limit, offset],
             ).fetchall()
         items = Database.rows_to_dicts(rows)
+        first_oids = []  # type: List[int]
         for it in items:
             oids = parse_json_list(it.get("order_ids_json"))
             boxes = parse_json_list(it.get("boxes_json"))
+            it["order_ids"] = oids
             it["order_count"] = len(oids)
             it["boxes_count"] = len(boxes)
             it["cargo_label"] = cargo_type_label(it.get("cargo_type"))
-            it["status_label"] = supply_status_label(
-                done=it.get("done"), scan_dt=it.get("scan_dt")
-            )
             it["is_b2b"] = bool(int(it.get("is_b2b") or 0))
             it["done"] = bool(int(it.get("done") or 0))
             raw = {}
@@ -215,13 +240,71 @@ class OrdersService:
                 raw = json.loads(it.get("raw_json") or "{}")
             except Exception:
                 raw = {}
-            if isinstance(raw, dict):
-                it["pickup_allowed"] = bool(
-                    raw.get("isPickupPointShipmentAllowed")
-                    or raw.get("pickup_allowed")
+            if not isinstance(raw, dict):
+                raw = {}
+            it["pickup_allowed"] = bool(
+                raw.get("isPickupPointShipmentAllowed") or raw.get("pickup_allowed")
+            )
+            name = str(it.get("name") or "").strip()
+            created = str(it.get("created_at_wb") or "").strip()
+            if not name and created:
+                # Portal fallback: «Поставка от DD.MM.YYYY»
+                short = _date_short(created)
+                name = "Поставка от {}".format(short) if short else ""
+            if not name:
+                sid = str(it.get("supply_id") or "").strip()
+                name = "Поставка {}".format(sid) if sid else "Поставка"
+            it["name"] = name
+            if it["done"]:
+                it["status_label"] = supply_status_label(
+                    done=True, scan_dt=it.get("scan_dt")
                 )
+                it["status_kind"] = "scanned" if it.get("scan_dt") else "ship"
             else:
-                it["pickup_allowed"] = False
+                it["status_label"] = assembly_stage_label(
+                    done=False, boxes_count=it["boxes_count"]
+                )
+                it["status_kind"] = "assembly"
+            if oids:
+                try:
+                    first_oids.append(int(oids[0]))
+                except (TypeError, ValueError):
+                    pass
+
+        wh_by_oid = {}  # type: Dict[int, Dict[str, Any]]
+        if first_oids:
+            placeholders = ",".join("?" for _ in first_oids)
+            with self.db.connect() as conn:
+                wh_rows = conn.execute(
+                    """
+                    SELECT order_id, warehouse_id, offices_json
+                    FROM wb_fbs_orders
+                    WHERE source_id = ? AND order_id IN ({})
+                    """.format(
+                        placeholders
+                    ),
+                    [source_id] + first_oids,
+                ).fetchall()
+            for wr in wh_rows:
+                wh_by_oid[int(wr["order_id"])] = dict(wr)
+
+        for it in items:
+            oids = it.get("order_ids") or []
+            wh_row = None
+            if oids:
+                try:
+                    wh_row = wh_by_oid.get(int(oids[0]))
+                except (TypeError, ValueError):
+                    wh_row = None
+            if wh_row:
+                it["warehouse_label"] = _warehouse_label(wh_row)
+                it["warehouse_id"] = wh_row.get("warehouse_id")
+            else:
+                dest = it.get("destination_office_id")
+                it["warehouse_label"] = (
+                    "Офис {}".format(dest) if dest is not None else "—"
+                )
+                it["warehouse_id"] = dest
         return items, int(total["c"] if total else 0)
 
     def get_supply(self, source_id: int, supply_id: str) -> Optional[Dict[str, Any]]:

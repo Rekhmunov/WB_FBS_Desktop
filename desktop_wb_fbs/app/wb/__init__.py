@@ -298,6 +298,12 @@ def supply_status_label(*, done: object = False, scan_dt: object = None) -> str:
     return "На сборке"
 
 
+def assembly_stage_label(*, done: object = False, boxes_count: int = 0) -> str:
+    """Portal «Этап сборки» for open supplies on «На сборке»."""
+    del done, boxes_count
+    return "Сборка заказов"
+
+
 def lookback_window(days: int) -> Tuple[datetime, datetime]:
     date_to = datetime.now(timezone.utc)
     date_from = date_to - timedelta(days=max(1, min(int(days), 30)))

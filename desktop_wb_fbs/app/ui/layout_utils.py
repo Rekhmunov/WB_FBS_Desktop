@@ -124,5 +124,53 @@ def fit_tab_button(btn, h_pad: int = 48) -> None:
     font = btn.font()
     font.setBold(True)
     metrics = QFontMetrics(font)
-    btn.setMinimumWidth(metrics.horizontalAdvance(btn.text()) + h_pad)
+    text = btn.text()
+    # Prefer measuring inner title+count when present.
+    title = getattr(btn, "_title_text", None)
+    count = getattr(btn, "_count_text", None)
+    if title is not None:
+        text = "{} {}".format(title, count or "0")
+    btn.setMinimumWidth(metrics.horizontalAdvance(text) + h_pad)
     btn.updateGeometry()
+
+
+class FbsTabButton(QPushButton):
+    """Tab with label + count pill (web `.wb-fbs-tab` / `.wb-fbs-tab-count`)."""
+
+    def __init__(self, title: str, parent: QWidget = None) -> None:
+        from PyQt5.QtWidgets import QHBoxLayout, QLabel
+
+        super(FbsTabButton, self).__init__(parent)
+        self._title_text = title
+        self._count_text = "0"
+        self.setObjectName("tabBtn")
+        self.setCheckable(True)
+        self.setCursor(Qt.PointingHandCursor)
+        self.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Preferred)
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(14, 8, 14, 10)
+        lay.setSpacing(8)
+        self._title_lab = QLabel(title)
+        self._title_lab.setObjectName("tabBtnLabel")
+        self._title_lab.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        self._count_lab = QLabel("0")
+        self._count_lab.setObjectName("tabCount")
+        self._count_lab.setAlignment(Qt.AlignCenter)
+        self._count_lab.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        lay.addWidget(self._title_lab)
+        lay.addWidget(self._count_lab)
+        # Keep accessible name without duplicating "· N" in the button text.
+        self.setText("")
+        self.setAccessibleName(title)
+
+    def set_count(self, n: int) -> None:
+        self._count_text = str(int(n))
+        self._count_lab.setText(self._count_text)
+        fit_tab_button(self, h_pad=36)
+
+    def setChecked(self, checked: bool) -> None:  # type: ignore[override]
+        super(FbsTabButton, self).setChecked(checked)
+        for w in (self, self._title_lab, self._count_lab):
+            w.style().unpolish(w)
+            w.style().polish(w)
+            w.update()

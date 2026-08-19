@@ -69,6 +69,22 @@ def ago_label(iso: object) -> str:
     return "{} дн назад".format(days)
 
 
+def format_date_short(iso: object) -> str:
+    """Web `_fmt_date` — DD.MM.YYYY from WB ISO timestamp."""
+    raw = str(iso or "").strip()
+    if not raw:
+        return ""
+    try:
+        if raw.endswith("Z"):
+            raw = raw[:-1] + "+00:00"
+        dt = datetime.fromisoformat(raw)
+        return dt.strftime("%d.%m.%Y")
+    except Exception:
+        if len(raw) >= 10 and raw[4] == "-" and raw[7] == "-":
+            return "{}.{}.{}".format(raw[8:10], raw[5:7], raw[0:4])
+        return raw[:10]
+
+
 def make_badge(text: str, kind: str = "") -> QLabel:
     lab = QLabel(text)
     lab.setObjectName("fbsBadge")

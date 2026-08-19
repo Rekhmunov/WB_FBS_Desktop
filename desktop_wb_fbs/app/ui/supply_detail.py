@@ -1,20 +1,25 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
 
+import json
 from functools import partial
 from typing import Any, Dict, List, Optional
 
 from PyQt5.QtCore import Qt
+from PyQt5.QtGui import QCursor, QDesktopServices
 from PyQt5.QtWidgets import (
+    QAbstractItemView,
+    QApplication,
     QCheckBox,
     QDialog,
     QDialogButtonBox,
     QFrame,
     QHBoxLayout,
+    QHeaderView,
     QLabel,
     QLineEdit,
-    QMessageBox,
     QMenu,
+    QMessageBox,
     QPushButton,
     QSpinBox,
     QTableWidget,
@@ -22,8 +27,8 @@ from PyQt5.QtWidgets import (
     QToolButton,
     QVBoxLayout,
     QWidget,
-    QAbstractItemView,
 )
+from PyQt5.QtCore import QUrl
 
 from app.db import Database
 from app.services.kiz_pick import KizService, PickVerifyService
@@ -35,11 +40,19 @@ from app.ui.dialog_utils import (
     init_fullscreen_dialog,
 )
 from app.ui.dialogs_extra import show_png_list, show_supply_qr
+from app.ui.format_helpers import (
+    ago_label,
+    format_date_short,
+    make_badge,
+    make_photo_label,
+)
 from app.ui.layout_utils import FlowLayout
-from app.wb import cargo_type_label, supply_status_label
+from app.wb import cargo_type_label, parse_json_list
 
 
 class SupplyDetailDialog(QDialog):
+    """Web parity for `.wb-fbs-supply-detail-modal`."""
+
     def __init__(
         self,
         db: Database,
@@ -61,6 +74,10 @@ class SupplyDetailDialog(QDialog):
         self.stickers = StickersService(db)
         self.kiz = KizService(db)
         self.pick = PickVerifyService(db)
+        self._all_rows = []  # type: List[Dict[str, Any]]
+        self._selected = set()  # type: set
+        self._supply_pickup_allowed = False
+        self._last_status_note = ""
 
         self.setWindowTitle("Поставка {}".format(supply_id))
         init_fullscreen_dialog(
@@ -74,7 +91,6 @@ class SupplyDetailDialog(QDialog):
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
 
-        # Header block mirrors web .wb-fbs-sd-header
         header = QFrame()
         header.setObjectName("sdHeader")
         hv = QVBoxLayout(header)
@@ -82,8 +98,8 @@ class SupplyDetailDialog(QDialog):
         hv.setSpacing(12)
 
         title_row = QHBoxLayout()
-        title_row.setSpacing(12)
-        self.header = QLabel("")
+        title_row.setSpacing(8)
+        self.header = QLabel("Поставка")
         self.header.setObjectName("sdTitle")
         self.header.setWordWrap(True)
         title_row.addWidget(self.header, 1)
@@ -94,19 +110,32 @@ class SupplyDetailDialog(QDialog):
         title_row.addWidget(close_x, 0, Qt.AlignTop)
         hv.addLayout(title_row)
 
-        self.warehouse = QLabel("")
-        self.warehouse.setObjectName("sdMeta")
+        self.warehouse = QLabel("📍 —")
+        self.warehouse.setObjectName("sdWarehouse")
         hv.addWidget(self.warehouse)
 
-        self.meta_chips = FlowLayout(h_spacing=8, v_spacing=8)
-        hv.addLayout(self.meta_chips)
-        # Keep legacy meta label for picking_list status append
+        meta_row = QHBoxLayout()
+        meta_row.setSpacing(12)
+        chips_wrap = QWidget()
+        self.meta_chips = FlowLayout(chips_wrap, h_spacing=8, v_spacing=8)
+        meta_row.addWidget(chips_wrap, 1)
+        self.search_input = QLineEdit()
+        self.search_input.setObjectName("sdSearch")
+        self.search_input.setPlaceholderText("🔍 Поиск…")
+        self.search_input.setClearButtonEnabled(True)
+        self.search_input.setMinimumWidth(200)
+        self.search_input.setMaximumWidth(280)
+        self.search_input.setToolTip("Поиск по заказу, стикеру, названию товара и ШК")
+        self.search_input.textChanged.connect(lambda _t: self._render_table())
+        meta_row.addWidget(self.search_input, 0, Qt.AlignTop)
+        hv.addLayout(meta_row)
+
         self.meta = QLabel("")
         self.meta.setObjectName("sdMeta")
         self.meta.setWordWrap(True)
+        self.meta.hide()
         hv.addWidget(self.meta)
 
-        # Wrapping action row — no horizontal squeeze / fixed-height scroll
         actions = FlowLayout(h_spacing=8, v_spacing=8)
 
         def _sec(btn):
@@ -116,7 +145,7 @@ class SupplyDetailDialog(QDialog):
         pick_btn = _sec(QPushButton("Лист подбора"))
         pick_btn.clicked.connect(partial(self.picking_list, "summary"))
         pick_caret = QToolButton()
-        pick_caret.setObjectName("secondary")
+        pick_caret.setObjectName("splitCaret")
         pick_caret.setText("▾")
         pick_caret.setPopupMode(QToolButton.InstantPopup)
         pick_menu = QMenu(pick_caret)
@@ -124,82 +153,110 @@ class SupplyDetailDialog(QDialog):
             "Расширенный лист подбора", partial(self.picking_list, "extended")
         )
         pick_caret.setMenu(pick_menu)
-        actions.addWidget(pick_btn)
-        actions.addWidget(pick_caret)
+        actions.addWidget(self._split_pair(pick_btn, pick_caret))
 
         st_btn = _sec(QPushButton("Стикеры"))
         st_btn.clicked.connect(self.print_stickers)
         st_caret = QToolButton()
-        st_caret.setObjectName("secondary")
+        st_caret.setObjectName("splitCaret")
         st_caret.setText("▾")
         st_caret.setPopupMode(QToolButton.InstantPopup)
         st_menu = QMenu(st_caret)
         st_menu.addAction("Печать по категориям", self.stickers_by_category)
         st_caret.setMenu(st_menu)
-        actions.addWidget(st_btn)
-        actions.addWidget(st_caret)
+        actions.addWidget(self._split_pair(st_btn, st_caret))
 
         kiz_btn = _sec(QPushButton("Маркировка"))
         kiz_btn.clicked.connect(self.open_kiz)
-        actions.addWidget(kiz_btn)
-        kiz_ref = _sec(QPushButton("↻"))
-        kiz_ref.setMinimumWidth(40)
+        kiz_ref = _sec(QToolButton())
+        kiz_ref.setText("↻")
         kiz_ref.setToolTip("Проверить статусы КИЗ на ВБ")
         kiz_ref.clicked.connect(self.refresh_kiz_status)
-        actions.addWidget(kiz_ref)
+        actions.addWidget(self._split_pair(kiz_btn, kiz_ref))
 
         for text, slot in (
             ("Проверка ШК", self.open_pick),
             ("Грузоместа", self.manage_trbx),
-            ("Отменённые заказы", self.show_cancelled),
-            ("QR поставки", self.print_qr),
-            ("Портал ВБ", self.open_portal),
+            ("Отмененные заказы", self.show_cancelled),
         ):
             btn = _sec(QPushButton(text))
             btn.clicked.connect(slot)
             actions.addWidget(btn)
+
+        portal_btn = QPushButton("Портал ВБ  →")
+        portal_btn.setObjectName("portalBtn")
+        portal_btn.setToolTip("Открыть поставку на портале Wildberries")
+        portal_btn.clicked.connect(self.open_portal)
+        actions.addWidget(portal_btn)
         hv.addLayout(actions)
         root.addWidget(header)
 
-        body = QVBoxLayout()
-        body.setContentsMargins(24, 16, 24, 20)
-        body.setSpacing(12)
+        body = QFrame()
+        body.setObjectName("sdBody")
+        body_lay = QVBoxLayout(body)
+        body_lay.setContentsMargins(0, 0, 0, 0)
+        body_lay.setSpacing(0)
 
-        toolbar = QHBoxLayout()
-        toolbar.setSpacing(12)
-        self.select_all_cb = QCheckBox("Выбрать все")
-        self.select_all_cb.stateChanged.connect(self._on_select_all_changed)
-        toolbar.addWidget(self.select_all_cb)
-        self.search_input = QLineEdit()
-        self.search_input.setPlaceholderText("Поиск: заказ, артикул, товар, штрихкод…")
-        self.search_input.textChanged.connect(lambda _text: self._render_table())
-        toolbar.addWidget(self.search_input, 1)
-        body.addLayout(toolbar)
-
-        self._all_rows = []  # type: List[Dict[str, Any]]
-        self._selected = set()  # type: set
-
-        self.table = QTableWidget(0, 8)
-        self.table.setAlternatingRowColors(True)
-        self.table.setHorizontalHeaderLabels(
-            ["", "Заказ", "Артикул", "Тип", "Цена", "КИЗ", "Проверка", ""]
-        )
-        self.table.setColumnWidth(0, 36)
-        self.table.setColumnWidth(7, 44)
+        self.table = QTableWidget(0, 4)
+        self.table.setObjectName("sdTable")
+        self.table.setAlternatingRowColors(False)
+        self.table.setHorizontalHeaderLabels(["", "Заказ", "Товар", ""])
+        self.table.setColumnWidth(0, 40)
+        self.table.setColumnWidth(1, 200)
+        self.table.setColumnWidth(3, 52)
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
-        self.table.horizontalHeader().setStretchLastSection(True)
+        self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
+        self.table.horizontalHeader().setStretchLastSection(False)
         self.table.verticalHeader().setVisible(False)
-        self.table.verticalHeader().setDefaultSectionSize(44)
+        self.table.verticalHeader().setDefaultSectionSize(120)
         self.table.setShowGrid(False)
-        body.addWidget(self.table, 1)
-        root.addLayout(body, 1)
+        self.table.setFocusPolicy(Qt.NoFocus)
+
+        # Select-all checkbox overlaid on header column 0 (web thead parity).
+        self.select_all_cb = QCheckBox()
+        self.select_all_cb.setToolTip("Выбрать все")
+        self.select_all_cb.stateChanged.connect(self._on_select_all_changed)
+        self.table.horizontalHeader().setMinimumHeight(36)
+        body_lay.addWidget(self.table, 1)
+        root.addWidget(body, 1)
+
+        self._header_select_host = QWidget(self.table.horizontalHeader())
+        host_lay = QHBoxLayout(self._header_select_host)
+        host_lay.setContentsMargins(12, 0, 0, 0)
+        host_lay.addWidget(self.select_all_cb)
+        host_lay.addStretch(1)
+        self.table.horizontalHeader().sectionResized.connect(self._place_header_select)
+        try:
+            self.table.horizontalHeader().geometriesChanged.connect(
+                self._place_header_select
+            )
+        except Exception:
+            pass
 
         self.reload()
+
+    @staticmethod
+    def _split_pair(main: QWidget, caret: QWidget) -> QWidget:
+        wrap = QWidget()
+        wrap.setObjectName("splitPair")
+        lay = QHBoxLayout(wrap)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(0)
+        lay.addWidget(main)
+        lay.addWidget(caret)
+        return wrap
+
+    def _place_header_select(self, *_args) -> None:
+        hdr = self.table.horizontalHeader()
+        self._header_select_host.setGeometry(0, 0, max(40, hdr.sectionSize(0)), hdr.height())
+        self._header_select_host.show()
+        self._header_select_host.raise_()
 
     def showEvent(self, event) -> None:
         super(SupplyDetailDialog, self).showEvent(event)
         apply_fullscreen_on_show(self)
+        self._place_header_select()
 
     def _clear_chips(self) -> None:
         while self.meta_chips.count():
@@ -210,41 +267,141 @@ class SupplyDetailDialog(QDialog):
             if w:
                 w.deleteLater()
 
-    def _add_chip(self, text: str) -> None:
+    def _add_chip(self, text: str, *, qr: bool = False) -> QWidget:
+        if qr:
+            chip = QFrame()
+            chip.setObjectName("sdChipQr")
+            lay = QHBoxLayout(chip)
+            lay.setContentsMargins(10, 2, 4, 2)
+            lay.setSpacing(6)
+            lab = QLabel(text)
+            lab.setObjectName("sdChipQrText")
+            lay.addWidget(lab)
+            btn = QToolButton()
+            btn.setObjectName("sdQrPrint")
+            btn.setText("🖨")
+            btn.setToolTip("Распечатать QR-код поставки")
+            btn.clicked.connect(self.print_qr)
+            lay.addWidget(btn)
+            self.meta_chips.addWidget(chip)
+            return chip
         lab = QLabel(text)
         lab.setObjectName("sdChip")
-        lab.setMargin(0)
         self.meta_chips.addWidget(lab)
+        return lab
 
     def reload(self) -> None:
         supply = self.orders.get_supply(self.source_id, self.supply_id)
         if not supply:
             QMessageBox.warning(self, "Поставка", "Не найдена локально")
             return
-        self.header.setText(str(supply.get("name") or self.supply_id))
+
+        created = format_date_short(supply.get("created_at_wb"))
+        name = str(supply.get("name") or "").strip()
+        if not name:
+            name = (
+                "Поставка от {}".format(created)
+                if created
+                else "Поставка {}".format(self.supply_id)
+            )
+        self.header.setText(name)
+        self.setWindowTitle(name)
+
+        raw = {}
+        try:
+            raw = json.loads(supply.get("raw_json") or "{}")
+        except Exception:
+            raw = {}
+        if not isinstance(raw, dict):
+            raw = {}
+        self._supply_pickup_allowed = bool(
+            raw.get("isPickupPointShipmentAllowed") or raw.get("pickup_allowed")
+        )
+
+        order_ids = list(supply.get("order_ids") or [])
+        boxes = list(supply.get("boxes") or [])
+        cargo = cargo_type_label(supply.get("cargo_type")) or ""
+
         self._clear_chips()
-        self._add_chip(cargo_type_label(supply.get("cargo_type")) or "—")
-        self._add_chip("заказов {}".format(len(supply.get("order_ids") or [])))
-        self._add_chip("коробов {}".format(len(supply.get("boxes") or [])))
-        self._add_chip(
-            supply_status_label(done=supply.get("done"), scan_dt=supply.get("scan_dt"))
-        )
-        self.meta.setText("ID {}".format(self.supply_id))
-        self._all_rows = self.orders.orders_in_supply(
-            self.source_id, self.supply_id, api_key=self.api_key
-        )
+        if cargo:
+            self._add_chip(cargo)
+        self._add_chip("Заказы {}".format(len(order_ids)))
+        self._add_chip("Грузоместа {}".format(len(boxes)))
+        self._add_chip("Создана {}".format(created or "—"))
+        self._add_chip("QR поставки {}".format(self.supply_id), qr=True)
+
+        QApplication.setOverrideCursor(QCursor(Qt.WaitCursor))
+        try:
+            rows = self.orders.orders_in_supply(
+                self.source_id, self.supply_id, api_key=""
+            )
+            if not rows and self.api_key:
+                rows = self.orders.orders_in_supply(
+                    self.source_id, self.supply_id, api_key=self.api_key
+                )
+            self._enrich_rows_with_stickers(rows)
+        finally:
+            QApplication.restoreOverrideCursor()
+
+        self._all_rows = rows
         if self._all_rows:
             wh = str(
                 self._all_rows[0].get("warehouse_label")
                 or self._all_rows[0].get("warehouse_id")
                 or ""
             )
-            self.warehouse.setText(wh or "—")
+            self.warehouse.setText("📍 {}".format(wh or "—"))
         else:
-            self.warehouse.setText("—")
+            dest = supply.get("destination_office_id")
+            self.warehouse.setText(
+                "📍 {}".format(dest) if dest else "📍 —"
+            )
+
         valid_ids = {int(r.get("order_id")) for r in self._all_rows}
         self._selected = {oid for oid in self._selected if oid in valid_ids}
+        if self._last_status_note:
+            self.meta.setText(self._last_status_note)
+            self.meta.show()
         self._render_table()
+
+    def _enrich_rows_with_stickers(self, rows: List[Dict[str, Any]]) -> None:
+        from app.services.print_docs import _fetch_picking_stickers
+
+        ids = [int(r["order_id"]) for r in rows if r.get("order_id") is not None]
+        stickers = {}  # type: Dict[int, Dict[str, Any]]
+        if ids and self.api_key:
+            try:
+                stickers = _fetch_picking_stickers(self.api_key, ids)
+            except Exception:
+                stickers = {}
+        for r in rows:
+            oid = int(r.get("order_id") or 0)
+            st = stickers.get(oid) or {}
+            part_a = str(st.get("partA") or "").strip()
+            part_b = str(st.get("partB") or "").strip()
+            r["sticker_part_a"] = part_a
+            r["sticker_part_b"] = part_b
+            r["sticker_number"] = "{}{}".format(part_a, part_b)
+            r["created_date"] = format_date_short(r.get("created_at_wb"))
+            r["created_ago"] = ago_label(r.get("created_at_wb"))
+            r["pickup_allowed"] = bool(
+                r.get("pickup_allowed") or self._supply_pickup_allowed
+            )
+            codes = r.get("kiz_codes")
+            if not isinstance(codes, list):
+                codes = parse_json_list(r.get("kiz_codes_json"))
+            r["kiz_codes"] = codes
+            has_codes = any(str(c).strip() for c in codes)
+            if has_codes:
+                r["kiz_required"] = True
+                if int(r.get("kiz_wb_synced") or 0):
+                    r["kiz_status"] = "ok"
+                else:
+                    r["kiz_status"] = "pending"
+            else:
+                # Unknown without meta — hide badge (web shows empty only when required).
+                r["kiz_required"] = False
+                r["kiz_status"] = "empty"
 
     @staticmethod
     def _row_matches_search(row: Dict[str, Any], query: str) -> bool:
@@ -255,6 +412,10 @@ class SupplyDetailDialog(QDialog):
             row.get("order_id"),
             row.get("article"),
             row.get("product_name"),
+            row.get("nm_id"),
+            row.get("sticker_number"),
+            row.get("sticker_part_a"),
+            row.get("sticker_part_b"),
         ]
         hay.extend(row.get("skus") or [])
         return any(q in str(v or "").strip().lower() for v in hay)
@@ -275,30 +436,148 @@ class SupplyDetailDialog(QDialog):
             cb.stateChanged.connect(partial(self._on_row_checked, oid))
             cb_wrap = QWidget()
             cb_lay = QHBoxLayout(cb_wrap)
-            cb_lay.setContentsMargins(0, 0, 0, 0)
+            cb_lay.setContentsMargins(8, 8, 0, 8)
             cb_lay.addWidget(cb)
-            cb_lay.setAlignment(Qt.AlignCenter)
+            cb_lay.setAlignment(Qt.AlignTop | Qt.AlignLeft)
             self.table.setCellWidget(i, 0, cb_wrap)
-            oid_item = QTableWidgetItem(str(oid))
-            f = oid_item.font()
-            f.setBold(True)
-            oid_item.setFont(f)
-            self.table.setItem(i, 1, oid_item)
-            name = str(r.get("product_name") or r.get("article") or "")
-            self.table.setItem(i, 2, QTableWidgetItem(name))
-            self.table.setItem(i, 3, QTableWidgetItem(str(r.get("cargo_label") or "")))
-            self.table.setItem(i, 4, QTableWidgetItem(str(r.get("price_label") or "")))
-            codes = [c for c in (r.get("kiz_codes") or []) if str(c).strip(" \t\r\n")]
-            self.table.setItem(i, 5, QTableWidgetItem(str(len(codes)) if codes else "—"))
-            self.table.setItem(
-                i, 6, QTableWidgetItem("да" if r.get("pick_verified") else "—")
-            )
-            self.table.setCellWidget(i, 7, self._build_row_menu(oid))
+
+            self.table.setCellWidget(i, 1, self._build_order_cell(r))
+            self.table.setCellWidget(i, 2, self._build_product_cell(r))
+            self.table.setCellWidget(i, 3, self._build_row_menu(oid))
+            self.table.setRowHeight(i, 120)
         self._sync_select_all()
+        self._place_header_select()
+
+    def _build_order_cell(self, row: Dict[str, Any]) -> QWidget:
+        wrap = QWidget()
+        lay = QVBoxLayout(wrap)
+        lay.setContentsMargins(8, 10, 8, 10)
+        lay.setSpacing(4)
+
+        oid = QLabel(str(row.get("order_id") or ""))
+        oid.setObjectName("sdOrderId")
+        lay.addWidget(oid)
+
+        sticker = self._build_sticker_label(row)
+        lay.addWidget(sticker)
+
+        created = str(row.get("created_date") or "").strip()
+        meta = QLabel("от {}".format(created or "—"))
+        meta.setObjectName("sdOrderMeta")
+        lay.addWidget(meta)
+
+        badges = QHBoxLayout()
+        badges.setContentsMargins(0, 0, 0, 0)
+        badges.setSpacing(4)
+        ago = str(row.get("created_ago") or "").strip()
+        if ago:
+            badges.addWidget(make_badge(ago, "time"))
+        if row.get("pickup_allowed"):
+            badges.addWidget(make_badge("Можно в ПВЗ", "pvz"))
+        badges.addStretch(1)
+        lay.addLayout(badges)
+        lay.addStretch(1)
+        return wrap
+
+    @staticmethod
+    def _build_sticker_label(row: Dict[str, Any]) -> QLabel:
+        part_a = str(row.get("sticker_part_a") or "").strip()
+        part_b = str(row.get("sticker_part_b") or "").strip()
+        full = str(row.get("sticker_number") or "").strip()
+        if (not part_a or not part_b) and full:
+            if len(full) > 4:
+                part_a, part_b = full[:-4], full[-4:]
+            else:
+                part_a, part_b = "", full
+        lab = QLabel()
+        lab.setObjectName("sdSticker")
+        lab.setTextFormat(Qt.RichText)
+        if not part_a and not part_b:
+            lab.setText("—")
+        elif not part_b:
+            lab.setText(part_a)
+        else:
+            lab.setText(
+                '<span style="font-size:14px;font-weight:700;color:#0f172a;">{}</span>'
+                '<span style="font-size:20px;font-weight:700;color:#0f172a;">{}</span>'.format(
+                    part_a, part_b
+                )
+            )
+        return lab
+
+    def _build_product_cell(self, row: Dict[str, Any]) -> QWidget:
+        wrap = QWidget()
+        lay = QHBoxLayout(wrap)
+        lay.setContentsMargins(8, 10, 8, 10)
+        lay.setSpacing(12)
+        lay.setAlignment(Qt.AlignTop)
+
+        photo = make_photo_label(row.get("product_photo"), 72)
+        lay.addWidget(photo, 0, Qt.AlignTop)
+
+        text = QVBoxLayout()
+        text.setSpacing(4)
+        text.setContentsMargins(0, 0, 0, 0)
+
+        name = str(row.get("product_name") or row.get("article") or "—")
+        name_lab = QLabel(name)
+        name_lab.setObjectName("sdProductName")
+        name_lab.setWordWrap(True)
+        name_lab.setToolTip(name)
+        text.addWidget(name_lab)
+
+        article = str(row.get("article") or "—")
+        nm = row.get("nm_id")
+        sub = "Арт. {}".format(article)
+        if nm not in (None, ""):
+            sub += " · nmId {}".format(nm)
+        sub_lab = QLabel(sub)
+        sub_lab.setObjectName("sdProductSub")
+        sub_lab.setWordWrap(True)
+        text.addWidget(sub_lab)
+
+        skus = row.get("skus") if isinstance(row.get("skus"), list) else []
+        for sku in skus:
+            s = str(sku or "").strip()
+            if not s:
+                continue
+            bc = QLabel(s)
+            bc.setObjectName("sdBarcode")
+            text.addWidget(bc)
+
+        if row.get("kiz_required"):
+            text.addWidget(self._kiz_badge(row))
+
+        text.addStretch(1)
+        lay.addLayout(text, 1)
+        return wrap
+
+    @staticmethod
+    def _kiz_badge(row: Dict[str, Any]) -> QLabel:
+        status = str(row.get("kiz_status") or "empty")
+        lab = QLabel("КИЗ")
+        lab.setObjectName("sdKizBadge")
+        if status == "pending":
+            lab.setText("На проверке")
+            lab.setProperty("kizState", "pending")
+            lab.setToolTip("КИЗ отправлен, ожидается проверка Wildberries")
+        elif status == "ok":
+            lab.setProperty("kizState", "ok")
+            lab.setToolTip("Проверка КИЗ пройдена")
+        elif status == "error":
+            lab.setProperty("kizState", "error")
+            lab.setToolTip("Проверка КИЗ не пройдена")
+        else:
+            lab.setProperty("kizState", "empty")
+            lab.setToolTip("Требуется маркировка (КИЗ)")
+        # Force style refresh for dynamic property
+        lab.style().unpolish(lab)
+        lab.style().polish(lab)
+        return lab
 
     def _build_row_menu(self, order_id: int) -> QWidget:
         btn = QToolButton()
-        btn.setObjectName("secondary")
+        btn.setObjectName("iconBtn")
         btn.setText("⋮")
         btn.setToolTip("Действия")
         btn.setPopupMode(QToolButton.InstantPopup)
@@ -309,9 +588,9 @@ class SupplyDetailDialog(QDialog):
         btn.setMenu(menu)
         wrap = QWidget()
         lay = QHBoxLayout(wrap)
-        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setContentsMargins(4, 10, 12, 4)
         lay.addWidget(btn)
-        lay.setAlignment(Qt.AlignCenter)
+        lay.setAlignment(Qt.AlignTop | Qt.AlignRight)
         return wrap
 
     def print_one_order_sticker(self, order_id: int) -> None:
@@ -352,9 +631,6 @@ class SupplyDetailDialog(QDialog):
     def picking_list(self, variant: str = "summary") -> None:
         from app.services.print_docs import print_picking_list
 
-        from PyQt5.QtGui import QCursor
-        from PyQt5.QtWidgets import QApplication
-
         QApplication.setOverrideCursor(QCursor(Qt.WaitCursor))
         try:
             path = print_picking_list(
@@ -365,7 +641,9 @@ class SupplyDetailDialog(QDialog):
                 self.supply_id,
                 variant=variant,
             )
-            self.meta.setText(self.meta.text() + " · открыт {}".format(path.name))
+            self._last_status_note = "открыт {}".format(path.name)
+            self.meta.setText(self._last_status_note)
+            self.meta.show()
         except Exception as exc:
             QMessageBox.critical(self, "Лист подбора", str(exc))
         finally:
@@ -373,9 +651,6 @@ class SupplyDetailDialog(QDialog):
 
     def print_stickers(self) -> None:
         from app.services.print_docs import print_supply_stickers
-
-        from PyQt5.QtGui import QCursor
-        from PyQt5.QtWidgets import QApplication
 
         QApplication.setOverrideCursor(QCursor(Qt.WaitCursor))
         try:
@@ -385,6 +660,7 @@ class SupplyDetailDialog(QDialog):
                 self.source_id,
                 self.api_key,
                 self.supply_id,
+                order_ids=sorted(self._selected) if self._selected else None,
             )
         except Exception as exc:
             QMessageBox.critical(self, "Стикеры", str(exc))
@@ -398,9 +674,6 @@ class SupplyDetailDialog(QDialog):
             QMessageBox.critical(self, "QR", str(exc))
 
     def open_portal(self) -> None:
-        from PyQt5.QtCore import QUrl
-        from PyQt5.QtGui import QDesktopServices
-
         url = (
             "https://seller.wildberries.ru/marketplace-orders-fbs/supply-detail/packaging"
             "?supplyID={}".format(self.supply_id)
@@ -452,26 +725,26 @@ class SupplyDetailDialog(QDialog):
                 table.setItem(i, 2, QTableWidgetItem(str(r.get("cancel_reason") or "")))
             lead.setText("Найдено отменённых в поставке: {}".format(len(items)))
 
+        _fill(rows)
+
         def _rerun() -> None:
-            rerun_btn.setEnabled(False)
             try:
-                fresh = list_cancelled_in_supply(
-                    self.db, self.source_id, self.api_key, self.supply_id
+                data2 = list_cancelled_in_supply(
+                    self.db,
+                    self.source_id,
+                    self.api_key,
+                    self.supply_id,
                 )
-                _fill(fresh.get("rows") or [])
+                _fill(data2.get("rows") or [])
             except Exception as exc:
                 QMessageBox.critical(dlg, "Отменённые", str(exc))
-            finally:
-                rerun_btn.setEnabled(True)
 
         rerun_btn.clicked.connect(_rerun)
-        _fill(rows)
         lay.addWidget(table, 1)
         close = QDialogButtonBox(QDialogButtonBox.Close)
         close.rejected.connect(dlg.reject)
         lay.addWidget(close)
         dlg.exec_()
-        self.reload()
 
     def stickers_by_category(self) -> None:
         from app.services.print_docs import (
@@ -481,30 +754,25 @@ class SupplyDetailDialog(QDialog):
 
         try:
             groups = sticker_groups_for_category_print(
-                self.db, self.orders, self.source_id, self.api_key, self.supply_id
+                self.db,
+                self.orders,
+                self.source_id,
+                self.api_key,
+                self.supply_id,
             )
         except Exception as exc:
             QMessageBox.critical(self, "Стикеры", str(exc))
             return
-        if not groups:
-            QMessageBox.information(self, "Стикеры", "Нет товаров для печати")
-            return
         dlg = QDialog(self)
-        dlg.setWindowTitle("Стикеры по категориям")
-        dlg.resize(680, 560)
-        dlg.setMinimumSize(560, 440)
+        dlg.setWindowTitle("Печать по категориям · {}".format(self.supply_id))
+        dlg.resize(720, 560)
         lay = QVBoxLayout(dlg)
         lay.setContentsMargins(24, 20, 24, 20)
-        lay.setSpacing(12)
-        title = QLabel("Печать по категориям")
+        title = QLabel("Печать стикеров по категориям")
         title.setObjectName("dialogTitle")
         lay.addWidget(title)
-        hint = QLabel("Отметьте группы товаров для печати стикеров.")
-        hint.setObjectName("hint")
-        lay.addWidget(hint)
         table = QTableWidget(len(groups), 4)
-        table.setAlternatingRowColors(True)
-        table.setHorizontalHeaderLabels(["", "Категория", "Товар", "Шт"])
+        table.setHorizontalHeaderLabels(["", "Категория", "Товар", "Кол-во"])
         table.horizontalHeader().setStretchLastSection(True)
         table.verticalHeader().setVisible(False)
         table.verticalHeader().setDefaultSectionSize(40)
@@ -524,63 +792,77 @@ class SupplyDetailDialog(QDialog):
             )
             table.setItem(i, 3, QTableWidgetItem(str(g.get("qty") or 0)))
         lay.addWidget(table, 1)
-        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        buttons.button(QDialogButtonBox.Ok).setText("Печать выбранных")
-        buttons.button(QDialogButtonBox.Cancel).setObjectName("secondary")
-        buttons.accepted.connect(dlg.accept)
-        buttons.rejected.connect(dlg.reject)
-        lay.addWidget(buttons)
-        if dlg.exec_() != QDialog.Accepted:
-            return
-        order_ids = []
-        for i in range(table.rowCount()):
-            item = table.item(i, 0)
-            if item and item.checkState() == Qt.Checked:
-                order_ids.extend(item.data(Qt.UserRole) or [])
-        if not order_ids:
-            QMessageBox.information(self, "Стикеры", "Ничего не выбрано")
-            return
-        try:
-            print_supply_stickers(
-                self.db,
-                self.orders,
-                self.source_id,
-                self.api_key,
-                self.supply_id,
-                order_ids=order_ids,
-            )
-        except Exception as exc:
-            QMessageBox.critical(self, "Стикеры", str(exc))
 
-    def refresh_kiz_status(self) -> None:
-        try:
-            result = self.kiz.refresh_statuses(
-                self.source_id, self.api_key, self.supply_id
-            )
-            QMessageBox.information(
-                self,
-                "Статусы",
-                "Обновлено заказов: {} · отменённых: {}".format(
-                    result.get("updated", 0), result.get("cancelled", 0)
-                ),
-            )
-            self.reload()
-        except Exception as exc:
-            QMessageBox.critical(self, "Статусы", str(exc))
+        def _print_selected() -> None:
+            ids = []  # type: List[int]
+            for i in range(table.rowCount()):
+                item = table.item(i, 0)
+                if item and item.checkState() == Qt.Checked:
+                    ids.extend(int(x) for x in (item.data(Qt.UserRole) or []))
+            if not ids:
+                QMessageBox.information(dlg, "Стикеры", "Выберите категории")
+                return
+            try:
+                print_supply_stickers(
+                    self.db,
+                    self.orders,
+                    self.source_id,
+                    self.api_key,
+                    self.supply_id,
+                    order_ids=ids,
+                )
+            except Exception as exc:
+                QMessageBox.critical(dlg, "Стикеры", str(exc))
+
+        btns = QDialogButtonBox(QDialogButtonBox.Close)
+        print_btn = QPushButton("Печать выбранных")
+        print_btn.clicked.connect(_print_selected)
+        btns.addButton(print_btn, QDialogButtonBox.ActionRole)
+        btns.rejected.connect(dlg.reject)
+        lay.addWidget(btns)
+        dlg.exec_()
 
     def manage_trbx(self) -> None:
-        supply = self.orders.get_supply(self.source_id, self.supply_id) or {}
-        order_count = len(supply.get("order_ids") or [])
         dlg = TrbxDialog(
             self.trbx,
             self.source_id,
             self.api_key,
             self.supply_id,
-            order_count=order_count,
+            order_count=len(self._all_rows),
             parent=self,
         )
         dlg.exec_()
         self.reload()
+
+    def refresh_kiz_status(self) -> None:
+        QApplication.setOverrideCursor(QCursor(Qt.WaitCursor))
+        try:
+            rows = self.kiz.marking_rows(self.source_id, self.supply_id, self.api_key)
+            by_oid = {int(r["order_id"]): r for r in rows if r.get("order_id") is not None}
+            for r in self._all_rows:
+                oid = int(r.get("order_id") or 0)
+                src = by_oid.get(oid)
+                if not src:
+                    r["kiz_required"] = False
+                    continue
+                r["kiz_required"] = True
+                r["kiz_codes"] = list(src.get("kiz_codes") or [])
+                if src.get("kiz_error"):
+                    r["kiz_status"] = "error"
+                elif any(str(c).strip() for c in (src.get("kiz_codes") or [])):
+                    r["kiz_status"] = (
+                        "ok" if src.get("kiz_wb_synced") else "pending"
+                    )
+                else:
+                    r["kiz_status"] = "empty"
+            self._render_table()
+            self._last_status_note = "Статусы КИЗ обновлены"
+            self.meta.setText(self._last_status_note)
+            self.meta.show()
+        except Exception as exc:
+            QMessageBox.critical(self, "КИЗ", str(exc))
+        finally:
+            QApplication.restoreOverrideCursor()
 
     def open_kiz(self) -> None:
         from app.ui.kiz_pick_dialogs import KizDialog

@@ -21,6 +21,7 @@ from PyQt5.QtWidgets import (
     QMenu,
     QMessageBox,
     QPushButton,
+    QSizePolicy,
     QSpinBox,
     QTableWidget,
     QTableWidgetItem,
@@ -411,13 +412,23 @@ class SupplyDetailDialog(QDialog):
 
     @staticmethod
     def _split_pair(main: QWidget, caret: QWidget) -> QWidget:
+        """Main + caret/refresh: same height (web `.wb-fbs-picking-split` stretch)."""
         wrap = QWidget()
         wrap.setObjectName("splitPair")
         lay = QHBoxLayout(wrap)
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(0)
+        lay.setAlignment(Qt.AlignVCenter)
+        # Match web min-height 40px for supply-detail action buttons.
+        height = 40
+        for w in (main, caret):
+            w.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
+            w.setFixedHeight(height)
+            w.setMinimumHeight(height)
+            w.setMaximumHeight(height)
         lay.addWidget(main)
         lay.addWidget(caret)
+        wrap.setFixedHeight(height)
         return wrap
 
     def _place_header_select(self, *_args) -> None:

@@ -625,6 +625,17 @@ QToolButton#secondary:disabled {
     border-color: #e2e8f0;
     background: #f8fafc;
 }
+QWidget#splitPair {
+    min-height: 40px;
+    max-height: 40px;
+}
+QWidget#splitPair QPushButton#secondary {
+    border-top-right-radius: 0;
+    border-bottom-right-radius: 0;
+    min-height: 40px;
+    max-height: 40px;
+    padding: 0 14px;
+}
 QToolButton#splitCaret {
     color: #334155;
     border: 1px solid #dbe3ef;
@@ -634,14 +645,11 @@ QToolButton#splitCaret {
     border-bottom-left-radius: 0;
     border-top-right-radius: 8px;
     border-bottom-right-radius: 8px;
-    min-width: 32px;
-    max-width: 32px;
-    min-height: 36px;
+    min-width: 36px;
+    max-width: 36px;
+    min-height: 40px;
+    max-height: 40px;
     padding: 0;
-}
-QWidget#splitPair QPushButton#secondary {
-    border-top-right-radius: 0;
-    border-bottom-right-radius: 0;
 }
 QWidget#splitPair QToolButton#secondary {
     border-left: none;
@@ -649,8 +657,11 @@ QWidget#splitPair QToolButton#secondary {
     border-bottom-left-radius: 0;
     border-top-right-radius: 8px;
     border-bottom-right-radius: 8px;
-    min-width: 36px;
-    max-width: 36px;
+    min-width: 40px;
+    max-width: 40px;
+    min-height: 40px;
+    max-height: 40px;
+    padding: 0;
 }
 QTableWidget#sdTable {
     border: none;

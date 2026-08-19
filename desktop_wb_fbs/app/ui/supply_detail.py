@@ -41,6 +41,8 @@ from app.ui.dialog_utils import (
     apply_fullscreen_on_show,
     fullscreen_parent,
     init_fullscreen_dialog,
+    init_maximized_window,
+    prepare_modal_dialog,
 )
 from app.ui.dialogs_extra import show_png_list, show_supply_qr
 from app.ui.format_helpers import (
@@ -226,7 +228,7 @@ class SupplyDetailDialog(QDialog):
         supply_id: str,
         parent: Optional[QWidget] = None,
         *,
-        fullscreen: bool = False,
+        fullscreen: bool = True,
     ) -> None:
         super(SupplyDetailDialog, self).__init__(fullscreen_parent(parent, fullscreen))
         self.db = db
@@ -1374,8 +1376,12 @@ class SupplyDetailDialog(QDialog):
         rows = data.get("rows") or []
         dlg = QDialog(self)
         dlg.setWindowTitle("Отменённые заказы · {}".format(self.supply_id))
-        dlg.resize(720, 520)
-        dlg.setMinimumSize(560, 400)
+        prepare_modal_dialog(
+            dlg,
+            maximized=True,
+            default_size=(720, 520),
+            minimum_size=(560, 400),
+        )
         lay = QVBoxLayout(dlg)
         lay.setContentsMargins(24, 20, 24, 20)
         lay.setSpacing(12)
@@ -1448,7 +1454,12 @@ class SupplyDetailDialog(QDialog):
             return
         dlg = QDialog(self)
         dlg.setWindowTitle("Печать по категориям · {}".format(self.supply_id))
-        dlg.resize(720, 560)
+        prepare_modal_dialog(
+            dlg,
+            maximized=True,
+            default_size=(720, 560),
+            minimum_size=(560, 440),
+        )
         lay = QVBoxLayout(dlg)
         lay.setContentsMargins(24, 20, 24, 20)
         title = QLabel("Печать стикеров по категориям")
@@ -1663,8 +1674,12 @@ class TrbxDialog(QDialog):
         self.boxes = []  # type: List[Dict[str, Any]]
 
         self.setWindowTitle("Грузоместа для поставки в ПВЗ")
-        self.resize(720, 560)
-        self.setMinimumSize(560, 440)
+        prepare_modal_dialog(
+            self,
+            maximized=True,
+            default_size=(720, 560),
+            minimum_size=(560, 440),
+        )
         root = QVBoxLayout(self)
         root.setContentsMargins(24, 24, 24, 24)
         root.setSpacing(16)

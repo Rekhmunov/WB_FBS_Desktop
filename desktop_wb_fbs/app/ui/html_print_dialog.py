@@ -18,6 +18,8 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
+from app.ui.dialog_utils import prepare_modal_dialog, standard_window_flags
+
 try:
     from PyQt5.QtWebEngineWidgets import QWebEngineView
 
@@ -53,8 +55,12 @@ class HtmlPrintPreviewDialog(QDialog):
         self._loaded = False
         doc_title = str(title or self._html_path.stem)
         self.setWindowTitle(doc_title)
-        self.resize(960, 720)
-        self.setMinimumSize(720, 520)
+        prepare_modal_dialog(
+            self,
+            maximized=True,
+            default_size=(960, 720),
+            minimum_size=(720, 520),
+        )
 
         root = QVBoxLayout(self)
         root.setContentsMargins(16, 16, 16, 16)
@@ -112,7 +118,7 @@ class HtmlPrintPreviewDialog(QDialog):
     def _print_preview(self) -> None:
         printer = QPrinter(QPrinter.HighResolution)
         preview = QPrintPreviewDialog(printer, self)
-        preview.setWindowFlags(preview.windowFlags() | Qt.WindowMaximizeButtonHint)
+        preview.setWindowFlags(standard_window_flags())
         preview.setWindowTitle("Печать")
         preview.paintRequested.connect(self._print_to_printer)
         preview.exec_()

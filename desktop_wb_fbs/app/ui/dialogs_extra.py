@@ -22,6 +22,7 @@ from PyQt5.QtWidgets import (
 from app.db import Database
 from app.services.orders import OrdersService
 from app.services.trbx_stickers import StickersService
+from app.ui.dialog_utils import prepare_modal_dialog, standard_window_flags
 from app.wb import default_mgt_supply_name
 
 
@@ -32,6 +33,7 @@ def _print_pixmaps(parent: QWidget, pixmaps: List[QPixmap]) -> None:
         return
     printer = QPrinter(QPrinter.HighResolution)
     dlg = QPrintDialog(printer, parent)
+    dlg.setWindowFlags(standard_window_flags())
     if dlg.exec_() != QDialog.Accepted:
         return
     painter = QPainter()
@@ -61,9 +63,12 @@ def show_png_list(
 ) -> None:
     dlg = QDialog(parent)
     dlg.setWindowTitle(title)
-    # Near-square preview — not a tall strip
-    dlg.resize(560, 640)
-    dlg.setMinimumSize(440, 480)
+    prepare_modal_dialog(
+        dlg,
+        maximized=True,
+        default_size=(560, 640),
+        minimum_size=(440, 480),
+    )
     root = QVBoxLayout(dlg)
     root.setContentsMargins(24, 20, 24, 20)
     root.setSpacing(12)
@@ -137,8 +142,12 @@ class CollectMgtDialog(QDialog):
         self.source = source
         self.svc = CollectMgtService(db, orders)
         self.setWindowTitle("Собрать все МГТ-заказы")
-        self.resize(720, 560)
-        self.setMinimumSize(560, 440)
+        prepare_modal_dialog(
+            self,
+            maximized=True,
+            default_size=(720, 560),
+            minimum_size=(560, 440),
+        )
         root = QVBoxLayout(self)
         root.setContentsMargins(24, 24, 24, 24)
         root.setSpacing(16)
@@ -302,8 +311,12 @@ class SelectionSupplyDialog(QDialog):
         self.setWindowTitle(
             "Новая поставка" if mode == "create" else "Добавить к поставке"
         )
-        self.resize(520, 400)
-        self.setMinimumSize(440, 320)
+        prepare_modal_dialog(
+            self,
+            maximized=True,
+            default_size=(520, 400),
+            minimum_size=(440, 320),
+        )
         root = QVBoxLayout(self)
         root.setContentsMargins(24, 24, 24, 24)
         root.setSpacing(16)

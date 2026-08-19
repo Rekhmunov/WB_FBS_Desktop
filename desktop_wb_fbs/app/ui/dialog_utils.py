@@ -14,10 +14,60 @@ from app.ui.format_helpers import (
 )
 
 
+def standard_window_flags() -> Qt.WindowFlags:
+    """Native Windows title bar with minimize, maximize, and close."""
+    return (
+        Qt.Window
+        | Qt.WindowTitleHint
+        | Qt.WindowSystemMenuHint
+        | Qt.WindowMinimizeButtonHint
+        | Qt.WindowMaximizeButtonHint
+        | Qt.WindowCloseButtonHint
+    )
+
+
 def fullscreen_parent(
     parent: Optional[QWidget], fullscreen: bool
 ) -> Optional[QWidget]:
     return None if fullscreen else parent
+
+
+def init_maximized_window(
+    window: QWidget,
+    *,
+    maximized: bool = True,
+    default_size: Optional[Tuple[int, int]] = None,
+    minimum_size: Optional[Tuple[int, int]] = None,
+) -> None:
+    """Apply native window chrome; optionally start maximized on first show."""
+    window.setWindowFlags(standard_window_flags())
+    window._start_maximized = bool(maximized)  # type: ignore[attr-defined]
+    window._maximized_applied = False  # type: ignore[attr-defined]
+    if minimum_size:
+        window.setMinimumSize(*minimum_size)
+    elif maximized:
+        window.setMinimumSize(640, 480)
+    if default_size and not maximized:
+        window.resize(*default_size)
+
+
+def apply_maximized_on_show(window: QWidget) -> None:
+    if not getattr(window, "_start_maximized", False):
+        return
+    if getattr(window, "_maximized_applied", False):
+        return
+    window._maximized_applied = True  # type: ignore[attr-defined]
+    window.showMaximized()
+
+
+def bind_maximized_on_show(window: QWidget) -> None:
+    """Attach showEvent hook so the window maximizes on first display."""
+
+    def showEvent(event) -> None:  # noqa: N802 — Qt override
+        QWidget.showEvent(window, event)
+        apply_maximized_on_show(window)
+
+    window.showEvent = showEvent  # type: ignore[method-assign]
 
 
 def init_fullscreen_dialog(
@@ -28,35 +78,36 @@ def init_fullscreen_dialog(
     minimum_size: Optional[Tuple[int, int]] = None,
 ) -> None:
     dialog._fullscreen = fullscreen  # type: ignore[attr-defined]
-    dialog._fullscreen_applied = False  # type: ignore[attr-defined]
+    init_maximized_window(
+        dialog,
+        maximized=fullscreen,
+        default_size=default_size,
+        minimum_size=minimum_size,
+    )
     if fullscreen:
-        dialog.setWindowFlags(
-            Qt.Window
-            | Qt.WindowTitleHint
-            | Qt.WindowSystemMenuHint
-            | Qt.WindowMinimizeButtonHint
-            | Qt.WindowMaximizeButtonHint
-            | Qt.WindowCloseButtonHint
-        )
-        dialog.setMinimumSize(640, 480)
-        return
-    if default_size:
-        dialog.resize(*default_size)
-    if minimum_size:
-        dialog.setMinimumSize(*minimum_size)
+        bind_maximized_on_show(dialog)
 
 
 def apply_fullscreen_on_show(dialog: QDialog) -> None:
-    if not getattr(dialog, "_fullscreen", False):
-        return
-    if getattr(dialog, "_fullscreen_applied", False):
-        return
-    dialog._fullscreen_applied = True  # type: ignore[attr-defined]
-    screen = QApplication.primaryScreen()
-    if screen is not None:
-        dialog.setGeometry(screen.availableGeometry())
-    else:
-        dialog.showMaximized()
+    apply_maximized_on_show(dialog)
+
+
+def prepare_modal_dialog(
+    dialog: QDialog,
+    *,
+    maximized: bool = True,
+    default_size: Optional[Tuple[int, int]] = None,
+    minimum_size: Optional[Tuple[int, int]] = None,
+) -> QDialog:
+    """Configure a dialog for native chrome and optional maximized start."""
+    init_maximized_window(
+        dialog,
+        maximized=maximized,
+        default_size=default_size,
+        minimum_size=minimum_size,
+    )
+    bind_maximized_on_show(dialog)
+    return dialog
 
 
 def block_ru_layout_scan(

@@ -26,6 +26,7 @@ from PyQt5.QtWidgets import (
 )
 
 from app.db import Database
+from app.ui.dialog_utils import prepare_modal_dialog
 from app.services import SourceService
 from app.services.catalog import CategoryService, ProductService
 
@@ -350,8 +351,12 @@ class SourceEditDialog(QDialog):
     def __init__(self, parent: Optional[QWidget] = None, src: Optional[Dict] = None) -> None:
         super(SourceEditDialog, self).__init__(parent)
         self.setWindowTitle("Источник WB FBS")
-        self.resize(480, 320)
-        self.setMinimumSize(420, 280)
+        prepare_modal_dialog(
+            self,
+            maximized=True,
+            default_size=(480, 320),
+            minimum_size=(420, 280),
+        )
         self.name = ""
         self.api_key = ""
         self.enabled = True
@@ -397,8 +402,12 @@ class ProductEditDialog(QDialog):
     ) -> None:
         super(ProductEditDialog, self).__init__(parent)
         self.setWindowTitle("Товар")
-        self.resize(560, 480)
-        self.setMinimumSize(480, 400)
+        prepare_modal_dialog(
+            self,
+            maximized=True,
+            default_size=(560, 480),
+            minimum_size=(480, 400),
+        )
         self.photo_path = None  # type: Optional[str]
         form = QFormLayout(self)
         form.setContentsMargins(24, 24, 24, 24)

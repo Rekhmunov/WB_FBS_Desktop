@@ -37,6 +37,7 @@ from app.ui.dialog_utils import (
     block_ru_layout_scan,
     fullscreen_parent,
     init_fullscreen_dialog,
+    init_maximized_window,
 )
 from app.ui.dialogs_extra import show_png_list
 from app.ui.format_helpers import (
@@ -68,7 +69,11 @@ class KizMarkScanDialog(QDialog):
         self.mark_code = ""  # type: str
         self.setWindowTitle("Просканируйте маркировку")
         self.setModal(True)
-        self.resize(440, 220)
+        init_maximized_window(
+            self,
+            maximized=False,
+            default_size=(440, 220),
+        )
         lay = QVBoxLayout(self)
         lay.setContentsMargins(24, 24, 24, 24)
         lay.setSpacing(12)

@@ -131,5 +131,5 @@ def run() -> int:
     db.init_schema()
 
     win = MainWindow(db)
-    win.show()
+    win.showMaximized()
     return app.exec_()

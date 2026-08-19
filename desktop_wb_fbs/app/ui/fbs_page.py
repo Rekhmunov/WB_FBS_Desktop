@@ -998,13 +998,13 @@ class FbsPage(QWidget):
         src = self.current_source()
         if not src or not sid:
             return
-        fullscreen = self._tab == "assembly"
+        fullscreen = True
         dlg = SupplyDetailDialog(
             self.db,
             self.orders,
             src,
             sid,
-            None if fullscreen else self,
+            None,
             fullscreen=fullscreen,
         )
         dlg.exec_()

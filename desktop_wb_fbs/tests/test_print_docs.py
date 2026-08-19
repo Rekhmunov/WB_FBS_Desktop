@@ -92,12 +92,24 @@ class FetchStickersCacheTests(unittest.TestCase):
             for i in range(1, 4)
         ]
         print_docs._stickers_cache.clear()
-        result = print_docs.fetch_stickers_map(
-            "secret-key", [1, 2, 3], cache_only=True
-        )
-        self.assertEqual(len(result), 3)
+        with patch(
+            "app.services.print_docs.persist_sticker_png",
+            return_value="/tmp/1.png",
+        ):
+            print_docs.fetch_stickers_map(
+                "secret-key",
+                [1, 2, 3],
+                cache_only=True,
+                persist_supply_id="WB-GI-1",
+            )
         cached = print_docs.get_cached_stickers_map("secret-key", [1, 2, 3])
         self.assertEqual(len(cached or {}), 3)
+        self.assertEqual(
+            print_docs._cache_sticker_count(
+                print_docs._stickers_cache_key("secret-key", [1, 2, 3], "png", True)
+            ),
+            3,
+        )
 
     @patch("app.services.print_docs.WbFbsClient")
     def test_reports_chunk_progress(self, client_cls):

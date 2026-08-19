@@ -316,12 +316,65 @@ def preload_supply_core(
             session.meta_by_id = {}
     session.build_kiz_and_pick_rows(db)
     session.core_ready = True
-    # PNG stickers for print are fetched on demand (see print_supply_stickers).
-    session.png_ready = True
+    session.png_ready = False
     session.sticker_png = {}
     session.sticker_png_count = 0
     put_session(session)
     return session
+
+
+def preload_sticker_pngs(
+    session: SupplySession,
+    progress: Optional[ProgressCb] = None,
+) -> None:
+    """Fetch PNG stickers for print — persisted on disk, indexed in print cache."""
+    import gc
+
+    from app.services.print_docs import (
+        _cache_sticker_count,
+        _stickers_cache_key,
+        fetch_stickers_map,
+    )
+    from app.services.sticker_file_cache import clear_supply_sticker_dir
+
+    ids = [int(r["order_id"]) for r in session.rows if r.get("order_id") is not None]
+    order_total = len(ids)
+
+    def _png_progress(done: int, total: int) -> None:
+        if progress:
+            progress(4, _progress_detail(done, order_total or total))
+
+    session.sticker_png = {}
+    session.sticker_png_count = 0
+    if progress:
+        progress(4, _progress_detail(0, order_total))
+    if not ids or not session.api_key:
+        session.png_ready = True
+        put_session(session)
+        return
+    cache_key = _stickers_cache_key(
+        session.api_key, ids, "png", True
+    )
+    try:
+        clear_supply_sticker_dir(session.api_key, session.supply_id)
+        fetch_stickers_map(
+            session.api_key,
+            ids,
+            sticker_type="png",
+            keep_files=True,
+            progress=_png_progress,
+            cache_only=True,
+            persist_supply_id=session.supply_id,
+        )
+        session.sticker_png_count = _cache_sticker_count(cache_key)
+    except MemoryError:
+        session.sticker_png_count = 0
+    except Exception:
+        session.sticker_png_count = 0
+    finally:
+        gc.collect()
+    session.png_ready = True
+    put_session(session)
 
 
 def snapshot_for_ui(session: SupplySession) -> Dict[str, Any]:

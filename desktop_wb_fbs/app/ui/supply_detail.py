@@ -5,7 +5,7 @@ import json
 from functools import partial
 from typing import Any, Dict, List, Optional, Tuple
 
-from PyQt5.QtCore import Qt, QThread, pyqtSignal
+from PyQt5.QtCore import Qt, QThread, QTimer, pyqtSignal
 from PyQt5.QtGui import QCursor, QDesktopServices
 from PyQt5.QtWidgets import (
     QAbstractItemView,
@@ -58,10 +58,11 @@ _LOAD_STEPS = (
     "Заказы",
     "Номера стикеров",
     "КИЗ и проверка ШК",
+    "Стикеры для печати",
 )
 
 
-class _SupplyLoadWorker(QThread):
+class _SupplyCoreLoadWorker(QThread):
     """Staged preload: orders → sticker numbers → KIZ/pick meta."""
 
     progress = pyqtSignal(int, int, str)  # step (1-based), total, detail
@@ -78,7 +79,7 @@ class _SupplyLoadWorker(QThread):
         supply_pickup_allowed: bool,
         generation: int = 0,
     ) -> None:
-        super(_SupplyLoadWorker, self).__init__()
+        super(_SupplyCoreLoadWorker, self).__init__()
         self.db = db
         self.orders = orders
         self.source_id = source_id
@@ -107,6 +108,46 @@ class _SupplyLoadWorker(QThread):
                 {
                     "generation": self.generation,
                     "payload": supply_session.snapshot_for_ui(session),
+                }
+            )
+        except Exception as exc:
+            self.failed.emit(str(exc))
+
+
+class _SupplyPngLoadWorker(QThread):
+    """Background PNG sticker preload — runs after the order table is rendered."""
+
+    progress = pyqtSignal(int, int, str)
+    png_ready = pyqtSignal(object)
+    failed = pyqtSignal(str)
+
+    def __init__(
+        self,
+        source_id: int,
+        supply_id: str,
+        generation: int = 0,
+    ) -> None:
+        super(_SupplyPngLoadWorker, self).__init__()
+        self.source_id = source_id
+        self.supply_id = supply_id
+        self.generation = int(generation)
+
+    def run(self) -> None:
+        try:
+            total = len(_LOAD_STEPS)
+
+            def _progress(step: int, detail: str = "") -> None:
+                self.progress.emit(int(step), total, str(detail or ""))
+
+            session = supply_session.get_session(self.source_id, self.supply_id)
+            if not session:
+                raise RuntimeError("Сессия поставки не найдена")
+            supply_session.preload_sticker_pngs(session, progress=_progress)
+            self.png_ready.emit(
+                {
+                    "generation": self.generation,
+                    "png_ready": True,
+                    "count": int(getattr(session, "sticker_png_count", 0) or 0),
                 }
             )
         except Exception as exc:
@@ -143,9 +184,11 @@ class SupplyDetailDialog(QDialog):
         self._selected = set()  # type: set
         self._supply_pickup_allowed = False
         self._last_status_note = ""
-        self._load_worker = None  # type: Optional[_SupplyLoadWorker]
-        self._alive_workers = []  # type: List[_SupplyLoadWorker]
+        self._load_worker = None  # type: Optional[_SupplyCoreLoadWorker]
+        self._png_worker = None  # type: Optional[_SupplyPngLoadWorker]
+        self._alive_workers = []  # type: List[QThread]
         self._load_gen = 0
+        self._png_poll = None  # type: Optional[QTimer]
         self._loading = False
         self._load_step = 0
         self._load_detail = ""
@@ -365,18 +408,21 @@ class SupplyDetailDialog(QDialog):
         return bool(self._actions_ready)
 
     def _preloaded_sticker_png(self) -> Optional[Dict[int, Dict[str, Any]]]:
-        """PNG stickers from print cache when already fetched (e.g. after first print)."""
+        """PNG stickers from disk-backed print cache after preload."""
         from app.services.print_docs import get_cached_stickers_map
 
+        session = supply_session.get_session(self.source_id, self.supply_id)
+        if not session or not session.png_ready:
+            return None
         ids = [
             int(r["order_id"])
-            for r in self._all_rows
+            for r in (session.rows or self._all_rows)
             if r.get("order_id") is not None
         ]
         if not ids:
             return None
         cached = get_cached_stickers_map(
-            self.api_key,
+            session.api_key or self.api_key,
             ids,
             sticker_type="png",
             keep_files=True,
@@ -385,7 +431,18 @@ class SupplyDetailDialog(QDialog):
 
     def _sticker_png_for_print(self) -> Tuple[Optional[Dict[int, Dict[str, Any]]], bool]:
         """Return ``(preloaded_map, abort)`` for sticker print actions."""
-        return self._preloaded_sticker_png(), False
+        session = supply_session.get_session(self.source_id, self.supply_id)
+        if session and not session.png_ready:
+            self._set_load_status("Стикеры ещё готовятся — подождите…")
+            QMessageBox.information(
+                self,
+                "Стикеры",
+                "Стикеры для печати ещё загружаются.\n"
+                "Дождитесь окончания статуса в шапке и нажмите снова.",
+            )
+            return None, True
+        preloaded = self._preloaded_sticker_png()
+        return preloaded, False
 
     def _sync_kiz_session(self, marking_rows: List[Dict[str, Any]]) -> None:
         """Keep supply session / cache aligned after KIZ status refresh."""
@@ -441,17 +498,11 @@ class SupplyDetailDialog(QDialog):
         self._teardown_table()
         super(SupplyDetailDialog, self).closeEvent(event)
 
-    def _stop_load_worker(self) -> None:
-        worker = self._load_worker
-        self._load_gen += 1  # ignore further signals from old workers
-        if worker is None:
-            self._loading = False
-            return
-        for signal in (
-            worker.progress,
-            worker.core_ready,
-            worker.failed,
-        ):
+    def _disconnect_worker(self, worker: QThread, *signal_names: str) -> None:
+        for name in signal_names:
+            signal = getattr(worker, name, None)
+            if signal is None:
+                continue
             try:
                 signal.disconnect()
             except Exception:
@@ -468,7 +519,24 @@ class SupplyDetailDialog(QDialog):
             worker.finished.connect(_cleanup)
         else:
             _cleanup()
+
+    def _stop_png_poll(self) -> None:
+        if self._png_poll is not None:
+            self._png_poll.stop()
+            self._png_poll.deleteLater()
+            self._png_poll = None
+
+    def _stop_load_worker(self) -> None:
+        self._load_gen += 1  # ignore further signals from old workers
+        self._stop_png_poll()
+        core = self._load_worker
+        png = self._png_worker
         self._load_worker = None
+        self._png_worker = None
+        if core is not None:
+            self._disconnect_worker(core, "progress", "core_ready", "failed")
+        if png is not None:
+            self._disconnect_worker(png, "progress", "png_ready", "failed")
         self._loading = False
 
     def _teardown_table(self) -> None:
@@ -675,16 +743,23 @@ class SupplyDetailDialog(QDialog):
             session = supply_session.get_session(self.source_id, self.supply_id)
             if session and session.core_ready:
                 self._apply_loaded_payload(supply_session.snapshot_for_ui(session))
-                self._set_load_status("")
-                self._set_actions_ready(True)
+                if session.png_ready:
+                    self._set_load_status("")
+                    self._set_actions_ready(True)
+                else:
+                    self._load_step = 4
+                    self._load_detail = "0 из {}".format(len(session.rows))
+                    self._render_load_status()
+                    self._set_actions_ready(False)
+                    self._start_png_poll()
+                    self._schedule_png_preload()
                 return
 
         self._loading = True
         self._set_actions_ready(False)
         self._stop_load_worker()
-        self._load_gen += 1
         gen = self._load_gen
-        worker = _SupplyLoadWorker(
+        worker = _SupplyCoreLoadWorker(
             self.db,
             self.orders,
             self.source_id,
@@ -697,6 +772,48 @@ class SupplyDetailDialog(QDialog):
         worker.core_ready.connect(self._on_core_ready)
         worker.failed.connect(self._on_load_failed)
         self._load_worker = worker
+        if worker not in self._alive_workers:
+            self._alive_workers.append(worker)
+        worker.start()
+
+    def _start_png_poll(self) -> None:
+        self._stop_png_poll()
+        timer = QTimer(self)
+        timer.setInterval(700)
+
+        def _tick() -> None:
+            session = supply_session.get_session(self.source_id, self.supply_id)
+            if session and session.png_ready:
+                self._set_load_status("")
+                self._set_actions_ready(True)
+                timer.stop()
+                timer.deleteLater()
+                if self._png_poll is timer:
+                    self._png_poll = None
+
+        timer.timeout.connect(_tick)
+        self._png_poll = timer
+        timer.start()
+
+    def _schedule_png_preload(self) -> None:
+        """Start PNG preload after the UI finishes rendering the order table."""
+        if int(self._load_gen) <= 0:
+            return
+        QTimer.singleShot(0, self._start_png_preload)
+
+    def _start_png_preload(self) -> None:
+        if self._png_worker is not None and self._png_worker.isRunning():
+            return
+        gen = self._load_gen
+        worker = _SupplyPngLoadWorker(
+            self.source_id,
+            self.supply_id,
+            generation=gen,
+        )
+        worker.progress.connect(self._on_load_progress)
+        worker.png_ready.connect(self._on_png_ready)
+        worker.failed.connect(self._on_png_preload_failed)
+        self._png_worker = worker
         if worker not in self._alive_workers:
             self._alive_workers.append(worker)
         worker.start()
@@ -718,10 +835,35 @@ class SupplyDetailDialog(QDialog):
         self._apply_loaded_payload(data)
         self._loading = False
         self._load_worker = None
+        self._load_step = 4
+        order_count = len((data.get("rows") or []))
+        self._load_detail = "0 из {}".format(order_count) if order_count else "ожидайте"
+        self._render_load_status()
+        self._set_actions_ready(False)
+        self._schedule_png_preload()
+
+    def _on_png_ready(self, payload: object) -> None:
+        if isinstance(payload, dict):
+            if int(payload.get("generation") or 0) != self._load_gen:
+                return
+        self._png_worker = None
         self._load_step = 0
         self._load_detail = ""
         self._set_load_status("")
         self._set_actions_ready(True)
+        self._stop_png_poll()
+
+    def _on_png_preload_failed(self, message: str) -> None:
+        self._png_worker = None
+        self._load_step = 0
+        self._load_detail = ""
+        self._set_load_status(str(message or "Не удалось подготовить стикеры для печати"))
+        session = supply_session.get_session(self.source_id, self.supply_id)
+        if session:
+            session.png_ready = True
+            supply_session.put_session(session)
+        self._set_actions_ready(True)
+        self._stop_png_poll()
 
     def _on_load_failed(self, message: str) -> None:
         self._loading = False

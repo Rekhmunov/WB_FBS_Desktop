@@ -21,6 +21,7 @@ from PyQt5.QtGui import QDesktopServices
 from app.db import Database
 from app.services.catalog import ProductService
 from app.services.orders import OrdersService
+from app.services.sticker_file_cache import persist_sticker_png, read_sticker_b64
 from app.wb import parse_json_list
 from app.wb.client import WbFbsClient
 from app.wb.content import WbContentClient
@@ -93,6 +94,18 @@ def _cache_merge_stickers(key: tuple, chunk: Dict[int, Dict[str, Any]]) -> None:
         else:
             merged = dict(chunk)
         _stickers_cache[key] = (time.monotonic(), merged)
+
+
+def _cache_sticker_count(key: tuple) -> int:
+    with _stickers_cache_lock:
+        item = _stickers_cache.get(key)
+        if not item:
+            return 0
+        ts, data = item
+        if time.monotonic() - ts > _STICKERS_CACHE_TTL_SEC:
+            _stickers_cache.pop(key, None)
+            return 0
+        return len(data)
 
 
 def get_cached_stickers_map(
@@ -282,7 +295,7 @@ def build_groups(
                 "order_id": oid,
                 "sticker_part_a": st.get("partA") or "",
                 "sticker_part_b": st.get("partB") or "",
-                "sticker_file": st.get("file_b64") or "",
+                "sticker_file": read_sticker_b64(st),
                 "article": article,
             }
         )
@@ -350,6 +363,7 @@ def fetch_stickers_map(
     progress: Optional[Callable[[int, int], None]] = None,
     chunk_size: Optional[int] = None,
     cache_only: bool = False,
+    persist_supply_id: Optional[str] = None,
 ) -> Dict[int, Dict[str, Any]]:
     """Fetch WB order stickers. Picking list only needs partA/partB — use svg + keep_files=False."""
     ids = [int(x) for x in order_ids if x is not None]
@@ -374,6 +388,12 @@ def fetch_stickers_map(
     step = int(chunk_size or 0)
     if step <= 0:
         step = _PNG_STICKER_CHUNK if stype == "png" and keep_files else 100
+    persist_disk = bool(
+        keep_files
+        and stype == "png"
+        and str(persist_supply_id or "").strip()
+        and api_key
+    )
     for i in range(0, len(ids), step):
         if i:
             time.sleep(0.21)
@@ -386,18 +406,34 @@ def fetch_stickers_map(
                 oid = int(st.get("orderId") or st.get("order_id"))
             except (TypeError, ValueError):
                 continue
+            part_a = str(st.get("partA") or "")
+            part_b = str(st.get("partB") or "")
             if keep_files:
                 b64 = st.get("file")
-                meta = {
-                    "partA": str(st.get("partA") or ""),
-                    "partB": str(st.get("partB") or ""),
-                    "file_b64": b64 if isinstance(b64, str) else "",
-                }
+                b64_text = b64 if isinstance(b64, str) else ""
+                if persist_disk and b64_text:
+                    file_path = persist_sticker_png(
+                        api_key, str(persist_supply_id), oid, b64_text
+                    )
+                    meta = {
+                        "partA": part_a,
+                        "partB": part_b,
+                        "file_b64": "",
+                        "file_path": file_path,
+                    }
+                else:
+                    meta = {
+                        "partA": part_a,
+                        "partB": part_b,
+                        "file_b64": b64_text,
+                        "file_path": "",
+                    }
             else:
                 meta = {
-                    "partA": str(st.get("partA") or ""),
-                    "partB": str(st.get("partB") or ""),
+                    "partA": part_a,
+                    "partB": part_b,
                     "file_b64": "",
+                    "file_path": "",
                 }
             chunk_out[oid] = meta
             if not cache_only:
@@ -407,8 +443,8 @@ def fetch_stickers_map(
         chunk_out.clear()
         if progress:
             progress(min(i + len(chunk), total), total)
-    if cache_only and cache_key is not None:
-        return _cache_get_stickers(cache_key) or {}
+    if cache_only:
+        return {}
     return out
 
 
@@ -880,10 +916,22 @@ def print_supply_stickers(
         }
         missing = [oid for oid in ids if oid not in stickers]
         if missing and api_key:
-            stickers.update(fetch_stickers_map(api_key, missing))
+            stickers.update(
+                fetch_stickers_map(
+                    api_key,
+                    missing,
+                    persist_supply_id=supply_id,
+                )
+            )
     else:
         # Stickers print needs official PNG files — WB API is required on first run.
-        stickers = fetch_stickers_map(api_key, ids) if ids else {}
+        stickers = (
+            fetch_stickers_map(
+                api_key, ids, persist_supply_id=supply_id
+            )
+            if ids
+            else {}
+        )
     cards = fetch_cards(api_key, rows)
     products = ProductService(db).list_all()
     groups = build_groups(rows, stickers, cards, products)

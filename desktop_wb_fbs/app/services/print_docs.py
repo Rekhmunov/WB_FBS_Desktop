@@ -37,6 +37,7 @@ _card_meta_cache_lock = threading.Lock()
 _STICKERS_CACHE_TTL_SEC = 120.0
 _stickers_cache = {}  # type: Dict[tuple, tuple]
 _stickers_cache_lock = threading.Lock()
+_PNG_STICKER_CHUNK = 50
 
 _PICKING_MAX_EMBEDDED_PHOTOS = 40
 _PICKING_PHOTO_MAX_BYTES = 512 * 1024
@@ -54,6 +55,13 @@ def _stickers_cache_key(
     return (_api_key_fp(api_key), stype, bool(keep_files), ids)
 
 
+def _shallow_copy_stickers(
+    data: Dict[int, Dict[str, Any]],
+) -> Dict[int, Dict[str, Any]]:
+    """Copy sticker map without duplicating large base64 payloads."""
+    return {int(oid): dict(meta) for oid, meta in data.items()}
+
+
 def _cache_get_stickers(key: tuple) -> Optional[Dict[int, Dict[str, Any]]]:
     with _stickers_cache_lock:
         item = _stickers_cache.get(key)
@@ -63,14 +71,43 @@ def _cache_get_stickers(key: tuple) -> Optional[Dict[int, Dict[str, Any]]]:
         if time.monotonic() - ts > _STICKERS_CACHE_TTL_SEC:
             _stickers_cache.pop(key, None)
             return None
-        return copy.deepcopy(data)
+        return _shallow_copy_stickers(data)
 
 
 def _cache_put_stickers(key: tuple, data: Dict[int, Dict[str, Any]]) -> None:
     if not data:
         return
     with _stickers_cache_lock:
-        _stickers_cache[key] = (time.monotonic(), copy.deepcopy(data))
+        _stickers_cache[key] = (time.monotonic(), _shallow_copy_stickers(data))
+
+
+def _cache_merge_stickers(key: tuple, chunk: Dict[int, Dict[str, Any]]) -> None:
+    if not chunk:
+        return
+    with _stickers_cache_lock:
+        item = _stickers_cache.get(key)
+        if item:
+            _, existing = item
+            merged = dict(existing)
+            merged.update(chunk)
+        else:
+            merged = dict(chunk)
+        _stickers_cache[key] = (time.monotonic(), merged)
+
+
+def get_cached_stickers_map(
+    api_key: str,
+    order_ids: List[int],
+    *,
+    sticker_type: str = "png",
+    keep_files: bool = True,
+) -> Optional[Dict[int, Dict[str, Any]]]:
+    """Return cached WB stickers for the exact order-id set, if present."""
+    ids = [int(x) for x in order_ids if x is not None]
+    if not ids or not api_key:
+        return None
+    cache_key = _stickers_cache_key(api_key, ids, sticker_type, keep_files)
+    return _cache_get_stickers(cache_key)
 
 
 def _cache_get_card_meta(fp: str, nm_id: int) -> Optional[Dict[str, Any]]:
@@ -311,6 +348,8 @@ def fetch_stickers_map(
     sticker_type: str = "png",
     keep_files: bool = True,
     progress: Optional[Callable[[int, int], None]] = None,
+    chunk_size: Optional[int] = None,
+    cache_only: bool = False,
 ) -> Dict[int, Dict[str, Any]]:
     """Fetch WB order stickers. Picking list only needs partA/partB — use svg + keep_files=False."""
     ids = [int(x) for x in order_ids if x is not None]
@@ -332,10 +371,14 @@ def fetch_stickers_map(
             return cached
     client = WbFbsClient(api_key)
     out = {}  # type: Dict[int, Dict[str, Any]]
-    for i in range(0, len(ids), 100):
+    step = int(chunk_size or 0)
+    if step <= 0:
+        step = _PNG_STICKER_CHUNK if stype == "png" and keep_files else 100
+    for i in range(0, len(ids), step):
         if i:
             time.sleep(0.21)
-        chunk = ids[i : i + 100]
+        chunk = ids[i : i + step]
+        chunk_out = {}  # type: Dict[int, Dict[str, Any]]
         for st in client.get_order_stickers(chunk, sticker_type=stype):
             if not isinstance(st, dict):
                 continue
@@ -345,21 +388,27 @@ def fetch_stickers_map(
                 continue
             if keep_files:
                 b64 = st.get("file")
-                out[oid] = {
+                meta = {
                     "partA": str(st.get("partA") or ""),
                     "partB": str(st.get("partB") or ""),
                     "file_b64": b64 if isinstance(b64, str) else "",
                 }
             else:
-                out[oid] = {
+                meta = {
                     "partA": str(st.get("partA") or ""),
                     "partB": str(st.get("partB") or ""),
                     "file_b64": "",
                 }
+            chunk_out[oid] = meta
+            if not cache_only:
+                out[oid] = meta
+        if cache_key is not None and chunk_out:
+            _cache_merge_stickers(cache_key, chunk_out)
+        chunk_out.clear()
         if progress:
             progress(min(i + len(chunk), total), total)
-    if cache_key is not None and out:
-        _cache_put_stickers(cache_key, out)
+    if cache_only and cache_key is not None:
+        return _cache_get_stickers(cache_key) or {}
     return out
 
 

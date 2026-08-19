@@ -69,6 +69,36 @@ class FetchStickersCacheTests(unittest.TestCase):
         self.assertEqual(second[1]["partB"], "B")
         client.get_order_stickers.assert_called_once()
 
+    @patch("app.services.print_docs.copy.deepcopy")
+    @patch("app.services.print_docs.WbFbsClient")
+    def test_sticker_cache_avoids_deepcopy(self, client_cls, deepcopy_mock):
+        from app.services import print_docs
+
+        client = client_cls.return_value
+        client.get_order_stickers.return_value = [
+            {"orderId": 1, "partA": "A", "partB": "B", "file": "ZmlsZQ=="}
+        ]
+        print_docs._stickers_cache.clear()
+        print_docs.fetch_stickers_map("secret-key", [1])
+        deepcopy_mock.assert_not_called()
+
+    @patch("app.services.print_docs.WbFbsClient")
+    def test_cache_only_preload_does_not_duplicate_payload(self, client_cls):
+        from app.services import print_docs
+
+        client = client_cls.return_value
+        client.get_order_stickers.return_value = [
+            {"orderId": i, "partA": "A", "partB": str(i), "file": "ZmlsZQ=="}
+            for i in range(1, 4)
+        ]
+        print_docs._stickers_cache.clear()
+        result = print_docs.fetch_stickers_map(
+            "secret-key", [1, 2, 3], cache_only=True
+        )
+        self.assertEqual(len(result), 3)
+        cached = print_docs.get_cached_stickers_map("secret-key", [1, 2, 3])
+        self.assertEqual(len(cached or {}), 3)
+
     @patch("app.services.print_docs.WbFbsClient")
     def test_reports_chunk_progress(self, client_cls):
         from app.services import print_docs

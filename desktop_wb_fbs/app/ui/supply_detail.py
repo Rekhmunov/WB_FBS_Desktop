@@ -116,7 +116,7 @@ class _SupplyLoadWorker(QThread):
                 {
                     "generation": self.generation,
                     "png_ready": True,
-                    "count": len(session.sticker_png),
+                    "count": int(getattr(session, "sticker_png_count", 0) or 0),
                 }
             )
         except Exception as exc:
@@ -376,11 +376,26 @@ class SupplyDetailDialog(QDialog):
         return bool(self._actions_ready)
 
     def _preloaded_sticker_png(self) -> Optional[Dict[int, Dict[str, Any]]]:
-        """PNG stickers preloaded in supply session (avoids repeat WB API calls)."""
+        """PNG stickers preloaded in print cache (avoids repeat WB API calls)."""
+        from app.services.print_docs import get_cached_stickers_map
+
         session = supply_session.get_session(self.source_id, self.supply_id)
-        if session and session.png_ready and session.sticker_png:
-            return session.sticker_png
-        return None
+        if not session or not session.png_ready:
+            return None
+        ids = [
+            int(r["order_id"])
+            for r in (session.rows or [])
+            if r.get("order_id") is not None
+        ]
+        if not ids:
+            return None
+        cached = get_cached_stickers_map(
+            session.api_key or self.api_key,
+            ids,
+            sticker_type="png",
+            keep_files=True,
+        )
+        return cached if cached else None
 
     def _sticker_png_for_print(self) -> Tuple[Optional[Dict[int, Dict[str, Any]]], bool]:
         """Return ``(preloaded_map, abort)`` for sticker print actions."""

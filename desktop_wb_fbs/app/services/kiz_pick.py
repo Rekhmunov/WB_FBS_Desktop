@@ -311,7 +311,8 @@ class PickVerifyService:
             nested = meta.get("meta") if isinstance(meta.get("meta"), dict) else {}
             if not has_sgtin:
                 has_sgtin = "sgtin" in nested
-            if has_sgtin:
+            local_codes = parse_json_list(r.get("kiz_codes_json"))
+            if has_sgtin or any(kiz_code_clean(c) for c in local_codes):
                 continue
             out.append(
                 {

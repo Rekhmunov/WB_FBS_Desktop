@@ -5,7 +5,7 @@ from __future__ import annotations
 from functools import partial
 from typing import Any, Dict, List, Optional
 
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtWidgets import (
     QCheckBox,
     QDialog,
@@ -18,6 +18,7 @@ from PyQt5.QtWidgets import (
     QMessageBox,
     QPushButton,
     QScrollArea,
+    QSizePolicy,
     QTableWidget,
     QTableWidgetItem,
     QToolButton,
@@ -47,6 +48,9 @@ from app.wb import cancel_reason_label, is_cancelled_status
 
 def _sticker_number(part_a: str, part_b: str) -> str:
     return "{}{}".format(str(part_a or "").strip(), str(part_b or "").strip())
+
+
+_RENDER_BATCH = 50
 
 
 class KizMarkScanDialog(QDialog):
@@ -128,8 +132,14 @@ class KizDialog(QDialog):
         self._sticker_map = {}  # type: Dict[str, Dict[str, Any]]
         self._pending_order_id = None  # type: Optional[int]
         self._code_inputs = {}  # type: Dict[int, List[QLineEdit]]
+        self._row_index_by_oid = {}  # type: Dict[int, int]
+        self._row_by_oid = {}  # type: Dict[int, Dict[str, Any]]
         self._rows_ready = False
         self._saving = False
+        self._search_timer = QTimer(self)
+        self._search_timer.setSingleShot(True)
+        self._search_timer.setInterval(200)
+        self._search_timer.timeout.connect(self._apply_filters)
 
         self.setObjectName("kizModal")
         self.setWindowTitle("КИЗ · {}".format(supply_id))
@@ -162,16 +172,21 @@ class KizDialog(QDialog):
         head_main.addWidget(title)
         head_main.addWidget(sub)
         header_lay.addLayout(head_main, 1)
+        head_actions = QHBoxLayout()
+        head_actions.setSpacing(8)
         self.save_btn = QPushButton("Сохранить")
         self.save_btn.setObjectName("bottomPrimary")
+        self.save_btn.setFixedHeight(40)
+        self.save_btn.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
         self.save_btn.clicked.connect(self.save_all)
         close_btn = QToolButton()
         close_btn.setObjectName("iconBtn")
         close_btn.setText("✕")
         close_btn.setToolTip("Закрыть")
         close_btn.clicked.connect(self.reject)
-        header_lay.addWidget(self.save_btn)
-        header_lay.addWidget(close_btn)
+        head_actions.addWidget(self.save_btn)
+        head_actions.addWidget(close_btn)
+        header_lay.addLayout(head_actions)
         root.addWidget(header)
 
         # Toolbar: filters + search + counter
@@ -202,9 +217,9 @@ class KizDialog(QDialog):
 
         self.chk_filled.toggled.connect(self._on_filled_toggled)
         self.chk_empty.toggled.connect(self._on_empty_toggled)
-        self.chk_errors.toggled.connect(lambda _c: self._render_table())
-        self.chk_cancelled.toggled.connect(lambda _c: self._render_table())
-        self.search_input.textChanged.connect(lambda _t: self._render_table())
+        self.chk_errors.toggled.connect(self._apply_filters)
+        self.chk_cancelled.toggled.connect(self._apply_filters)
+        self.search_input.textChanged.connect(self._schedule_filter)
 
         # Scan bar
         scan_bar = QFrame()
@@ -297,12 +312,45 @@ class KizDialog(QDialog):
     def _on_filled_toggled(self, checked: bool) -> None:
         if checked:
             self.chk_empty.setChecked(False)
-        self._render_table()
+        self._apply_filters()
 
     def _on_empty_toggled(self, checked: bool) -> None:
         if checked:
             self.chk_filled.setChecked(False)
-        self._render_table()
+        self._apply_filters()
+
+    def _schedule_filter(self) -> None:
+        self._search_timer.start()
+
+    def _row_passes_filters(self, row: Dict[str, Any]) -> bool:
+        if self.chk_filled.isChecked() and self._row_is_empty(row):
+            return False
+        if self.chk_empty.isChecked() and not self._row_is_empty(row):
+            return False
+        oid = int(row["order_id"])
+        if self.chk_errors.isChecked():
+            if oid not in self.row_errors and str(row.get("kiz_status") or "") != "error":
+                return False
+        if self.chk_cancelled.isChecked() and not self._row_is_cancelled(row):
+            return False
+        if not self._row_matches_search(row, self.search_input.text()):
+            return False
+        return True
+
+    def _apply_filters(self) -> None:
+        if not self._row_index_by_oid:
+            return
+        any_visible = False
+        for oid, idx in self._row_index_by_oid.items():
+            row = self._row_by_oid.get(oid)
+            if not row:
+                continue
+            visible = self._row_passes_filters(row)
+            self.table.setRowHidden(idx, not visible)
+            if visible:
+                any_visible = True
+        if not any_visible and self.rows:
+            self._set_info("Нет строк по выбранным фильтрам")
 
     @staticmethod
     def _row_codes(row: Dict[str, Any]) -> List[str]:
@@ -340,27 +388,6 @@ class KizDialog(QDialog):
         ]
         return any(q in str(v or "").strip().lower() for v in hay)
 
-    def _visible_rows(self) -> List[Dict[str, Any]]:
-        self._sync_codes_from_inputs()
-        rows = list(self.rows)
-        if self.chk_filled.isChecked():
-            rows = [r for r in rows if not self._row_is_empty(r)]
-        if self.chk_empty.isChecked():
-            rows = [r for r in rows if self._row_is_empty(r)]
-        if self.chk_errors.isChecked():
-            rows = [
-                r
-                for r in rows
-                if int(r["order_id"]) in self.row_errors
-                or str(r.get("kiz_status") or "") == "error"
-            ]
-        if self.chk_cancelled.isChecked():
-            rows = [r for r in rows if self._row_is_cancelled(r)]
-        query = self.search_input.text()
-        if query.strip():
-            rows = [r for r in rows if self._row_matches_search(r, query)]
-        return rows
-
     def _update_counter(self) -> None:
         filled = 0
         total = 0
@@ -390,11 +417,26 @@ class KizDialog(QDialog):
                 continue
             row["kiz_codes"] = [inp.text() for inp in inputs] or [""]
 
+    def _clear_table(self) -> None:
+        self.table.clearSpans()
+        self.table.setRowCount(0)
+        self.table.clearContents()
+        self._row_index_by_oid = {}
+        self._code_inputs = {}
+
+    def _show_loading_row(self) -> None:
+        self._clear_table()
+        self.table.setRowCount(1)
+        self.table.setSpan(0, 0, 1, self.table.columnCount())
+        loading = QTableWidgetItem("Загрузка…")
+        loading.setTextAlignment(Qt.AlignCenter)
+        loading.setFlags(Qt.ItemIsEnabled)
+        self.table.setItem(0, 0, loading)
+
     def load_rows(self) -> None:
         self._set_filters_ready(False)
         self.save_btn.setEnabled(False)
-        self.table.setRowCount(1)
-        self.table.setItem(0, 0, QTableWidgetItem("Загрузка…"))
+        self._show_loading_row()
         QApplication.processEvents()
         session = supply_session.get_session(self.source_id, self.supply_id)
         try:
@@ -642,6 +684,7 @@ class KizDialog(QDialog):
             row["kiz_wb_synced"] = False
             if codes:
                 row["kiz_status"] = "pending"
+            self._sync_session_kiz_rows()
         except Exception:
             pass
         self._update_counter()
@@ -654,7 +697,7 @@ class KizDialog(QDialog):
         codes = self._row_codes(row)
         codes.append("")
         row["kiz_codes"] = codes
-        self._render_table()
+        self._refresh_row(order_id)
 
     def _clear_code(self, order_id: int, idx: int) -> None:
         self._sync_codes_from_inputs()
@@ -674,9 +717,12 @@ class KizDialog(QDialog):
         cleaned = [c for c in codes if str(c).strip()]
         try:
             self.kiz.save_local(self.source_id, order_id, cleaned, wb_synced=False)
+            self._sync_session_kiz_rows()
         except Exception:
             pass
-        self._render_table()
+        self._refresh_row(order_id)
+        self._update_counter()
+        self._apply_filters()
 
     def _print_sticker(self, order_id: int) -> None:
         try:
@@ -690,34 +736,63 @@ class KizDialog(QDialog):
         except Exception as exc:
             QMessageBox.critical(self, "Стикер", str(exc))
 
+    def _set_row_widgets(
+        self, table_idx: int, row: Dict[str, Any], *, active: bool = False
+    ) -> None:
+        oid = int(row["order_id"])
+        if not active:
+            active = self._pending_order_id == oid
+        self.table.setCellWidget(
+            table_idx, 0, self._wrap_cell(self._build_sticker_widget(row), active=active)
+        )
+        self.table.setCellWidget(
+            table_idx, 1, self._wrap_cell(self._build_product_widget(row), active=active)
+        )
+        self.table.setCellWidget(
+            table_idx, 2, self._wrap_cell(self._build_codes_widget(row), active=active)
+        )
+        self.table.setCellWidget(
+            table_idx, 3, self._wrap_cell(self._build_actions_widget(row), active=active)
+        )
+        if active:
+            self.table.selectRow(table_idx)
+
+    def _resize_table_row(self, table_idx: int) -> None:
+        self.table.resizeRowToContents(table_idx)
+        self.table.setRowHeight(table_idx, max(self.table.rowHeight(table_idx), 96))
+
+    def _refresh_row(self, order_id: int) -> None:
+        idx = self._row_index_by_oid.get(int(order_id))
+        row = self._row_by_oid.get(int(order_id))
+        if idx is None or row is None:
+            return
+        self._set_row_widgets(idx, row)
+        self._resize_table_row(idx)
+
+    def _refresh_changed_rows(self, order_ids: List[int]) -> None:
+        for oid in order_ids:
+            self._refresh_row(oid)
+
     def _render_table(self) -> None:
-        self._code_inputs = {}
+        self._sync_codes_from_inputs()
         self._update_counter()
-        rows = self._visible_rows()
-        self.table.setRowCount(len(rows))
-        pending = self._pending_order_id
-        for i, r in enumerate(rows):
-            oid = int(r["order_id"])
-            active = pending == oid
-            self.table.setCellWidget(
-                i, 0, self._wrap_cell(self._build_sticker_widget(r), active=active)
-            )
-            self.table.setCellWidget(
-                i, 1, self._wrap_cell(self._build_product_widget(r), active=active)
-            )
-            self.table.setCellWidget(
-                i, 2, self._wrap_cell(self._build_codes_widget(r), active=active)
-            )
-            self.table.setCellWidget(
-                i, 3, self._wrap_cell(self._build_actions_widget(r), active=active)
-            )
-            if active:
-                self.table.selectRow(i)
-        self.table.resizeRowsToContents()
-        for i in range(len(rows)):
-            self.table.setRowHeight(i, max(self.table.rowHeight(i), 96))
-        if not rows and self.rows:
-            self._set_info("Нет строк по выбранным фильтрам")
+        self._clear_table()
+        self._row_by_oid = {int(r["order_id"]): r for r in self.rows}
+        row_count = len(self.rows)
+        self.table.setUpdatesEnabled(False)
+        self.table.setRowCount(row_count)
+        try:
+            for i, r in enumerate(self.rows):
+                oid = int(r["order_id"])
+                self._row_index_by_oid[oid] = i
+                self._set_row_widgets(i, r)
+                if i and i % _RENDER_BATCH == 0:
+                    QApplication.processEvents()
+        finally:
+            self.table.setUpdatesEnabled(True)
+        for i in range(row_count):
+            self._resize_table_row(i)
+        self._apply_filters()
 
     def _find_by_sticker(self, raw: str) -> Optional[Dict[str, Any]]:
         scan = raw.replace(" ", "").strip()
@@ -756,16 +831,22 @@ class KizDialog(QDialog):
             return
         self._set_info("")
         self.sticker_input.clear()
-        self._pending_order_id = int(found["order_id"])
-        self._render_table()
+        pending_oid = int(found["order_id"])
+        prev_pending = self._pending_order_id
+        self._pending_order_id = pending_oid
+        if prev_pending and prev_pending != pending_oid:
+            self._refresh_row(prev_pending)
+        self._refresh_row(pending_oid)
         dlg = KizMarkScanDialog(
-            int(found["order_id"]),
+            pending_oid,
             str(found.get("sticker_number") or "—"),
             self,
         )
         if dlg.exec_() != QDialog.Accepted:
             self._pending_order_id = None
-            self._render_table()
+            self._refresh_row(pending_oid)
+            if prev_pending and prev_pending != pending_oid:
+                self._refresh_row(prev_pending)
             self.sticker_input.setFocus()
             return
         self._apply_mark_scan(found, dlg.mark_code)
@@ -791,13 +872,14 @@ class KizDialog(QDialog):
         if not ok:
             self.row_errors[oid] = err
             self._set_info(err)
-            self._render_table()
+            self._refresh_row(oid)
+            self._apply_filters()
             return
         self.row_errors.pop(oid, None)
         codes = [c for c in self._row_codes(row) if str(c).strip()]
         if code in codes:
             self._set_info("Этот КИЗ уже добавлен")
-            self._render_table()
+            self._refresh_row(oid)
             return
         placed = False
         mutable = self._row_codes(row)
@@ -814,7 +896,9 @@ class KizDialog(QDialog):
         self.kiz.save_local(self.source_id, oid, [c for c in mutable if str(c).strip()], wb_synced=False)
         self._sync_session_kiz_rows()
         self._set_info("", ok=True)
-        self._render_table()
+        self._update_counter()
+        self._refresh_row(oid)
+        self._apply_filters()
 
     def save_all(self) -> None:
         if self._saving:
@@ -824,6 +908,7 @@ class KizDialog(QDialog):
         self.save_btn.setEnabled(False)
         errors = []
         saved = 0
+        touched = []  # type: List[int]
         try:
             for r in self.rows:
                 codes = [c for c in self._row_codes(r) if str(c).strip(" \t\r\n")]
@@ -839,6 +924,7 @@ class KizDialog(QDialog):
                     if not ok:
                         self.row_errors[oid] = err
                         errors.append("{}: {}".format(oid, err))
+                        touched.append(oid)
                         break
                 else:
                     try:
@@ -849,11 +935,14 @@ class KizDialog(QDialog):
                         r["kiz_wb_synced"] = True
                         r["kiz_status"] = "ok"
                         saved += 1
+                        touched.append(oid)
                     except Exception as exc:
                         self.row_errors[oid] = str(exc)
                         errors.append("{}: {}".format(oid, exc))
+                        touched.append(oid)
             self._sync_session_kiz_rows()
-            self._render_table()
+            self._refresh_changed_rows(sorted(set(touched)))
+            self._apply_filters()
             if errors:
                 self._set_info("\n".join(errors[:3]))
                 if len(errors) > 3:

@@ -220,7 +220,7 @@ class SupplySession:
         self.pick_rows = pick_out
 
 
-ProgressCb = Callable[[str], None]
+ProgressCb = Callable[[int, str], None]
 
 
 def preload_supply_core(
@@ -236,12 +236,12 @@ def preload_supply_core(
     from app.ui.format_helpers import ago_label, format_date_short
     from app.services.print_docs import _fetch_picking_stickers
 
-    def _prog(msg: str) -> None:
+    def _prog(step: int, detail: str = "") -> None:
         if progress:
-            progress(msg)
+            progress(step, detail)
 
     session = SupplySession(source_id, supply_id, api_key)
-    _prog("Загрузка заказов…")
+    _prog(1, "из локальной базы")
     rows = orders.orders_in_supply(source_id, supply_id, api_key=api_key)
     for r in rows:
         r["created_date"] = format_date_short(r.get("created_at_wb"))
@@ -258,7 +258,7 @@ def preload_supply_core(
         )
 
     ids = [int(r["order_id"]) for r in rows if r.get("order_id") is not None]
-    _prog("Загрузка номеров стикеров… ({})".format(len(ids)))
+    _prog(2, "{} заказов".format(len(ids)))
     stickers = {}  # type: Dict[int, Dict[str, Any]]
     if ids and api_key:
         try:
@@ -275,7 +275,7 @@ def preload_supply_core(
     }
     session.apply_sticker_numbers_to_rows()
 
-    _prog("Определение КИЗ и проверки ШК… ({})".format(len(ids)))
+    _prog(3, "{} заказов".format(len(ids)))
     if ids and api_key:
         try:
             session.meta_by_id = fetch_orders_meta(api_key, ids)
@@ -295,12 +295,12 @@ def preload_sticker_pngs(
     from app.services.print_docs import fetch_stickers_map
 
     ids = [int(r["order_id"]) for r in session.rows if r.get("order_id") is not None]
+    if progress:
+        progress(4, "{} заказов".format(len(ids)))
     if not ids or not session.api_key:
         session.png_ready = True
         put_session(session)
         return
-    if progress:
-        progress("Подготовка стикеров для печати… ({})".format(len(ids)))
     try:
         session.sticker_png = fetch_stickers_map(
             session.api_key, ids, sticker_type="png", keep_files=True

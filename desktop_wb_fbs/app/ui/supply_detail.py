@@ -54,12 +54,18 @@ from app.wb import cargo_type_label, parse_json_list
 
 _RENDER_BATCH = 50
 _WAIT_ORDERS_TIP = "Дождитесь загрузки заказов"
+_LOAD_STEPS = (
+    "Заказы",
+    "Номера стикеров",
+    "КИЗ и проверка ШК",
+    "Стикеры для печати",
+)
 
 
 class _SupplyLoadWorker(QThread):
     """Staged preload: orders → sticker numbers → KIZ/pick meta → PNG stickers."""
 
-    progress = pyqtSignal(str)
+    progress = pyqtSignal(int, int, str)  # step (1-based), total, detail
     core_ready = pyqtSignal(object)
     png_ready = pyqtSignal(object)
     failed = pyqtSignal(str)
@@ -83,8 +89,10 @@ class _SupplyLoadWorker(QThread):
 
     def run(self) -> None:
         try:
-            def _progress(msg: str) -> None:
-                self.progress.emit(msg)
+            total = len(_LOAD_STEPS)
+
+            def _progress(step: int, detail: str = "") -> None:
+                self.progress.emit(int(step), total, str(detail or ""))
 
             session = supply_session.preload_supply_core(
                 self.db,
@@ -134,6 +142,8 @@ class SupplyDetailDialog(QDialog):
         self._last_status_note = ""
         self._load_worker = None  # type: Optional[_SupplyLoadWorker]
         self._loading = False
+        self._load_step = 0
+        self._load_detail = ""
         self._actions_ready = False
         self._action_widgets = []  # type: List[QWidget]
         self._saved_tooltips = {}  # type: Dict[QWidget, str]
@@ -505,22 +515,77 @@ class SupplyDetailDialog(QDialog):
     def _show_loading_table(self) -> None:
         self.table.blockSignals(True)
         self.table.setRowCount(1)
-        loading = QLabel("Загрузка…")
+        loading = QLabel("Идёт загрузка данных поставки…")
         loading.setObjectName("hint")
         loading.setAlignment(Qt.AlignCenter)
+        loading.setWordWrap(True)
+        self._loading_table_label = loading
         self.table.setSpan(0, 0, 1, 4)
         self.table.setCellWidget(0, 0, loading)
         self.table.blockSignals(False)
-        self._set_load_status("Подготовка данных поставки…")
+        self._load_step = 0
+        self._load_detail = ""
+        self._render_load_status()
 
     def _set_load_status(self, text: str = "") -> None:
+        """Legacy single-line status (cache / wait messages)."""
         msg = str(text or "").strip()
         if not msg:
             self.load_status.hide()
             self.load_status.setText("")
             return
+        self.load_status.setTextFormat(Qt.PlainText)
         self.load_status.setText(msg)
         self.load_status.show()
+
+    def _render_load_status(self) -> None:
+        step = int(self._load_step or 0)
+        total = len(_LOAD_STEPS)
+        if step <= 0:
+            self.load_status.setTextFormat(Qt.RichText)
+            self.load_status.setText(
+                "<b>Подготовка данных поставки…</b><br>"
+                + "<br>".join(
+                    "○ {}".format(name) for name in _LOAD_STEPS
+                )
+            )
+            self.load_status.show()
+            return
+        lines = [
+            "<b>Загрузка данных поставки · шаг {} из {}</b>".format(
+                min(step, total), total
+            )
+        ]
+        for i, name in enumerate(_LOAD_STEPS, start=1):
+            if i < step:
+                mark = "✓"
+                style = "color:#166534;"
+            elif i == step:
+                mark = "→"
+                style = "color:#1d4ed8;font-weight:700;"
+            else:
+                mark = "○"
+                style = "color:#64748b;"
+            detail = ""
+            if i == step and self._load_detail:
+                detail = " <span style='color:#64748b;font-weight:500;'>({})</span>".format(
+                    self._load_detail
+                )
+            lines.append(
+                "<span style='{}'>{} {}{}</span>".format(style, mark, name, detail)
+            )
+        self.load_status.setTextFormat(Qt.RichText)
+        self.load_status.setText("<br>".join(lines))
+        self.load_status.show()
+        lab = getattr(self, "_loading_table_label", None)
+        if lab is not None and step <= 3:
+            current = _LOAD_STEPS[min(step, total) - 1] if step else "данные"
+            lab.setText(
+                "Идёт загрузка: {}…{}".format(
+                    current,
+                    " ({})".format(self._load_detail) if self._load_detail else "",
+                )
+            )
 
     def _begin_load(self, *, force: bool = False) -> None:
         if self._loading and not force:
@@ -533,7 +598,9 @@ class SupplyDetailDialog(QDialog):
                 if session.png_ready:
                     self._set_load_status("")
                 else:
-                    self._set_load_status("Стикеры для печати ещё готовятся…")
+                    self._load_step = 4
+                    self._load_detail = "ещё идёт"
+                    self._render_load_status()
                 return
 
         self._loading = True
@@ -554,24 +621,32 @@ class SupplyDetailDialog(QDialog):
         self._load_worker = worker
         worker.start()
 
-    def _on_load_progress(self, message: str) -> None:
-        self._set_load_status(message)
+    def _on_load_progress(self, step: int, total: int, detail: str) -> None:
+        self._load_step = int(step or 0)
+        self._load_detail = str(detail or "").strip()
+        self._render_load_status()
 
     def _on_core_ready(self, payload: object) -> None:
         if not isinstance(payload, dict):
             return
         supply_detail_cache.put(self.source_id, self.supply_id, payload)
         self._apply_loaded_payload(payload)
-        self._set_load_status("Подготовка стикеров для печати…")
+        self._load_step = 4
+        self._load_detail = "ожидайте"
+        self._render_load_status()
 
     def _on_png_ready(self, _payload: object) -> None:
         self._loading = False
         self._load_worker = None
+        self._load_step = 0
+        self._load_detail = ""
         self._set_load_status("")
 
     def _on_load_failed(self, message: str) -> None:
         self._loading = False
         self._load_worker = None
+        self._load_step = 0
+        self._load_detail = ""
         self._set_load_status("")
         self.table.blockSignals(True)
         self.table.setRowCount(1)

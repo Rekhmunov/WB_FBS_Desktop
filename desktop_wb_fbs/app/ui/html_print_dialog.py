@@ -21,9 +21,20 @@ try:
     from PyQt5.QtWebEngineWidgets import QWebEngineView
 
     _HAS_WEBENGINE = True
-except ImportError:  # pragma: no cover - optional dependency
+    _WEBENGINE_ERROR = ""
+except Exception as exc:  # pragma: no cover - optional dependency / DLL issues
     QWebEngineView = None  # type: ignore[misc, assignment]
     _HAS_WEBENGINE = False
+    _WEBENGINE_ERROR = str(exc) or exc.__class__.__name__
+
+
+def webengine_status() -> tuple:
+    """Return (available, reason). Reason is empty when available."""
+    if _HAS_WEBENGINE:
+        return True, ""
+    if _WEBENGINE_ERROR:
+        return False, _WEBENGINE_ERROR
+    return False, "модуль PyQt5.QtWebEngineWidgets не найден"
 
 
 class HtmlPrintPreviewDialog(QDialog):
@@ -150,6 +161,9 @@ def show_html_print_preview(
     """Open modal preview. Returns True when WebEngine preview was shown."""
     if not _HAS_WEBENGINE:
         return False
-    dlg = HtmlPrintPreviewDialog(html_path, title=title, parent=parent)
+    try:
+        dlg = HtmlPrintPreviewDialog(html_path, title=title, parent=parent)
+    except Exception:
+        raise
     dlg.exec_()
     return True

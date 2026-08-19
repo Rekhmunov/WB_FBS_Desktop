@@ -101,21 +101,31 @@ def open_html(
 
     path = Path(tempfile.gettempdir()) / "{}.html".format(basename)
     path.write_text(html_doc, encoding="utf-8")
+    preview_error = ""
     try:
-        from app.ui.html_print_dialog import show_html_print_preview
+        from app.ui.html_print_dialog import show_html_print_preview, webengine_status
 
-        if show_html_print_preview(path, title=title or basename, parent=parent):
+        ok, status = webengine_status()
+        if ok and show_html_print_preview(path, title=title or basename, parent=parent):
             return path
-    except Exception:
-        pass
+        if not ok:
+            preview_error = status
+    except Exception as exc:
+        preview_error = str(exc) or exc.__class__.__name__
     QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
     if parent is not None:
-        QMessageBox.information(
-            parent,
-            "Печать",
-            "Документ открыт в браузере.\n"
-            "Для предпросмотра в приложении установите PyQtWebEngine.",
+        detail = (
+            "Документ открыт в браузере.\n\n"
+            "Встроенный предпросмотр недоступен."
         )
+        if preview_error:
+            detail += "\n\nПричина: {}".format(preview_error)
+        else:
+            detail += (
+                "\n\nУстановите пакет PyQtWebEngine "
+                "(python -m pip install PyQtWebEngine) и перезапустите приложение."
+            )
+        QMessageBox.information(parent, "Печать", detail)
     return path
 
 

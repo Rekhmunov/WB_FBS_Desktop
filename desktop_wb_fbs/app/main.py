@@ -4,6 +4,14 @@ from __future__ import annotations
 import sys
 
 from PyQt5.QtCore import Qt
+
+# QtWebEngine must be imported before QApplication on Windows, otherwise
+# QWebEngineView fails at runtime even when PyQtWebEngine is installed.
+try:
+    from PyQt5 import QtWebEngineWidgets  # noqa: F401
+except ImportError:
+    pass
+
 from PyQt5.QtWidgets import (
     QApplication,
     QFrame,

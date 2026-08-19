@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
 
+import json
 from typing import Any, Dict, List, Optional
 
 from PyQt5.QtCore import Qt, QThread, QTimer, pyqtSignal
@@ -253,8 +254,16 @@ class FbsPage(QWidget):
         self.table.setAlternatingRowColors(True)
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
-        self.table.horizontalHeader().setStretchLastSection(True)
-        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Interactive)
+        table_header = self.table.horizontalHeader()
+        table_header.setStretchLastSection(False)
+        table_header.setSectionResizeMode(QHeaderView.Interactive)
+        table_header.setMinimumSectionSize(32)
+        table_header.sectionResized.connect(self._on_column_resized)
+        self._col_widths_guard = False
+        self._col_width_save_timer = QTimer(self)
+        self._col_width_save_timer.setSingleShot(True)
+        self._col_width_save_timer.setInterval(400)
+        self._col_width_save_timer.timeout.connect(self._persist_table_col_widths)
         self.table.verticalHeader().setVisible(False)
         self.table.verticalHeader().setDefaultSectionSize(44)
         self.table.setShowGrid(False)
@@ -562,6 +571,69 @@ class FbsPage(QWidget):
         self.page_label.setText("{}/{} · {}".format(self._page + 1, pages, total))
         self.update_bottom_visibility()
 
+    def _table_layout(self) -> str:
+        return "new" if self._tab == "new" else "supplies"
+
+    @staticmethod
+    def _col_settings_key(layout: str) -> str:
+        return "fbs_table_cols_{}".format(layout)
+
+    @staticmethod
+    def _default_col_widths(layout: str, count: int) -> List[int]:
+        defaults = {
+            "new": [40, 92, 120, 320, 100, 88, 140],
+            "supplies": [168, 280, 72, 72, 88, 160, 48, 56],
+        }
+        base = list(defaults.get(layout, []))
+        while len(base) < count:
+            base.append(100)
+        return base[:count]
+
+    def _load_col_widths(self, layout: str, count: int) -> List[int]:
+        raw = self.db.get_setting(self._col_settings_key(layout), "")
+        if raw:
+            try:
+                widths = json.loads(raw)
+                if isinstance(widths, list) and len(widths) == count:
+                    return [max(32, int(w)) for w in widths]
+            except (TypeError, ValueError):
+                pass
+        return self._default_col_widths(layout, count)
+
+    def _save_col_widths(self, layout: str) -> None:
+        hdr = self.table.horizontalHeader()
+        widths = [hdr.sectionSize(i) for i in range(hdr.count())]
+        self.db.set_setting(
+            self._col_settings_key(layout), json.dumps(widths, separators=(",", ":"))
+        )
+
+    def _apply_table_col_widths(self, layout: str) -> None:
+        hdr = self.table.horizontalHeader()
+        count = hdr.count()
+        if count <= 0:
+            return
+        widths = self._load_col_widths(layout, count)
+        self._col_widths_guard = True
+        try:
+            hdr.setStretchLastSection(False)
+            for i in range(count):
+                hdr.setSectionResizeMode(i, QHeaderView.Interactive)
+                self.table.setColumnWidth(i, widths[i])
+        finally:
+            self._col_widths_guard = False
+
+    def _on_column_resized(
+        self, _logical_index: int, _old_size: int, _new_size: int
+    ) -> None:
+        if self._col_widths_guard:
+            return
+        self._col_width_save_timer.start()
+
+    def _persist_table_col_widths(self) -> None:
+        if self._col_widths_guard or self.table.columnCount() <= 0:
+            return
+        self._save_col_widths(self._table_layout())
+
     @staticmethod
     def _bold_label(text: str, wrap: bool = False) -> QLabel:
         lab = QLabel(text)
@@ -599,7 +671,6 @@ class FbsPage(QWidget):
         self.table.setColumnCount(len(cols))
         self.table.setHorizontalHeaderLabels(cols)
         self.table.setRowCount(len(rows))
-        self.table.horizontalHeader().setStretchLastSection(True)
         self.table.verticalHeader().setDefaultSectionSize(88)
         for r, row in enumerate(rows):
             oid = int(row["order_id"])
@@ -673,8 +744,7 @@ class FbsPage(QWidget):
             )
         self.table.blockSignals(False)
         self.table.itemChanged.connect(self._on_check_change)
-        self.table.setColumnWidth(0, 40)
-        self.table.setColumnWidth(1, 92)
+        self._apply_table_col_widths("new")
 
     def _on_check_change(self, item: QTableWidgetItem) -> None:
         if item.column() != 0:
@@ -723,8 +793,6 @@ class FbsPage(QWidget):
         self.table.setColumnCount(len(cols))
         self.table.setHorizontalHeaderLabels(cols)
         self.table.setRowCount(len(rows))
-        self.table.horizontalHeader().setStretchLastSection(False)
-        self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
         self.table.verticalHeader().setDefaultSectionSize(52)
         for r, row in enumerate(rows):
             sid = str(row.get("supply_id") or "")
@@ -784,8 +852,7 @@ class FbsPage(QWidget):
             self.table.resizeRowToContents(r)
             self.table.setRowHeight(r, max(self.table.rowHeight(r), 52))
         self.table.blockSignals(False)
-        self.table.setColumnWidth(0, 168)
-        self.table.setColumnWidth(7, 56)
+        self._apply_table_col_widths("supplies")
 
     def prev_page(self) -> None:
         if self._page > 0:

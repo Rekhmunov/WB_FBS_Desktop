@@ -6,7 +6,10 @@ import json
 import logging
 from typing import Any, Dict, List
 from urllib.error import HTTPError
-from urllib.request import Request, urlopen
+from urllib.request import Request
+
+from app.wb import normalize_api_key
+from app.wb.http import urlopen_https
 
 _log = logging.getLogger(__name__)
 WB_CONTENT_API = "https://content-api.wildberries.ru"
@@ -14,7 +17,7 @@ WB_CONTENT_API = "https://content-api.wildberries.ru"
 
 class WbContentClient:
     def __init__(self, api_key: str, timeout: int = 30) -> None:
-        self.api_key = str(api_key or "").strip()
+        self.api_key = normalize_api_key(api_key)
         self.timeout = timeout
 
     def get_cards_by_nm_ids(self, nm_ids: List[int]) -> Dict[int, Dict[str, Any]]:
@@ -66,7 +69,7 @@ class WbContentClient:
         }
         req = Request(url, method=method.upper(), headers=headers, data=data)
         try:
-            with urlopen(req, timeout=self.timeout) as resp:
+            with urlopen_https(req, timeout=self.timeout) as resp:
                 payload = resp.read()
                 if not payload:
                     return {}

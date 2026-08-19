@@ -201,8 +201,17 @@ def friendly_sync_error(prefix: str, exc: object) -> str:
     text = str(exc or "")
     lower = text.lower()
     detail = _wb_error_detail(exc)
-    if "certificate verify failed" in lower or "ssl: " in lower:
-        return "{}: ошибка SSL при подключении к WB API".format(prefix)
+    if (
+        "certificate verify failed" in lower
+        or "ssl при подключении" in lower
+        or "ssl: " in lower
+        or "sslc" in lower
+    ):
+        return (
+            "{}: ошибка SSL при подключении к WB API. "
+            "Установите сертификаты: pip install -U certifi "
+            "(или отключите HTTPS-проверку в антивирусе/прокси)."
+        ).format(prefix)
     if "timed out" in lower or "timeout" in lower:
         return "{}: таймаут подключения к WB API".format(prefix)
     if (

@@ -4,3 +4,5 @@ PyQt5>=5.15.0,<5.16
 # MSK timezone on Python 3.8
 backports.zoneinfo>=0.2.1; python_version < "3.9"
 tzdata>=2024.1
+# HTTPS CA bundle — required on many Windows Python installs
+certifi>=2024.2.2

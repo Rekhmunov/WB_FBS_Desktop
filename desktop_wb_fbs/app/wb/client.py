@@ -10,9 +10,10 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.error import HTTPError
 from urllib.parse import urlencode
-from urllib.request import Request, urlopen
+from urllib.request import Request
 
 from app.wb import kiz_code_clean, normalize_api_key
+from app.wb.http import urlopen_https
 
 _log = logging.getLogger(__name__)
 
@@ -53,7 +54,7 @@ class WbFbsClient:
             headers["Content-Type"] = "application/json"
         req = Request(url, method=method.upper(), headers=headers, data=data)
         try:
-            with urlopen(req, timeout=self.timeout) as resp:
+            with urlopen_https(req, timeout=self.timeout) as resp:
                 payload = resp.read()
                 if raw:
                     return payload, dict(resp.headers), resp.status

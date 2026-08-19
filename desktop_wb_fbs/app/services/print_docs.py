@@ -113,20 +113,36 @@ def open_html(
     path = Path(tempfile.gettempdir()) / "{}.html".format(basename)
     path.write_text(html_doc, encoding="utf-8")
     preview_error = ""
+    webengine_ok = False
     try:
         from app.ui.html_print_dialog import show_html_print_preview, webengine_status
 
-        ok, status = webengine_status()
-        if ok:
+        webengine_ok, status = webengine_status()
+        if webengine_ok:
             # Wait-cursor must not stay while the modal print dialog is open.
             _clear_override_cursor()
             if show_html_print_preview(path, title=title or basename, parent=parent):
                 return path
-        if not ok:
+            preview_error = "не удалось загрузить документ во встроенном окне"
+        else:
             preview_error = status
     except Exception as exc:
         preview_error = str(exc) or exc.__class__.__name__
     _clear_override_cursor()
+    if webengine_ok:
+        if parent is not None:
+            reply = QMessageBox.question(
+                parent,
+                "Предпросмотр",
+                "Документ сохранён:\n{}\n\n"
+                "Не удалось показать его во встроенном окне.\n"
+                "Открыть в браузере?".format(path),
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
+            )
+            if reply == QMessageBox.Yes:
+                QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
+        return path
     QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
     if parent is not None:
         detail = (

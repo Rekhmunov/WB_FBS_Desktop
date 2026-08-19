@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import json
 from functools import partial
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from PyQt5.QtCore import Qt, QThread, QTimer, pyqtSignal
 from PyQt5.QtGui import QCursor, QDesktopServices
@@ -373,6 +373,67 @@ class SupplyDetailDialog(QDialog):
 
     def _require_actions_ready(self) -> bool:
         return bool(self._actions_ready)
+
+    def _preloaded_sticker_png(self) -> Optional[Dict[int, Dict[str, Any]]]:
+        """PNG stickers preloaded in supply session (avoids repeat WB API calls)."""
+        session = supply_session.get_session(self.source_id, self.supply_id)
+        if session and session.png_ready and session.sticker_png:
+            return session.sticker_png
+        return None
+
+    def _sticker_png_for_print(self) -> Tuple[Optional[Dict[int, Dict[str, Any]]], bool]:
+        """Return ``(preloaded_map, abort)`` for sticker print actions."""
+        session = supply_session.get_session(self.source_id, self.supply_id)
+        if session and not session.png_ready:
+            self._set_load_status("Стикеры ещё готовятся — подождите…")
+            QMessageBox.information(
+                self,
+                "Стикеры",
+                "Стикеры для печати ещё загружаются.\n"
+                "Дождитесь окончания статуса в шапке и нажмите снова.",
+            )
+            return None, True
+        preloaded = self._preloaded_sticker_png()
+        return preloaded, False
+
+    def _sync_kiz_session(self, marking_rows: List[Dict[str, Any]]) -> None:
+        """Keep supply session / cache aligned after KIZ status refresh."""
+        session = supply_session.get_session(self.source_id, self.supply_id)
+        if not session:
+            return
+        by_ui_oid = {
+            int(r["order_id"]): r
+            for r in self._all_rows
+            if r.get("order_id") is not None
+        }
+        for r in session.rows:
+            oid = int(r.get("order_id") or 0)
+            src = by_ui_oid.get(oid)
+            if not src:
+                continue
+            r["kiz_required"] = bool(src.get("kiz_required"))
+            r["kiz_codes"] = list(src.get("kiz_codes") or [])
+            r["kiz_status"] = src.get("kiz_status") or "empty"
+            if "kiz_wb_synced" in src:
+                r["kiz_wb_synced"] = src.get("kiz_wb_synced")
+        kiz_rows = []  # type: List[Dict[str, Any]]
+        for src in marking_rows:
+            kr = dict(src)
+            oid = int(kr["order_id"])
+            st = session.sticker_numbers.get(oid) or {}
+            part_a = str(st.get("partA") or kr.get("sticker_part_a") or "").strip()
+            part_b = str(st.get("partB") or kr.get("sticker_part_b") or "").strip()
+            kr["sticker_part_a"] = part_a
+            kr["sticker_part_b"] = part_b
+            kr["sticker_number"] = "{}{}".format(part_a, part_b)
+            kiz_rows.append(kr)
+        session.kiz_rows = kiz_rows
+        supply_session.put_session(session)
+        supply_detail_cache.put(
+            self.source_id,
+            self.supply_id,
+            supply_session.snapshot_for_ui(session),
+        )
 
     def accept(self) -> None:
         self._stop_load_worker()
@@ -1058,18 +1119,8 @@ class SupplyDetailDialog(QDialog):
             return
         from app.services.print_docs import print_supply_stickers
 
-        session = supply_session.get_session(self.source_id, self.supply_id)
-        preloaded = None
-        if session and session.png_ready and session.sticker_png:
-            preloaded = session.sticker_png
-        elif session and not session.png_ready:
-            self._set_load_status("Стикеры ещё готовятся — подождите…")
-            QMessageBox.information(
-                self,
-                "Стикеры",
-                "Стикеры для печати ещё загружаются.\n"
-                "Дождитесь окончания статуса в шапке и нажмите снова.",
-            )
+        preloaded, abort = self._sticker_png_for_print()
+        if abort:
             return
 
         QApplication.setOverrideCursor(QCursor(Qt.WaitCursor))
@@ -1229,6 +1280,9 @@ class SupplyDetailDialog(QDialog):
             if not ids:
                 QMessageBox.information(dlg, "Стикеры", "Выберите категории")
                 return
+            preloaded, abort = self._sticker_png_for_print()
+            if abort:
+                return
             try:
                 print_supply_stickers(
                     self.db,
@@ -1238,6 +1292,7 @@ class SupplyDetailDialog(QDialog):
                     self.supply_id,
                     order_ids=ids,
                     parent=self,
+                    preloaded_stickers=preloaded,
                 )
             except Exception as exc:
                 QMessageBox.critical(dlg, "Стикеры", str(exc))
@@ -1349,6 +1404,7 @@ class SupplyDetailDialog(QDialog):
                     )
                 else:
                     r["kiz_status"] = "empty"
+            self._sync_kiz_session(rows)
             self._render_table()
             self._last_status_note = "Статусы КИЗ обновлены"
             self.meta.setText(self._last_status_note)

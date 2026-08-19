@@ -154,5 +154,38 @@ class PrintPickingListTests(unittest.TestCase):
         fetch_pick.assert_not_called()
 
 
+class OpenHtmlTests(unittest.TestCase):
+    @patch("app.services.print_docs.QDesktopServices")
+    @patch("app.ui.html_print_dialog.show_html_print_preview")
+    @patch("app.ui.html_print_dialog.webengine_status")
+    @patch("PyQt5.QtWidgets.QMessageBox")
+    def test_webengine_load_fail_does_not_auto_open_browser(
+        self, msg_box, webengine_status, show_preview, desktop
+    ):
+        from app.services import print_docs
+
+        webengine_status.return_value = (True, "")
+        show_preview.return_value = False
+        msg_box.question.return_value = msg_box.No
+        parent = MagicMock()
+
+        path = print_docs.open_html("<html></html>", "test_doc", parent=parent)
+
+        self.assertTrue(path.exists())
+        desktop.openUrl.assert_not_called()
+        msg_box.question.assert_called_once()
+
+    @patch("app.services.print_docs.QDesktopServices")
+    @patch("app.ui.html_print_dialog.webengine_status")
+    def test_no_webengine_falls_back_to_browser(self, webengine_status, desktop):
+        from app.services import print_docs
+
+        webengine_status.return_value = (False, "PyQtWebEngineWidgets missing")
+
+        print_docs.open_html("<html></html>", "test_doc_no_we", parent=None)
+
+        desktop.openUrl.assert_called_once()
+
+
 if __name__ == "__main__":
     unittest.main()

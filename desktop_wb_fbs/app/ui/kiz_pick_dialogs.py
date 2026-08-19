@@ -24,6 +24,11 @@ from PyQt5.QtWidgets import (
 
 from app.services.kiz_pick import KizService, PickVerifyService
 from app.services.trbx_stickers import StickersService
+from app.ui.dialog_utils import (
+    apply_fullscreen_on_show,
+    fullscreen_parent,
+    init_fullscreen_dialog,
+)
 from app.ui.format_helpers import fix_ru_keyboard_layout, has_cyrillic
 from app.wb import cancel_reason_label, is_cancelled_status
 
@@ -56,8 +61,10 @@ class KizDialog(QDialog):
         api_key: str,
         supply_id: str,
         parent: Optional[QWidget] = None,
+        *,
+        fullscreen: bool = True,
     ) -> None:
-        super(KizDialog, self).__init__(parent)
+        super(KizDialog, self).__init__(fullscreen_parent(parent, fullscreen))
         self.kiz = kiz
         self.source_id = source_id
         self.api_key = api_key
@@ -68,8 +75,12 @@ class KizDialog(QDialog):
         self._sticker_map = {}  # type: Dict[str, Dict[str, Any]]
 
         self.setWindowTitle("Маркировка · {}".format(supply_id))
-        self.resize(960, 700)
-        self.setMinimumSize(800, 560)
+        init_fullscreen_dialog(
+            self,
+            fullscreen=fullscreen,
+            default_size=(960, 700),
+            minimum_size=(800, 560),
+        )
         root = QVBoxLayout(self)
         root.setContentsMargins(24, 24, 24, 24)
         root.setSpacing(16)
@@ -164,6 +175,10 @@ class KizDialog(QDialog):
 
         self.load_rows()
         self.sticker_input.setFocus()
+
+    def showEvent(self, event) -> None:
+        super(KizDialog, self).showEvent(event)
+        apply_fullscreen_on_show(self)
 
     # -- filters -----------------------------------------------------
     def _on_filled_toggled(self, checked: bool) -> None:
@@ -528,8 +543,10 @@ class PickDialog(QDialog):
         api_key: str,
         supply_id: str,
         parent: Optional[QWidget] = None,
+        *,
+        fullscreen: bool = True,
     ) -> None:
-        super(PickDialog, self).__init__(parent)
+        super(PickDialog, self).__init__(fullscreen_parent(parent, fullscreen))
         self.pick = pick
         self.source_id = source_id
         self.api_key = api_key
@@ -541,8 +558,12 @@ class PickDialog(QDialog):
         self._cancelled_ids = set()  # type: set
 
         self.setWindowTitle("Проверка ШК · {}".format(supply_id))
-        self.resize(960, 700)
-        self.setMinimumSize(800, 560)
+        init_fullscreen_dialog(
+            self,
+            fullscreen=fullscreen,
+            default_size=(960, 700),
+            minimum_size=(800, 560),
+        )
         root = QVBoxLayout(self)
         root.setContentsMargins(24, 24, 24, 24)
         root.setSpacing(16)
@@ -621,6 +642,10 @@ class PickDialog(QDialog):
         root.addWidget(buttons)
         self.load_rows()
         self.sticker_input.setFocus()
+
+    def showEvent(self, event) -> None:
+        super(PickDialog, self).showEvent(event)
+        apply_fullscreen_on_show(self)
 
     # -- filters -----------------------------------------------------
     def _on_filled_toggled(self, checked: bool) -> None:

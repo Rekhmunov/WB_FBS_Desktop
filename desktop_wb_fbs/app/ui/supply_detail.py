@@ -6,7 +6,6 @@ from typing import Any, Dict, List, Optional
 
 from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import (
-    QApplication,
     QCheckBox,
     QDialog,
     QDialogButtonBox,
@@ -30,6 +29,11 @@ from app.db import Database
 from app.services.kiz_pick import KizService, PickVerifyService
 from app.services.orders import OrdersService
 from app.services.trbx_stickers import StickersService, TrbxService
+from app.ui.dialog_utils import (
+    apply_fullscreen_on_show,
+    fullscreen_parent,
+    init_fullscreen_dialog,
+)
 from app.ui.dialogs_extra import show_png_list, show_supply_qr
 from app.ui.layout_utils import FlowLayout
 from app.wb import cargo_type_label, supply_status_label
@@ -46,7 +50,7 @@ class SupplyDetailDialog(QDialog):
         *,
         fullscreen: bool = False,
     ) -> None:
-        super(SupplyDetailDialog, self).__init__(parent)
+        super(SupplyDetailDialog, self).__init__(fullscreen_parent(parent, fullscreen))
         self.db = db
         self.orders = orders
         self.source = source
@@ -57,24 +61,14 @@ class SupplyDetailDialog(QDialog):
         self.stickers = StickersService(db)
         self.kiz = KizService(db)
         self.pick = PickVerifyService(db)
-        self._fullscreen = fullscreen
-        self._fullscreen_applied = False
 
         self.setWindowTitle("Поставка {}".format(supply_id))
-        if fullscreen:
-            self.setWindowFlags(
-                Qt.Window
-                | Qt.WindowTitleHint
-                | Qt.WindowSystemMenuHint
-                | Qt.WindowMinimizeButtonHint
-                | Qt.WindowMaximizeButtonHint
-                | Qt.WindowCloseButtonHint
-            )
-            self.setMinimumSize(640, 480)
-        else:
-            # Natural landscape card (~16:10), not ultra-wide or short
-            self.resize(1040, 720)
-            self.setMinimumSize(880, 600)
+        init_fullscreen_dialog(
+            self,
+            fullscreen=fullscreen,
+            default_size=(1040, 720),
+            minimum_size=(880, 600),
+        )
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
@@ -205,13 +199,7 @@ class SupplyDetailDialog(QDialog):
 
     def showEvent(self, event) -> None:
         super(SupplyDetailDialog, self).showEvent(event)
-        if self._fullscreen and not self._fullscreen_applied:
-            self._fullscreen_applied = True
-            screen = QApplication.primaryScreen()
-            if screen is not None:
-                self.setGeometry(screen.availableGeometry())
-            else:
-                self.showMaximized()
+        apply_fullscreen_on_show(self)
 
     def _clear_chips(self) -> None:
         while self.meta_chips.count():
@@ -586,7 +574,7 @@ class SupplyDetailDialog(QDialog):
         from app.ui.kiz_pick_dialogs import KizDialog
 
         dlg = KizDialog(
-            self.kiz, self.source_id, self.api_key, self.supply_id, self
+            self.kiz, self.source_id, self.api_key, self.supply_id, fullscreen=True
         )
         dlg.exec_()
         self.reload()
@@ -595,7 +583,7 @@ class SupplyDetailDialog(QDialog):
         from app.ui.kiz_pick_dialogs import PickDialog
 
         dlg = PickDialog(
-            self.pick, self.source_id, self.api_key, self.supply_id, self
+            self.pick, self.source_id, self.api_key, self.supply_id, fullscreen=True
         )
         dlg.exec_()
         self.reload()

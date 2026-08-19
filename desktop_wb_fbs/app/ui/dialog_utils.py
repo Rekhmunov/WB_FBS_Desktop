@@ -1,0 +1,53 @@
+# -*- coding: utf-8 -*-
+"""Shared helpers for modal / workflow dialogs."""
+from __future__ import annotations
+
+from typing import Optional, Tuple
+
+from PyQt5.QtCore import Qt
+from PyQt5.QtWidgets import QApplication, QDialog, QWidget
+
+
+def fullscreen_parent(
+    parent: Optional[QWidget], fullscreen: bool
+) -> Optional[QWidget]:
+    return None if fullscreen else parent
+
+
+def init_fullscreen_dialog(
+    dialog: QDialog,
+    *,
+    fullscreen: bool,
+    default_size: Optional[Tuple[int, int]] = None,
+    minimum_size: Optional[Tuple[int, int]] = None,
+) -> None:
+    dialog._fullscreen = fullscreen  # type: ignore[attr-defined]
+    dialog._fullscreen_applied = False  # type: ignore[attr-defined]
+    if fullscreen:
+        dialog.setWindowFlags(
+            Qt.Window
+            | Qt.WindowTitleHint
+            | Qt.WindowSystemMenuHint
+            | Qt.WindowMinimizeButtonHint
+            | Qt.WindowMaximizeButtonHint
+            | Qt.WindowCloseButtonHint
+        )
+        dialog.setMinimumSize(640, 480)
+        return
+    if default_size:
+        dialog.resize(*default_size)
+    if minimum_size:
+        dialog.setMinimumSize(*minimum_size)
+
+
+def apply_fullscreen_on_show(dialog: QDialog) -> None:
+    if not getattr(dialog, "_fullscreen", False):
+        return
+    if getattr(dialog, "_fullscreen_applied", False):
+        return
+    dialog._fullscreen_applied = True  # type: ignore[attr-defined]
+    screen = QApplication.primaryScreen()
+    if screen is not None:
+        dialog.setGeometry(screen.availableGeometry())
+    else:
+        dialog.showMaximized()

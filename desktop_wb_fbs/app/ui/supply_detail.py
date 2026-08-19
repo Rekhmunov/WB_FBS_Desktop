@@ -979,7 +979,8 @@ class SupplyDetailDialog(QDialog):
         except Exception as exc:
             QMessageBox.critical(self, "Лист подбора", str(exc))
         finally:
-            QApplication.restoreOverrideCursor()
+            while QApplication.overrideCursor() is not None:
+                QApplication.restoreOverrideCursor()
 
     def print_stickers(self) -> None:
         if not self._require_actions_ready():
@@ -1015,7 +1016,8 @@ class SupplyDetailDialog(QDialog):
         except Exception as exc:
             QMessageBox.critical(self, "Стикеры", str(exc))
         finally:
-            QApplication.restoreOverrideCursor()
+            while QApplication.overrideCursor() is not None:
+                QApplication.restoreOverrideCursor()
 
     def print_qr(self) -> None:
         try:

@@ -8,6 +8,7 @@ from typing import Optional
 from PyQt5.QtCore import QEventLoop, QUrl, Qt
 from PyQt5.QtPrintSupport import QPrintDialog, QPrintPreviewDialog, QPrinter
 from PyQt5.QtWidgets import (
+    QApplication,
     QDialog,
     QFileDialog,
     QHBoxLayout,
@@ -161,6 +162,10 @@ def show_html_print_preview(
     """Open modal preview. Returns True when WebEngine preview was shown."""
     if not _HAS_WEBENGINE:
         return False
+    app = QApplication.instance()
+    if app is not None:
+        while app.overrideCursor() is not None:
+            app.restoreOverrideCursor()
     try:
         dlg = HtmlPrintPreviewDialog(html_path, title=title, parent=parent)
     except Exception:

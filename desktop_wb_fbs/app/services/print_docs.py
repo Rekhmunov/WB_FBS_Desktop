@@ -90,6 +90,17 @@ def _cache_put_card_meta(fp: str, nm_id: int, card: Dict[str, Any]) -> None:
         _card_meta_cache[(fp, nm_id)] = (time.monotonic(), copy.deepcopy(card))
 
 
+def _clear_override_cursor() -> None:
+    """Drop wait-cursor before modal UI (print preview / message boxes)."""
+    from PyQt5.QtWidgets import QApplication
+
+    app = QApplication.instance()
+    if app is None:
+        return
+    while app.overrideCursor() is not None:
+        app.restoreOverrideCursor()
+
+
 def open_html(
     html_doc: str,
     basename: str,
@@ -106,12 +117,16 @@ def open_html(
         from app.ui.html_print_dialog import show_html_print_preview, webengine_status
 
         ok, status = webengine_status()
-        if ok and show_html_print_preview(path, title=title or basename, parent=parent):
-            return path
+        if ok:
+            # Wait-cursor must not stay while the modal print dialog is open.
+            _clear_override_cursor()
+            if show_html_print_preview(path, title=title or basename, parent=parent):
+                return path
         if not ok:
             preview_error = status
     except Exception as exc:
         preview_error = str(exc) or exc.__class__.__name__
+    _clear_override_cursor()
     QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
     if parent is not None:
         detail = (

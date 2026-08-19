@@ -4,7 +4,8 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional
 
 from PyQt5.QtCore import Qt
-from PyQt5.QtGui import QPixmap
+from PyQt5.QtGui import QPainter, QPixmap
+from PyQt5.QtPrintSupport import QPrintDialog, QPrinter
 from PyQt5.QtWidgets import (
     QComboBox,
     QDialog,
@@ -22,6 +23,37 @@ from app.db import Database
 from app.services.orders import OrdersService
 from app.services.trbx_stickers import StickersService
 from app.wb import default_mgt_supply_name
+
+
+def _print_pixmaps(parent: QWidget, pixmaps: List[QPixmap]) -> None:
+    valid = [p for p in pixmaps if p is not None and not p.isNull()]
+    if not valid:
+        QMessageBox.warning(parent, "Печать", "Нет изображений для печати.")
+        return
+    printer = QPrinter(QPrinter.HighResolution)
+    dlg = QPrintDialog(printer, parent)
+    if dlg.exec_() != QDialog.Accepted:
+        return
+    painter = QPainter()
+    if not painter.begin(printer):
+        QMessageBox.warning(parent, "Печать", "Не удалось начать печать.")
+        return
+    try:
+        for index, pix in enumerate(valid):
+            if index > 0:
+                printer.newPage()
+            page = printer.pageRect(QPrinter.DevicePixel)
+            scaled = pix.scaled(
+                page.size(),
+                Qt.KeepAspectRatio,
+                Qt.SmoothTransformation,
+            )
+            x = page.x() + max(0, (page.width() - scaled.width()) // 2)
+            y = page.y() + max(0, (page.height() - scaled.height()) // 2)
+            painter.drawPixmap(x, y, scaled)
+    finally:
+        painter.end()
+    QMessageBox.information(parent, "Печать", "Стикер отправлен на печать.")
 
 
 def show_png_list(
@@ -46,18 +78,26 @@ def show_png_list(
     lay = QVBoxLayout(wrap)
     lay.setContentsMargins(0, 0, 8, 0)
     lay.setSpacing(16)
+    pixmaps = []  # type: List[QPixmap]
     for raw in pngs:
         lab = QLabel()
         lab.setAlignment(Qt.AlignCenter)
         pix = QPixmap()
         pix.loadFromData(raw)
+        pixmaps.append(pix)
         lab.setPixmap(pix.scaledToWidth(420, Qt.SmoothTransformation))
         lay.addWidget(lab)
     lay.addStretch(1)
     scroll.setWidget(wrap)
     root.addWidget(scroll, 1)
-    buttons = QDialogButtonBox(QDialogButtonBox.Close)
+    buttons = QDialogButtonBox()
+    print_btn = buttons.addButton("Печать…", QDialogButtonBox.ActionRole)
+    print_btn.setObjectName("bottomPrimary")
+    print_btn.clicked.connect(lambda: _print_pixmaps(dlg, pixmaps))
+    close_btn = buttons.addButton(QDialogButtonBox.Close)
+    close_btn.setObjectName("secondary")
     buttons.rejected.connect(dlg.reject)
+    close_btn.clicked.connect(dlg.reject)
     root.addWidget(buttons)
     dlg.exec_()
 

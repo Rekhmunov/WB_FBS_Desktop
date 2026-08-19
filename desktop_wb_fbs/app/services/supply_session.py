@@ -330,6 +330,8 @@ def preload_sticker_pngs(
     """Fetch PNG stickers for print — persisted on disk, indexed in print cache."""
     import gc
 
+    from app.diag_log import exception as diag_exception
+    from app.diag_log import write as diag_write
     from app.services.print_docs import (
         _cache_sticker_count,
         _stickers_cache_key,
@@ -339,6 +341,13 @@ def preload_sticker_pngs(
 
     ids = [int(r["order_id"]) for r in session.rows if r.get("order_id") is not None]
     order_total = len(ids)
+    diag_write(
+        "supply.png_preload.begin",
+        sync=True,
+        supply_id=session.supply_id,
+        source_id=session.source_id,
+        order_total=order_total,
+    )
 
     def _png_progress(done: int, total: int) -> None:
         if progress:
@@ -351,12 +360,29 @@ def preload_sticker_pngs(
     if not ids or not session.api_key:
         session.png_ready = True
         put_session(session)
+        diag_write(
+            "supply.png_preload.skip",
+            sync=True,
+            supply_id=session.supply_id,
+            reason="no_ids_or_api_key",
+        )
         return
     cache_key = _stickers_cache_key(
         session.api_key, ids, "png", True
     )
     try:
+        diag_write(
+            "supply.png_preload.clear_dir",
+            sync=True,
+            supply_id=session.supply_id,
+        )
         clear_supply_sticker_dir(session.api_key, session.supply_id)
+        diag_write(
+            "supply.png_preload.fetch_begin",
+            sync=True,
+            supply_id=session.supply_id,
+            order_total=order_total,
+        )
         fetch_stickers_map(
             session.api_key,
             ids,
@@ -367,14 +393,37 @@ def preload_sticker_pngs(
             persist_supply_id=session.supply_id,
         )
         session.sticker_png_count = _cache_sticker_count(cache_key)
-    except MemoryError:
+        diag_write(
+            "supply.png_preload.fetch_done",
+            sync=True,
+            supply_id=session.supply_id,
+            cached_count=session.sticker_png_count,
+        )
+    except MemoryError as exc:
         session.sticker_png_count = 0
-    except Exception:
+        diag_exception(
+            "supply.png_preload.memory_error",
+            exc,
+            supply_id=session.supply_id,
+        )
+    except Exception as exc:
         session.sticker_png_count = 0
+        diag_exception(
+            "supply.png_preload.error",
+            exc,
+            supply_id=session.supply_id,
+        )
     finally:
         gc.collect()
     session.png_ready = True
     put_session(session)
+    diag_write(
+        "supply.png_preload.done",
+        sync=True,
+        supply_id=session.supply_id,
+        png_ready=True,
+        cached_count=session.sticker_png_count,
+    )
 
 
 def snapshot_for_ui(session: SupplySession) -> Dict[str, Any]:

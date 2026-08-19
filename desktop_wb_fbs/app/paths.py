@@ -25,3 +25,9 @@ def photos_dir() -> Path:
     path = app_data_dir() / "product_photos"
     path.mkdir(parents=True, exist_ok=True)
     return path
+
+
+def logs_dir() -> Path:
+    path = app_data_dir() / "logs"
+    path.mkdir(parents=True, exist_ok=True)
+    return path

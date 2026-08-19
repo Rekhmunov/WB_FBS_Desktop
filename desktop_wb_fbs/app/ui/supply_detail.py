@@ -90,7 +90,16 @@ class _SupplyCoreLoadWorker(QThread):
 
     def run(self) -> None:
         try:
+            from app.diag_log import write as diag_write
+
             total = len(_LOAD_STEPS)
+            diag_write(
+                "supply.core_worker.begin",
+                sync=True,
+                supply_id=self.supply_id,
+                source_id=self.source_id,
+                generation=self.generation,
+            )
 
             def _progress(step: int, detail: str = "") -> None:
                 self.progress.emit(int(step), total, str(detail or ""))
@@ -104,13 +113,34 @@ class _SupplyCoreLoadWorker(QThread):
                 supply_pickup_allowed=self.supply_pickup_allowed,
                 progress=_progress,
             )
+            diag_write(
+                "supply.core_worker.snapshot_emit",
+                sync=True,
+                supply_id=self.supply_id,
+                rows=len(session.rows or []),
+                generation=self.generation,
+            )
             self.core_ready.emit(
                 {
                     "generation": self.generation,
                     "payload": supply_session.snapshot_for_ui(session),
                 }
             )
+            diag_write(
+                "supply.core_worker.done",
+                sync=True,
+                supply_id=self.supply_id,
+                generation=self.generation,
+            )
         except Exception as exc:
+            from app.diag_log import exception as diag_exception
+
+            diag_exception(
+                "supply.core_worker.error",
+                exc,
+                supply_id=self.supply_id,
+                generation=self.generation,
+            )
             self.failed.emit(str(exc))
 
 
@@ -134,7 +164,16 @@ class _SupplyPngLoadWorker(QThread):
 
     def run(self) -> None:
         try:
+            from app.diag_log import write as diag_write
+
             total = len(_LOAD_STEPS)
+            diag_write(
+                "supply.png_worker.begin",
+                sync=True,
+                supply_id=self.supply_id,
+                source_id=self.source_id,
+                generation=self.generation,
+            )
 
             def _progress(step: int, detail: str = "") -> None:
                 self.progress.emit(int(step), total, str(detail or ""))
@@ -143,14 +182,36 @@ class _SupplyPngLoadWorker(QThread):
             if not session:
                 raise RuntimeError("Сессия поставки не найдена")
             supply_session.preload_sticker_pngs(session, progress=_progress)
+            count = int(getattr(session, "sticker_png_count", 0) or 0)
+            diag_write(
+                "supply.png_worker.emit_ready",
+                sync=True,
+                supply_id=self.supply_id,
+                generation=self.generation,
+                cached_count=count,
+            )
             self.png_ready.emit(
                 {
                     "generation": self.generation,
                     "png_ready": True,
-                    "count": int(getattr(session, "sticker_png_count", 0) or 0),
+                    "count": count,
                 }
             )
+            diag_write(
+                "supply.png_worker.done",
+                sync=True,
+                supply_id=self.supply_id,
+                generation=self.generation,
+            )
         except Exception as exc:
+            from app.diag_log import exception as diag_exception
+
+            diag_exception(
+                "supply.png_worker.error",
+                exc,
+                supply_id=self.supply_id,
+                generation=self.generation,
+            )
             self.failed.emit(str(exc))
 
 
@@ -799,12 +860,29 @@ class SupplyDetailDialog(QDialog):
         """Start PNG preload after the UI finishes rendering the order table."""
         if int(self._load_gen) <= 0:
             return
+        from app.diag_log import write as diag_write
+
+        diag_write(
+            "supply.ui.schedule_png_preload",
+            sync=True,
+            supply_id=self.supply_id,
+            generation=self._load_gen,
+            rows=len(self._all_rows),
+        )
         QTimer.singleShot(0, self._start_png_preload)
 
     def _start_png_preload(self) -> None:
         if self._png_worker is not None and self._png_worker.isRunning():
             return
+        from app.diag_log import write as diag_write
+
         gen = self._load_gen
+        diag_write(
+            "supply.ui.png_worker_start",
+            sync=True,
+            supply_id=self.supply_id,
+            generation=gen,
+        )
         worker = _SupplyPngLoadWorker(
             self.source_id,
             self.supply_id,
@@ -831,21 +909,49 @@ class SupplyDetailDialog(QDialog):
         data = payload.get("payload")
         if not isinstance(data, dict):
             return
+        from app.diag_log import write as diag_write
+
+        order_count = len((data.get("rows") or []))
+        diag_write(
+            "supply.ui.core_ready",
+            sync=True,
+            supply_id=self.supply_id,
+            generation=self._load_gen,
+            rows=order_count,
+        )
         supply_detail_cache.put(self.source_id, self.supply_id, data)
         self._apply_loaded_payload(data)
         self._loading = False
         self._load_worker = None
         self._load_step = 4
-        order_count = len((data.get("rows") or []))
         self._load_detail = "0 из {}".format(order_count) if order_count else "ожидайте"
         self._render_load_status()
         self._set_actions_ready(False)
+        diag_write(
+            "supply.ui.table_rendered",
+            sync=True,
+            supply_id=self.supply_id,
+            generation=self._load_gen,
+            rows=order_count,
+        )
         self._schedule_png_preload()
 
     def _on_png_ready(self, payload: object) -> None:
         if isinstance(payload, dict):
             if int(payload.get("generation") or 0) != self._load_gen:
                 return
+        from app.diag_log import write as diag_write
+
+        count = 0
+        if isinstance(payload, dict):
+            count = int(payload.get("count") or 0)
+        diag_write(
+            "supply.ui.png_ready",
+            sync=True,
+            supply_id=self.supply_id,
+            generation=self._load_gen,
+            cached_count=count,
+        )
         self._png_worker = None
         self._load_step = 0
         self._load_detail = ""
@@ -854,6 +960,15 @@ class SupplyDetailDialog(QDialog):
         self._stop_png_poll()
 
     def _on_png_preload_failed(self, message: str) -> None:
+        from app.diag_log import write as diag_write
+
+        diag_write(
+            "supply.ui.png_preload_failed",
+            sync=True,
+            supply_id=self.supply_id,
+            generation=self._load_gen,
+            message=str(message or ""),
+        )
         self._png_worker = None
         self._load_step = 0
         self._load_detail = ""

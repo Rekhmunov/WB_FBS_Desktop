@@ -26,6 +26,7 @@ from PyQt5.QtWidgets import (
 )
 
 from app import APP_NAME, __version__
+from app.diag_log import init as init_diag_log, write as diag_write
 from app.db import Database
 from app.services import SourceService
 from app.services.catalog import CategoryService, ProductService
@@ -119,6 +120,8 @@ def run() -> int:
         QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
     except Exception:
         pass
+    log_path = init_diag_log()
+    diag_write("app.run.begin", version=__version__, log=str(log_path))
     app = QApplication(sys.argv)
     app.setApplicationName(APP_NAME)
     app.setStyle("Fusion")

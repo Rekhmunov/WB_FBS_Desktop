@@ -19,6 +19,7 @@ from PyQt5.QtCore import QUrl
 from PyQt5.QtGui import QDesktopServices
 
 from app.db import Database
+from app.diag_log import write as diag_write
 from app.services.catalog import ProductService
 from app.services.orders import OrdersService
 from app.services.sticker_file_cache import persist_sticker_png, read_sticker_b64
@@ -394,12 +395,43 @@ def fetch_stickers_map(
         and str(persist_supply_id or "").strip()
         and api_key
     )
+    diag_write(
+        "stickers.fetch.begin",
+        sync=True,
+        supply_id=persist_supply_id or "",
+        sticker_type=stype,
+        order_total=total,
+        chunk_size=step,
+        cache_only=cache_only,
+        persist_disk=persist_disk,
+    )
     for i in range(0, len(ids), step):
         if i:
             time.sleep(0.21)
         chunk = ids[i : i + step]
+        chunk_no = (i // step) + 1
+        chunk_total = (len(ids) + step - 1) // step
+        diag_write(
+            "stickers.fetch.chunk_begin",
+            sync=True,
+            supply_id=persist_supply_id or "",
+            chunk=chunk_no,
+            chunk_total=chunk_total,
+            chunk_orders=len(chunk),
+            progress_done=i,
+            progress_total=total,
+        )
         chunk_out = {}  # type: Dict[int, Dict[str, Any]]
-        for st in client.get_order_stickers(chunk, sticker_type=stype):
+        chunk_b64_bytes = 0
+        stickers_raw = client.get_order_stickers(chunk, sticker_type=stype)
+        diag_write(
+            "stickers.fetch.api_done",
+            sync=True,
+            supply_id=persist_supply_id or "",
+            chunk=chunk_no,
+            stickers_returned=len(stickers_raw or []),
+        )
+        for st in stickers_raw:
             if not isinstance(st, dict):
                 continue
             try:
@@ -411,6 +443,7 @@ def fetch_stickers_map(
             if keep_files:
                 b64 = st.get("file")
                 b64_text = b64 if isinstance(b64, str) else ""
+                chunk_b64_bytes += len(b64_text)
                 if persist_disk and b64_text:
                     file_path = persist_sticker_png(
                         api_key, str(persist_supply_id), oid, b64_text
@@ -440,9 +473,28 @@ def fetch_stickers_map(
                 out[oid] = meta
         if cache_key is not None and chunk_out:
             _cache_merge_stickers(cache_key, chunk_out)
+        chunk_saved = len(chunk_out)
         chunk_out.clear()
         if progress:
             progress(min(i + len(chunk), total), total)
+        diag_write(
+            "stickers.fetch.chunk_done",
+            sync=True,
+            supply_id=persist_supply_id or "",
+            chunk=chunk_no,
+            chunk_total=chunk_total,
+            saved=chunk_saved,
+            b64_chars=chunk_b64_bytes,
+            progress_done=min(i + len(chunk), total),
+            progress_total=total,
+        )
+    diag_write(
+        "stickers.fetch.done",
+        sync=True,
+        supply_id=persist_supply_id or "",
+        order_total=total,
+        cache_only=cache_only,
+    )
     if cache_only:
         return {}
     return out

@@ -1,0 +1,128 @@
+---
+description: UI design system and layout quality rules for frontend work
+globs: ["**/*.tsx", "**/*.jsx", "**/*.ts", "**/*.js", "**/*.css", "**/*.scss", "**/*.html"]
+alwaysApply: true
+---
+
+# UI Design System Rule
+
+You are responsible not only for working code, but for clean, production-quality UI.
+Every frontend task must follow these rules unless the user explicitly overrides them.
+
+## Core principle
+
+Do not generate generic AI-looking layouts.
+Prefer clean, restrained, modern interfaces with strong hierarchy, consistent spacing, accessible contrast, and obvious actions.
+
+## Layout and spacing
+
+- Use a spacing system based on 4px increments only: 4, 8, 12, 16, 20, 24, 32, 40, 48, 64.
+- Never use random spacing values like 13px, 18px, 22px, 27px.
+- Section spacing must be visibly larger than card spacing.
+- Keep a clear hierarchy:
+  - page padding
+  - section gap
+  - card padding
+  - internal element gap
+- Default content width should be constrained; avoid full-width text blocks.
+- Prefer left alignment for text in content sections. Do not center everything.
+
+## Typography
+
+- Use only 1-2 font families in the whole project.
+- Use a clear type scale. Default minimum body text: 16px.
+- Small UI text can be 14px, but never smaller unless it is secondary metadata.
+- Headings must be visually distinct from body text through size and weight, not random colors.
+- Limit the page to a small number of text styles; avoid visual chaos.
+
+## Buttons
+
+- Buttons must always have clear visual hierarchy:
+  - Primary: filled, highest emphasis
+  - Secondary: outline or subtle surface
+  - Ghost: low emphasis
+- Every button must have:
+  - default state
+  - hover state
+  - active/pressed state
+  - focus-visible state
+  - disabled state
+- Button padding must be consistent across the project.
+- Buttons must not look flat and accidental; they should feel intentional and clickable.
+- Avoid ugly default browser button styles.
+
+## Inputs and forms
+
+- Inputs must have proper height, padding, border, focus, error, and disabled states.
+- Labels must always be present for forms.
+- Do not rely on placeholder as the only label.
+- Form spacing must be consistent and aligned with the spacing system.
+- Error messages must appear close to the field and be visually clear.
+
+## Cards and containers
+
+- Cards should use subtle borders or soft shadows, not heavy noisy effects.
+- Use consistent border radius across the project.
+- Avoid mixing many different radii in one screen.
+- Card layouts must align cleanly; do not place elements at arbitrary offsets.
+
+## Colors
+
+- Use a restrained palette:
+  - neutral background
+  - neutral surfaces
+  - one primary accent
+  - semantic success/warning/error colors only when needed
+- Avoid random gradients, neon glows, purple-blue AI-style visuals, and decorative blobs unless explicitly requested.
+- Use color primarily for hierarchy and actions, not decoration.
+- Ensure accessible contrast for text and controls.
+
+## Responsiveness
+
+- Build mobile-first.
+- UI must work well at 375px width and up.
+- On mobile:
+  - stack columns vertically
+  - increase tap target sizes
+  - avoid cramped horizontal layouts
+- Minimum interactive target should be comfortable for touch.
+
+## Visual quality checks
+
+Before finalizing any UI, review and improve:
+- Are spacing values consistent?
+- Are primary actions obvious?
+- Do buttons look like real product buttons?
+- Is the text easy to scan?
+- Are cards aligned and padded consistently?
+- Does the page avoid the generic AI-template look?
+- Is the design calm, modern, and usable?
+
+## Implementation behavior
+
+When asked to build or refactor UI:
+1. First create or respect shared design tokens for spacing, radius, colors, and typography.
+2. Reuse existing UI patterns instead of creating one-off styles.
+3. Improve ugly default markup instead of keeping it.
+4. If the screen looks plain or messy, refine spacing and hierarchy before adding decoration.
+5. Prefer simplicity, consistency, and usability over flashy visuals.
+
+## Anti-patterns to avoid
+
+- Random padding and margin values
+- Everything centered
+- Tiny text
+- Weak button contrast
+- Unstyled forms
+- Too many colors
+- Inconsistent shadows
+- Different border-radius values everywhere
+- Generic 3-column “AI SaaS” sections
+- Gradient-heavy hero blocks by default
+- Decorative elements that reduce clarity
+
+## Expected output style
+
+Produce frontend code that feels like a real designer reviewed it:
+clean spacing, strong hierarchy, polished buttons, good forms, consistent cards, and responsive layout.
+If current UI is weak, improve the design proactively, not only the logic.

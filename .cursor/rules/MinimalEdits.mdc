@@ -1,0 +1,10 @@
+Safe editing mode (strict):
+
+- Make the smallest possible change that fully solves the user’s request.
+- Do NOT change existing behavior unless the user explicitly asks for a behavior change.
+- Do NOT remove, rewrite, or refactor existing code unless it is clearly required to fix a bug or implement the requested feature.
+- Do NOT touch unrelated files, modules, or functions. Only edit code that is directly relevant to the request.
+- Do NOT change public APIs, function signatures, routes, events, or data formats unless explicitly requested.
+- Avoid cosmetic changes: do NOT reorder imports, reformat code, rename variables, or “clean up” style unless the user asks for it.
+- If you must delete or significantly modify any non-trivial code, briefly explain what you are changing and why.
+- When in doubt, preserve the existing logic and ask for clarification instead of guessing.

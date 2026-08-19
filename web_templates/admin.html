@@ -1,0 +1,395 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Админ-панель</title>
+  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg" />
+  <link rel="stylesheet" href="/static/style.css?v=7" />
+</head>
+<body>
+  <div class="container container-page">
+    <div class="panel">
+      <h2>Админ-панель</h2>
+      <div class="row">
+        <button type="button" class="secondary" onclick="window.location.href='/app'">Вернуться в рабочий кабинет</button>
+      </div>
+    </div>
+
+    <div id="superAdminAiPanel" class="panel hidden">
+      <h3>Подключение ИИ</h3>
+      <div class="row">
+        <input id="apiKey" type="text" size="34" placeholder="API-ключ Yandex Cloud" />
+        <input id="folderId" type="text" size="24" placeholder="ID каталога (folderId)" />
+      </div>
+      <div class="row ai-settings-actions">
+        <button id="aiEditBtn" type="button" class="secondary" onclick="editAiSettings()">Изменить</button>
+        <button id="aiTestBtn" type="button" class="secondary" onclick="testAiSettingsConnection()">Проверить</button>
+        <button id="aiTestReviewBtn" type="button" class="secondary" onclick="openAiTestReviewModal()">Отправить тестовый отзыв</button>
+        <button id="aiStatsBtn" type="button" class="secondary" onclick="openAiStatsModal()">📊 Статистика запросов</button>
+        <button id="aiCancelBtn" type="button" class="secondary hidden" onclick="cancelAiSettingsEdit()">Отмена</button>
+      </div>
+      <div class="row">
+        <label for="defaultSyncLookbackDays">Старт синхронизации для новых пользователей (дней до регистрации)</label>
+        <input id="defaultSyncLookbackDays" type="number" min="0" max="365" step="1" value="7" />
+      </div>
+      <div class="row">
+        <button id="aiSaveBtn" class="hidden" onclick="saveAiSettings()">Сохранить</button>
+      </div>
+      <div id="aiInfo" class="small"></div>
+    </div>
+
+    <div id="superAdminSaasPanel" class="hidden">
+      <div id="tariffsBlock" class="panel">
+        <div class="row row-between">
+          <h3 class="no-margin">Тарифы</h3>
+          <button class="secondary" type="button" onclick="openCreateTariffForm()">Добавить тариф</button>
+        </div>
+        <div id="tariffFormPanel" class="tariff-form-panel hidden">
+          <h4 id="tariffFormTitle" class="no-margin">Добавить тариф</h4>
+          <div class="row">
+            <input id="tariffCode" type="text" placeholder="Код тарифа (например, pro)" />
+            <input id="tariffTitle" type="text" placeholder="Название тарифа" />
+            <input id="tariffPrice" type="number" step="0.01" min="0" placeholder="Цена в месяц" />
+          </div>
+          <div class="row">
+            <input id="tariffLimitReviews" type="number" min="0" step="1" placeholder="Лимит отзывов в месяц" />
+            <input id="tariffLimitManagers" type="number" min="0" step="1" placeholder="Лимит менеджеров" />
+            <input id="tariffLimitSources" type="number" min="0" step="1" placeholder="Лимит источников" />
+            <input id="tariffLimitAiUnits" type="number" min="0" step="1" placeholder="Лимит AI-единиц в месяц" />
+          </div>
+          <div class="row">
+            <label><input id="tariffIsActive" class="small-check" type="checkbox" checked /> Тариф активен</label>
+            <button id="tariffSaveButton" type="button" onclick="saveTariffPlan()">Создать тариф</button>
+            <button id="tariffCancelButton" type="button" class="secondary hidden" onclick="closeTariffForm()">Отмена</button>
+          </div>
+        </div>
+        <div id="tariffsList" class="tariffs-list"></div>
+        <div id="tariffsInfo" class="small"></div>
+      </div>
+
+      <div id="paymentsBlock" class="panel">
+        <h3>Платежи</h3>
+        <div class="row">
+          <input id="paymentOwnerId" type="number" min="1" placeholder="ID владельца кабинета" />
+          <input id="paymentAmount" type="number" step="0.01" min="0" placeholder="Сумма" />
+          <input id="paymentStatus" type="text" placeholder="Статус (paid/pending/...)" value="paid" />
+          <button onclick="addPaymentRecord()">Добавить платеж</button>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>ID</th><th>ID владельца</th><th>Сумма</th><th>Статус</th><th>Дата</th><th>Действия</th></tr></thead>
+            <tbody id="paymentsTbody"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div id="templateVariablesBlock" class="panel">
+        <div class="row row-between">
+          <h3 class="no-margin">Переменные шаблонов платформы</h3>
+        </div>
+        <div class="row">
+          <input id="templateVarKey" type="text" placeholder="Ключ, например %BRAND%" style="max-width:200px" />
+          <input id="templateVarTitle" type="text" placeholder="Название переменной" style="max-width:200px" />
+          <!-- hidden: source_type and description managed automatically -->
+          <select id="templateVarSourceType" class="hidden" aria-hidden="true">
+            <option value="manual">manual</option>
+            <option value="review_field">review_field</option>
+            <option value="system">system</option>
+          </select>
+          <input id="templateVarDescription" type="text" class="hidden" aria-hidden="true" />
+          <input id="templateVarDefaultValue" type="text" class="hidden" aria-hidden="true" />
+          <input id="templateVarManualValue" type="text" placeholder="Значение (например, название бренда)" style="min-width:220px" />
+          <!-- hidden: legacy fields kept for API compatibility -->
+          <input id="templateVarSourcePath" type="hidden" value="manual:" />
+        </div>
+        <div class="row">
+          <label><input id="templateVarUserEditable" class="small-check" type="checkbox" /> Пользователь может редактировать</label>
+          <label><input id="templateVarIsActive" class="small-check" type="checkbox" checked /> Активна</label>
+          <button type="button" onclick="saveTemplateVariable()">Сохранить переменную</button>
+        </div>
+        <div id="templateVariablesInfo" class="small"></div>
+        <div class="table-wrap template-variables-table-wrap">
+          <table>
+            <thead><tr><th>Ключ</th><th>Название</th><th>Значение</th><th>Редакт.</th><th>Активна</th><th>Действия</th></tr></thead>
+            <tbody id="templateVariablesTbody"></tbody>
+          </table>
+        </div>
+        <div style="margin-top:16px;padding:12px 16px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:6px">
+          <div style="font-weight:600;font-size:13px;color:#374151;margin-bottom:8px">Системные переменные (встроены в программу)</div>
+          <div class="small" style="color:#64748b;line-height:1.8">
+            <code>%USER%</code> — имя покупателя из API (автоматически подставляется из отзыва)
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div id="superAdminDefaultTemplatesPanel" class="panel hidden">
+      <h3>Шаблоны по умолчанию для всех новых пользователей</h3>
+      <div class="row">
+        <button id="defaultTemplateBulkExportBtn" class="secondary" type="button" onclick="openDefaultTemplateBulkModal()">Экспорт</button>
+      </div>
+      <div class="row default-templates-workspace">
+        <div id="defaultTemplateGroupsView">
+          <div id="defaultTemplateGroupsAccordion" class="template-groups-accordion"></div>
+        </div>
+        <div id="defaultTemplateEditorView" class="hidden default-template-editor-view">
+          <div class="row between center">
+            <h4 id="defaultTemplateEditorTitle" class="no-margin"></h4>
+            <button class="secondary" onclick="closeDefaultTemplateEditor()">Назад к группам</button>
+          </div>
+          <div id="defaultTemplateEditorList" class="template-editor-list"></div>
+          <div class="row">
+            <button class="secondary" onclick="addDefaultTemplateEditorRow()">Добавить шаблон</button>
+            <button onclick="saveDefaultTemplateSubgroup()">Сохранить подгруппу</button>
+            <span id="defaultTemplatesInfo" class="small"></span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div id="salaryPanel" class="panel">
+      <div class="row row-between">
+        <h3 class="no-margin">Зарплата операторов</h3>
+      </div>
+
+      <div class="salary-rates-block">
+        <h4 class="no-margin" style="margin-bottom:12px">Ставки начисления</h4>
+        <div class="row salary-rates-row">
+          <label class="salary-rate-label">
+            <span class="small">За отзыв (₽)</span>
+            <input id="salaryRateReview" type="number" min="0" step="0.01" placeholder="0.00" />
+          </label>
+          <label class="salary-rate-label">
+            <span class="small">За вопрос (₽)</span>
+            <input id="salaryRateQuestion" type="number" min="0" step="0.01" placeholder="0.00" />
+          </label>
+          <label class="salary-rate-label">
+            <span class="small">За чат (₽)</span>
+            <input id="salaryRateChat" type="number" min="0" step="0.01" placeholder="0.00" />
+          </label>
+          <button type="button" onclick="saveSalaryRates()">Сохранить ставки</button>
+        </div>
+        <div id="salaryRatesInfo" class="small"></div>
+      </div>
+
+      <div class="salary-report-block" style="margin-top:20px">
+        <h4 class="no-margin" style="margin-bottom:12px">Отчёт по зарплатам</h4>
+        <div class="row salary-report-filters">
+          <label class="small">С <input id="salaryDateFrom" type="date" /></label>
+          <label class="small">По <input id="salaryDateTo" type="date" /></label>
+          <button type="button" class="secondary" onclick="loadSalaryReport()">Показать</button>
+          <button type="button" class="secondary" onclick="resetSalaryDates()">Весь период</button>
+          <button type="button" class="secondary" onclick="exportSalaryReport('csv')">Экспорт CSV</button>
+          <button type="button" class="secondary" onclick="exportSalaryReport('xlsx')">Экспорт Excel</button>
+        </div>
+        <div id="salaryReportInfo" class="small"></div>
+        <div class="table-wrap" style="margin-top:12px">
+          <table id="salaryReportTable">
+            <thead>
+              <tr>
+                <th>Оператор</th>
+                <th>Отзывов</th>
+                <th>Вопросов</th>
+                <th>Чатов</th>
+                <th>Итого (₽)</th>
+              </tr>
+            </thead>
+            <tbody id="salaryReportTbody">
+              <tr><td colspan="5" class="small" style="color:#9ca3af;text-align:center">Нажмите «Показать» для загрузки данных</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div id="salaryReportTotal" class="salary-report-total hidden"></div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <h3>Пользователи и роли</h3>
+      <div class="row">
+        <input id="newUserEmail" type="email" placeholder="Эл. почта нового пользователя" />
+        <input id="newUserPassword" type="password" placeholder="Пароль (минимум 8 символов)" />
+        <select id="newUserPlan">
+          <option value="starter">Starter (starter)</option>
+        </select>
+        <button id="createUserButton" onclick="createUser()">Создать нового пользователя</button>
+      </div>
+      <div id="usersSearchWrap" class="users-search-inline collapsed">
+        <input id="usersSearchEmail" type="search" placeholder="Поиск клиента по e-mail" oninput="onUsersSearchInput(this.value)" />
+        <button class="secondary icon-btn" type="button" title="Скрыть поиск" onclick="toggleUsersSearch(false)">✕</button>
+      </div>
+      <div id="usersInfo" class="small"></div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>№</th>
+              <th>
+                <div class="users-email-header">
+                  <span>Эл. почта</span>
+                  <button class="secondary icon-btn users-search-icon" type="button" title="Поиск по e-mail" onclick="toggleUsersSearch()">
+                    🔍
+                  </button>
+                </div>
+              </th>
+              <th>Тариф</th>
+              <th>Подписка</th>
+              <th>Оплачено до</th>
+              <th>Новый пароль</th>
+              <th>Блокировка</th>
+              <th>Действия</th>
+            </tr>
+          </thead>
+          <tbody id="usersTbody"></tbody>
+        </table>
+      </div>
+      <div class="row users-pagination-row">
+        <span id="usersPaginationInfo" class="small">Страница 1</span>
+        <div class="row">
+          <button id="usersPrevPageButton" class="secondary" type="button" onclick="prevUsersPage()">Назад</button>
+          <button id="usersNextPageButton" class="secondary" type="button" onclick="nextUsersPage()">Вперед</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="row row-between">
+        <h3 class="no-margin">Лента действий</h3>
+        <button type="button" class="secondary small" onclick="purgeSyncActionLogs()" title="Удалить из базы все записи sync_review и sync_conversation">🗑 Очистить sync-логи из БД</button>
+      </div>
+      <div class="row admin-actions-filters">
+        <select id="actionsFilterActionType">
+          <option value="all">Действие: все</option>
+        </select>
+        <select id="actionsFilterActor">
+          <option value="all">Пользователь: все</option>
+        </select>
+        <label class="small">С <input id="actionsDateFrom" type="date" /></label>
+        <label class="small">По <input id="actionsDateTo" type="date" /></label>
+        <input
+          id="actionsSearch"
+          type="search"
+          placeholder="Быстрый поиск по пользователю, ID, действию и деталям"
+          oninput="onActionsSearchInput(this.value)"
+        />
+        <button class="secondary" type="button" onclick="applyActionsFilters()">Применить</button>
+        <button class="secondary" type="button" onclick="resetActionsFilters()">Сбросить</button>
+        <button class="secondary" type="button" onclick="exportActions('csv')">Экспорт CSV</button>
+        <button class="secondary" type="button" onclick="exportActions('xlsx')">Экспорт Excel</button>
+      </div>
+      <div class="row admin-actions-pagination">
+        <label for="actionsPageSize" class="small">На странице:</label>
+        <select id="actionsPageSize" onchange="updateActionsPageSize(this.value)">
+          <option value="20">20</option>
+          <option value="50" selected>50</option>
+          <option value="100">100</option>
+        </select>
+        <div class="row">
+          <button id="actionsPrevButton" class="secondary" onclick="prevActionsPage()">Назад</button>
+          <button id="actionsNextButton" class="secondary" onclick="nextActionsPage()">Вперёд</button>
+          <span id="actionsPaginationInfo" class="small"></span>
+        </div>
+      </div>
+      <div class="table-wrap">
+      <table>
+        <thead><tr><th>Время</th><th>Пользователь</th><th>Идентификатор</th><th>Действие</th><th>Детали</th></tr></thead>
+        <tbody id="actionsTbody"></tbody>
+      </table>
+      </div>
+    </div>
+  </div>
+
+  <div id="aiTestReviewModal" class="modal-overlay hidden">
+    <div class="modal-card ai-test-review-modal-card">
+      <div class="row row-between">
+        <h4 class="no-margin">Тестовый отзыв для Yandex GPT</h4>
+        <button id="aiTestReviewCloseBtn" class="secondary" type="button" onclick="closeAiTestReviewModal()">Закрыть</button>
+      </div>
+      <p class="small">Введите текст отзыва, нажмите «Отправить», и система выполнит классификацию так же, как для обычных отзывов.</p>
+      <div class="row ai-test-review-rating-row">
+        <label for="aiTestReviewRating" class="small">Оценка (опционально):</label>
+        <select id="aiTestReviewRating">
+          <option value="">Не задана</option>
+          <option value="1">1</option>
+          <option value="2">2</option>
+          <option value="3">3</option>
+          <option value="4">4</option>
+          <option value="5">5</option>
+        </select>
+      </div>
+      <div class="row">
+        <textarea id="aiTestReviewText" placeholder="Введите текст тестового отзыва"></textarea>
+      </div>
+      <div class="row">
+        <button id="aiTestReviewSendBtn" type="button" onclick="submitAiTestReview()">Отправить</button>
+        <button id="aiCurrentIdsBtn" type="button" class="secondary" onclick="openAiCurrentIdsModal()">Актуальные ID</button>
+      </div>
+      <pre id="aiTestReviewResult" class="ai-test-review-result hidden"></pre>
+    </div>
+  </div>
+
+  <div id="aiCurrentIdsModal" class="modal-overlay hidden">
+    <div class="modal-card ai-current-ids-modal-card">
+      <div class="row row-between">
+        <h4 class="no-margin">Актуальные категории/подкатегории и ID</h4>
+        <button id="aiCurrentIdsCloseBtn" class="secondary" type="button" onclick="closeAiCurrentIdsModal()">Закрыть</button>
+      </div>
+      <p class="small">Список формируется из текущих настроек и используется в запросе к Yandex GPT для классификации.</p>
+      <pre id="aiCurrentIdsResult" class="ai-test-review-result"></pre>
+    </div>
+  </div>
+
+  <div id="defaultTemplateBulkModal" class="modal-overlay hidden">
+    <div class="modal-card default-template-bulk-modal-card">
+      <div class="row row-between">
+        <h4 class="no-margin">Массовое добавление шаблонов</h4>
+        <button class="secondary" type="button" onclick="closeDefaultTemplateBulkModal()">Закрыть</button>
+      </div>
+      <p class="small">Выберите группу и подгруппу, затем вставьте список шаблонов. Разделяйте шаблоны строкой <code>---</code> (только на отдельной строке).</p>
+      <div class="row">
+        <select id="defaultTemplateBulkGroup" onchange="onDefaultTemplateBulkGroupChange(this.value)"></select>
+        <select id="defaultTemplateBulkSubgroup" onchange="onDefaultTemplateBulkSubgroupChange(this.value)"></select>
+      </div>
+      <div class="row">
+        <textarea id="defaultTemplateBulkText" placeholder="Шаблон 1&#10;---&#10;Шаблон 2&#10;---&#10;Шаблон 3"></textarea>
+      </div>
+      <div class="row">
+        <button type="button" onclick="submitDefaultTemplateBulk()">Добавить шаблоны</button>
+        <span id="defaultTemplateBulkInfo" class="small"></span>
+      </div>
+    </div>
+  </div>
+
+  <!-- AI Statistics modal -->
+  <div id="aiStatsModal" class="modal-overlay hidden" role="dialog" aria-modal="true">
+    <div class="modal-card" style="max-width:680px">
+      <div class="row row-between">
+        <h4 class="no-margin">📊 Статистика запросов к Яндекс GPT</h4>
+        <button type="button" class="secondary" onclick="closeAiStatsModal()">✕</button>
+      </div>
+      <p class="small" style="margin:8px 0 4px;color:#64748b">
+        Каждый отзыв с текстом = 1 запрос. Отзывы без текста обрабатываются без Яндекс (бесплатно).
+      </p>
+      <p class="small" style="margin:0 0 12px;color:#64748b;background:#f0fdf4;border-left:3px solid #22c55e;padding:6px 10px;border-radius:4px">
+        💡 Отзывы без текста (оценка без комментария) не отправляются в Яндекс — 0 токенов.
+      </p>
+      <div id="aiStatsContent" style="min-height:80px">
+        <p class="small" style="color:#9ca3af">Загрузка...</p>
+      </div>
+
+      <details id="aiRequestLogDetails" style="margin-top:16px;border-top:1px solid #e2e8f0;padding-top:12px">
+        <summary style="cursor:pointer;font-size:0.85rem;font-weight:600;color:#475569;user-select:none;list-style:none;display:flex;align-items:center;gap:6px" onclick="loadAiRequestLog()">
+          <span id="aiReqLogArrow" style="display:inline-block;transition:transform .2s">▶</span>
+          Детализация запросов
+          <span class="small" style="font-weight:400;color:#94a3b8">(последние 24 ч., только для отладки)</span>
+        </summary>
+        <div id="aiRequestLogContent" style="margin-top:10px;max-height:340px;overflow-y:auto;border:1px solid #e2e8f0;border-radius:6px;background:#f8fafc">
+          <p class="small" style="color:#9ca3af;padding:10px 14px">Нажмите, чтобы загрузить...</p>
+        </div>
+      </details>
+    </div>
+  </div>
+
+  <script src="/static/admin.js?v=26"></script>
+</body>
+</html>

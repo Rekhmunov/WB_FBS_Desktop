@@ -1,0 +1,18 @@
+[Unit]
+Description=FEEDPILOT FastAPI service
+After=network.target
+
+[Service]
+Type=simple
+User=feedpilot
+Group=feedpilot
+WorkingDirectory=/opt/feedpilot/app
+EnvironmentFile=/etc/feedpilot/feedpilot.env
+# APP_DB_URL can be provided in env file for PostgreSQL runtime
+ExecStart=/opt/feedpilot/app/.venv/bin/python -m uvicorn review_processor.web:app --host 127.0.0.1 --port 8000
+Restart=always
+RestartSec=3
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target

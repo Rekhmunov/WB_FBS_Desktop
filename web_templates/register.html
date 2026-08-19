@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Регистрация</title>
+  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg" />
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <div class="auth-box">
+    <h2>Регистрация</h2>
+    {{ERROR_HTML}}
+    <form method="post" action="/register">
+      <label>Эл. почта</label>
+      <input name="email" type="email" required />
+      <label>Пароль</label>
+      <input name="password" type="password" required />
+      <label>Повторите пароль</label>
+      <input name="password_repeat" type="password" required />
+      <button type="submit">Создать аккаунт</button>
+    </form>
+    <p>Уже есть аккаунт? <a href="/login">Войти</a></p>
+  </div>
+</body>
+</html>

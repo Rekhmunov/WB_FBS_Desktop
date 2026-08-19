@@ -1,0 +1,12 @@
+---
+description: Git workflow rules — always work in main branch
+globs: ["**/*"]
+---
+# Git Workflow
+
+## Branch policy
+
+- All changes must be committed and pushed directly to **`main`**.
+- Do **not** create feature branches unless the user explicitly requests one.
+- Do **not** open pull requests unless the user explicitly asks for one.
+- If a feature branch was accidentally created, merge it into `main` immediately and delete the branch.

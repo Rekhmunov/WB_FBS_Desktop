@@ -114,18 +114,46 @@ class FlowLayout(QLayout):
         return y + line_height - rect.y() + m.bottom()
 
 
-def fit_tab_button(btn, h_pad: int = 48) -> None:
-    """Reserve width for bold label so the active tab state does not clip text."""
+def fit_tab_button(btn, h_pad: int = 56) -> None:
+    """Reserve width so bold title + count pill are never clipped."""
     from PyQt5.QtGui import QFontMetrics
     from PyQt5.QtWidgets import QPushButton
 
     if not isinstance(btn, QPushButton):
         return
+
+    # Prefer measuring nested title/count widgets (FbsTabButton).
+    title_lab = getattr(btn, "_title_lab", None)
+    count_lab = getattr(btn, "_count_lab", None)
+    if title_lab is not None and count_lab is not None:
+        title_font = title_lab.font()
+        title_font.setBold(True)
+        title_metrics = QFontMetrics(title_font)
+        title = str(getattr(btn, "_title_text", None) or title_lab.text() or "")
+        title_w = title_metrics.horizontalAdvance(title)
+
+        count_font = count_lab.font()
+        count_font.setBold(True)
+        count_metrics = QFontMetrics(count_font)
+        count = str(getattr(btn, "_count_text", None) or count_lab.text() or "0")
+        # Match QLabel#tabCount: min-width 22 + horizontal padding ~12.
+        count_w = max(28, count_metrics.horizontalAdvance(count) + 16)
+
+        lay = btn.layout()
+        if lay is not None:
+            m = lay.contentsMargins()
+            side = m.left() + m.right() + lay.spacing()
+        else:
+            side = 28
+        # Extra room for bold active state and DPI rounding.
+        btn.setMinimumWidth(title_w + count_w + side + max(12, h_pad - 36))
+        btn.updateGeometry()
+        return
+
     font = btn.font()
     font.setBold(True)
     metrics = QFontMetrics(font)
     text = btn.text()
-    # Prefer measuring inner title+count when present.
     title = getattr(btn, "_title_text", None)
     count = getattr(btn, "_count_text", None)
     if title is not None:
@@ -148,8 +176,8 @@ class FbsTabButton(QPushButton):
         self.setCursor(Qt.PointingHandCursor)
         self.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Preferred)
         lay = QHBoxLayout(self)
-        lay.setContentsMargins(14, 8, 14, 10)
-        lay.setSpacing(8)
+        lay.setContentsMargins(16, 8, 16, 10)
+        lay.setSpacing(10)
         self._title_lab = QLabel(title)
         self._title_lab.setObjectName("tabBtnLabel")
         self._title_lab.setAttribute(Qt.WA_TransparentForMouseEvents, True)
@@ -162,11 +190,22 @@ class FbsTabButton(QPushButton):
         # Keep accessible name without duplicating "· N" in the button text.
         self.setText("")
         self.setAccessibleName(title)
+        fit_tab_button(self)
+
+    def sizeHint(self) -> QSize:  # type: ignore[override]
+        lay = self.layout()
+        if lay is not None:
+            hint = lay.sizeHint()
+            return QSize(max(hint.width(), self.minimumWidth()), max(hint.height(), 44))
+        return QSize(max(self.minimumWidth(), 120), 44)
+
+    def minimumSizeHint(self) -> QSize:  # type: ignore[override]
+        return self.sizeHint()
 
     def set_count(self, n: int) -> None:
         self._count_text = str(int(n))
         self._count_lab.setText(self._count_text)
-        fit_tab_button(self, h_pad=36)
+        fit_tab_button(self)
 
     def setChecked(self, checked: bool) -> None:  # type: ignore[override]
         super(FbsTabButton, self).setChecked(checked)
@@ -174,3 +213,4 @@ class FbsTabButton(QPushButton):
             w.style().unpolish(w)
             w.style().polish(w)
             w.update()
+        fit_tab_button(self)

@@ -223,9 +223,9 @@ QPushButton#tabBtn:checked QLabel#tabBtnLabel {
     font-weight: 700;
 }
 QLabel#tabCount {
-    min-width: 22px;
+    min-width: 26px;
     min-height: 20px;
-    padding: 0 6px;
+    padding: 0 8px;
     border-radius: 6px;
     background: #e8eef7;
     color: #475569;

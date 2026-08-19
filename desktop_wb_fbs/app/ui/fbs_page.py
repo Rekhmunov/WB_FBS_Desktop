@@ -241,7 +241,7 @@ class FbsPage(QWidget):
             self.tab_btns[key] = btn
             tabs_row.addWidget(btn)
             btn.clicked.connect(lambda _=False, k=key: self._set_tab(k))
-            fit_tab_button(btn)
+            fit_tab_button(btn, h_pad=64)
         self.tab_btns["new"].setChecked(True)
         tabs_row.addStretch(1)
 

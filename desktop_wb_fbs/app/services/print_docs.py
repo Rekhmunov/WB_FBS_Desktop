@@ -173,27 +173,61 @@ def sticker_groups_for_category_print(
     return out
 
 
-def fetch_stickers_map(api_key: str, order_ids: List[int]) -> Dict[int, Dict[str, Any]]:
+def fetch_stickers_map(
+    api_key: str,
+    order_ids: List[int],
+    *,
+    sticker_type: str = "png",
+    keep_files: bool = True,
+) -> Dict[int, Dict[str, Any]]:
+    """Fetch WB order stickers. Picking list only needs partA/partB — use svg + keep_files=False."""
     client = WbFbsClient(api_key)
     out = {}  # type: Dict[int, Dict[str, Any]]
+    stype = str(sticker_type or "png").strip().lower() or "png"
     for i in range(0, len(order_ids), 100):
         if i:
             time.sleep(0.21)
         chunk = order_ids[i : i + 100]
-        for st in client.get_order_stickers(chunk, sticker_type="png"):
+        for st in client.get_order_stickers(chunk, sticker_type=stype):
             if not isinstance(st, dict):
                 continue
             try:
                 oid = int(st.get("orderId") or st.get("order_id"))
             except (TypeError, ValueError):
                 continue
-            b64 = st.get("file")
-            out[oid] = {
-                "partA": str(st.get("partA") or ""),
-                "partB": str(st.get("partB") or ""),
-                "file_b64": b64 if isinstance(b64, str) else "",
-            }
+            if keep_files:
+                b64 = st.get("file")
+                out[oid] = {
+                    "partA": str(st.get("partA") or ""),
+                    "partB": str(st.get("partB") or ""),
+                    "file_b64": b64 if isinstance(b64, str) else "",
+                }
+            else:
+                out[oid] = {
+                    "partA": str(st.get("partA") or ""),
+                    "partB": str(st.get("partB") or ""),
+                    "file_b64": "",
+                }
     return out
+
+
+def _fetch_picking_stickers(api_key: str, order_ids: List[int]) -> Dict[int, Dict[str, Any]]:
+    """Lightweight sticker numbers for picking list (no PNG payloads)."""
+    if not order_ids or not api_key:
+        return {}
+    stickers = fetch_stickers_map(
+        api_key, order_ids, sticker_type="svg", keep_files=False
+    )
+    missing = sum(
+        1
+        for oid in order_ids
+        if not str((stickers.get(oid) or {}).get("partB") or "").strip()
+    )
+    if order_ids and missing > max(1, len(order_ids) // 2):
+        stickers = fetch_stickers_map(
+            api_key, order_ids, sticker_type="png", keep_files=False
+        )
+    return stickers
 
 
 def fetch_cards(api_key: str, orders: List[Dict[str, Any]]) -> Dict[int, Dict[str, Any]]:
@@ -501,11 +535,19 @@ def print_picking_list(
     variant: str = "summary",
 ) -> Path:
     supply = orders_svc.get_supply(source_id, supply_id) or {}
-    rows = orders_svc.orders_in_supply(source_id, supply_id, api_key=api_key)
+    rows = orders_svc.orders_in_supply(source_id, supply_id, api_key="")
+    if not rows and api_key:
+        rows = orders_svc.orders_in_supply(source_id, supply_id, api_key=api_key)
     ids = [int(r["order_id"]) for r in rows]
-    stickers = fetch_stickers_map(api_key, ids) if ids else {}
-    cards = fetch_cards(api_key, rows)
     products = ProductService(db).list_all()
+    is_extended = str(variant).lower() == "extended"
+    if is_extended:
+        stickers = _fetch_picking_stickers(api_key, ids)
+        cards = fetch_cards(api_key, rows)
+    else:
+        # Summary list only needs local product names and counts — no WB API.
+        stickers = {}
+        cards = {}
     groups = build_groups(rows, stickers, cards, products)
     # Embed local photos as data URIs for browser print
     for g in groups:

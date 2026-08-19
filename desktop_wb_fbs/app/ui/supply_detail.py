@@ -352,6 +352,10 @@ class SupplyDetailDialog(QDialog):
     def picking_list(self, variant: str = "summary") -> None:
         from app.services.print_docs import print_picking_list
 
+        from PyQt5.QtGui import QCursor
+        from PyQt5.QtWidgets import QApplication
+
+        QApplication.setOverrideCursor(QCursor(Qt.WaitCursor))
         try:
             path = print_picking_list(
                 self.db,
@@ -364,6 +368,8 @@ class SupplyDetailDialog(QDialog):
             self.meta.setText(self.meta.text() + " · открыт {}".format(path.name))
         except Exception as exc:
             QMessageBox.critical(self, "Лист подбора", str(exc))
+        finally:
+            QApplication.restoreOverrideCursor()
 
     def print_stickers(self) -> None:
         from app.services.print_docs import print_supply_stickers

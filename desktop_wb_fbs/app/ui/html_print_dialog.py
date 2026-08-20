@@ -199,7 +199,8 @@ class HtmlPrintPreviewDialog(QDialog):
         preview = QPrintPreviewDialog(printer, self)
         preview.setWindowFlags(standard_window_flags())
         preview.setWindowTitle("Предпросмотр печати")
-        preview.paintRequested.connect(self._print_to_printer)
+
+        zoomed = {"done": False}
 
         def _zoom_100() -> None:
             widget = preview.printPreviewWidget()
@@ -208,9 +209,14 @@ class HtmlPrintPreviewDialog(QDialog):
             widget.setZoomMode(QPrintPreviewWidget.CustomZoom)
             widget.setZoomFactor(1.0)
 
-        # Default Qt mode is FitInView; force 100% after the first paint settles.
-        preview.paintRequested.connect(lambda _printer: QTimer.singleShot(0, _zoom_100))
-        _zoom_100()
+        def _on_paint(p) -> None:
+            self._print_to_printer(p)
+            # Default Qt mode is FitInView — force 100% once after first paint.
+            if not zoomed["done"]:
+                zoomed["done"] = True
+                QTimer.singleShot(0, _zoom_100)
+
+        preview.paintRequested.connect(_on_paint)
         preview.exec_()
 
     def _save_pdf(self) -> None:

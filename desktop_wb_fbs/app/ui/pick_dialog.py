@@ -142,10 +142,15 @@ class PickDialog(QDialog):
         self._row_index_by_oid = {}  # type: Dict[int, int]
         self._row_by_oid = {}  # type: Dict[int, Dict[str, Any]]
         self._rows_ready = False
+        self._closing = False
+        self._load_gen = 0
         self._search_timer = QTimer(self)
         self._search_timer.setSingleShot(True)
         self._search_timer.setInterval(200)
         self._search_timer.timeout.connect(self._apply_filters)
+        self._load_timer = QTimer(self)
+        self._load_timer.setSingleShot(True)
+        self._load_timer.timeout.connect(self.load_rows)
 
         self.setObjectName("kizModal")
         self.setWindowTitle("Проверка ШК · {}".format(supply_id))
@@ -282,13 +287,35 @@ class PickDialog(QDialog):
         self._set_filters_ready(False)
         self._show_loading_row()
         # Shell-first open (web parity): paint modal, then fill from session.
-        QTimer.singleShot(0, self.load_rows)
+        # Owned QTimer + generation so a fast close cannot paint a dead dialog.
+        self._load_gen += 1
+        self._load_timer.start(0)
 
     def showEvent(self, event) -> None:
         super(PickDialog, self).showEvent(event)
         apply_fullscreen_on_show(self)
         if self._rows_ready:
             self.sticker_input.setFocus()
+
+    def _abort_deferred_load(self) -> None:
+        self._closing = True
+        self._load_gen += 1
+        self._load_timer.stop()
+
+    def _load_aborted(self, gen: int) -> bool:
+        return self._closing or gen != self._load_gen
+
+    def reject(self) -> None:
+        self._abort_deferred_load()
+        super(PickDialog, self).reject()
+
+    def accept(self) -> None:
+        self._abort_deferred_load()
+        super(PickDialog, self).accept()
+
+    def closeEvent(self, event) -> None:
+        self._abort_deferred_load()
+        super(PickDialog, self).closeEvent(event)
 
     def _set_filters_ready(self, ready: bool) -> None:
         self._rows_ready = bool(ready)
@@ -418,9 +445,14 @@ class PickDialog(QDialog):
         self.table.setItem(0, 0, loading)
 
     def load_rows(self) -> None:
+        gen = self._load_gen
+        if self._load_aborted(gen):
+            return
         self._set_filters_ready(False)
         self._show_loading_row()
         QApplication.processEvents()
+        if self._load_aborted(gen):
+            return
         session = supply_session.get_session(self.source_id, self.supply_id)
         try:
             if session and session.core_ready and session.pick_rows is not None:
@@ -428,10 +460,16 @@ class PickDialog(QDialog):
             else:
                 self.rows = self.pick.rows(self.source_id, self.supply_id, self.api_key)
         except Exception as exc:
+            if self._load_aborted(gen):
+                return
             self.rows = []
             self._set_info(str(exc))
             self._render_table()
+            if self._load_aborted(gen):
+                return
             self._set_filters_ready(True)
+            return
+        if self._load_aborted(gen):
             return
         self.row_errors = {}
         self._sticker_map = {}
@@ -444,6 +482,8 @@ class PickDialog(QDialog):
                 stickers = _fetch_picking_stickers(self.api_key, ids)
             except Exception:
                 stickers = {}
+        if self._load_aborted(gen):
+            return
         for r in self.rows:
             oid = int(r["order_id"])
             st = stickers.get(oid) or {}
@@ -458,6 +498,8 @@ class PickDialog(QDialog):
             full = _sticker_number(part_a, part_b)
             r["sticker_number"] = full or str(r.get("sticker_number") or "")
         self._render_table()
+        if self._load_aborted(gen):
+            return
         if not self.rows:
             self._set_info("В поставке нет заказов для проверки ШК")
         else:
@@ -762,17 +804,13 @@ class PickDialog(QDialog):
             self._resize_table_row(i)
         self._apply_filters()
 
-    def _find_by_sticker(self, raw: str) -> Optional[Dict[str, Any]]:
-        found, ambiguous, matches = find_row_by_sticker(self.rows, raw)
-        if ambiguous:
-            ids = ", ".join(str(r.get("order_id") or "") for r in matches[:5])
-            more = "…" if len(matches) > 5 else ""
-            self._set_info(
-                "Код стикера совпадает у нескольких заказов ({}{}). "
-                "Отсканируйте QR стикера ещё раз.".format(ids, more)
-            )
-            return None
-        return found
+    def _set_ambiguous_sticker_info(self, matches: List[Dict[str, Any]]) -> None:
+        ids = ", ".join(str(r.get("order_id") or "") for r in matches[:5])
+        more = "…" if len(matches) > 5 else ""
+        self._set_info(
+            "Код стикера совпадает у нескольких заказов ({}{}). "
+            "Отсканируйте QR стикера ещё раз.".format(ids, more)
+        )
 
     def on_sticker(self) -> None:
         if not self._rows_ready or self.sticker_input.isReadOnly():
@@ -782,14 +820,18 @@ class PickDialog(QDialog):
         raw = normalize_scan(self.sticker_input.text())
         if not raw:
             return
-        found = self._find_by_sticker(raw)
+        found, ambiguous, matches = find_row_by_sticker(self.rows, raw)
+        if ambiguous:
+            self._set_ambiguous_sticker_info(matches)
+            self.sticker_input.selectAll()
+            return
         if not found:
-            if not self.info_banner.isVisible():
-                self._set_info(
-                    "Заказ со стикером «{}» не найден среди товаров для проверки ШК.".format(
-                        raw
-                    )
+            # Always overwrite prior banner (ok/error); do not gate on isVisible().
+            self._set_info(
+                "Заказ со стикером «{}» не найден среди товаров для проверки ШК.".format(
+                    raw
                 )
+            )
             self.sticker_input.selectAll()
             return
         self._set_info("")

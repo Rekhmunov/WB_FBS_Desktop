@@ -342,6 +342,8 @@ class SupplyDetailDialog(QDialog):
 
         def _sec(btn):
             btn.setObjectName("secondary")
+            btn.setMinimumHeight(40)
+            btn.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
             return btn
 
         pick_btn = _sec(QPushButton("Лист подбора"))
@@ -393,6 +395,8 @@ class SupplyDetailDialog(QDialog):
 
         portal_btn = QPushButton("Портал ВБ  →")
         portal_btn.setObjectName("portalBtn")
+        portal_btn.setMinimumHeight(40)
+        portal_btn.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
         portal_btn.setToolTip("Открыть поставку на портале Wildberries")
         portal_btn.clicked.connect(self.open_portal)
         actions.addWidget(portal_btn)
@@ -773,23 +777,20 @@ class SupplyDetailDialog(QDialog):
 
     @staticmethod
     def _split_pair(main: QWidget, caret: QWidget) -> QWidget:
-        """Main + caret/refresh: same height (web `.wb-fbs-picking-split` stretch)."""
+        """Main + caret/refresh: stretch to same height (web picking-split)."""
         wrap = QWidget()
         wrap.setObjectName("splitPair")
         lay = QHBoxLayout(wrap)
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(0)
-        lay.setAlignment(Qt.AlignVCenter)
-        # Match web min-height 40px for supply-detail action buttons.
-        height = 40
+        # Stretch — avoid fixed max height that clips the 1px bottom border on hover.
         for w in (main, caret):
+            w.setMinimumHeight(40)
+            w.setMaximumHeight(16777215)
             w.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
-            w.setFixedHeight(height)
-            w.setMinimumHeight(height)
-            w.setMaximumHeight(height)
         lay.addWidget(main)
         lay.addWidget(caret)
-        wrap.setFixedHeight(height)
+        wrap.setMinimumHeight(40)
         return wrap
 
     def _place_header_select(self, *_args) -> None:

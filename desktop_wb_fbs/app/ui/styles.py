@@ -623,7 +623,7 @@ QPushButton#portalBtn {
     background: #f3e8ff;
     border-radius: 8px;
     padding: 0 14px;
-    min-height: 36px;
+    min-height: 40px;
     font-size: 14px;
     font-weight: 600;
 }
@@ -649,9 +649,9 @@ QToolButton#secondary:disabled {
     border-color: #e2e8f0;
     background: #f8fafc;
 }
-QFrame#sdHeader QPushButton#secondary {
+QFrame#sdHeader QPushButton#secondary,
+QFrame#sdHeader QPushButton#portalBtn {
     min-height: 40px;
-    max-height: 40px;
     padding: 0 14px;
 }
 /* Supply-detail action row: clear hover (white header needs stronger contrast). */
@@ -694,14 +694,12 @@ QFrame#sdHeader QPushButton#portalBtn:hover {
 QWidget#splitPair,
 QWidget#kizSplitPair {
     min-height: 40px;
-    max-height: 40px;
 }
 QWidget#splitPair QPushButton#secondary,
 QWidget#kizSplitPair QPushButton#secondary {
     border-top-right-radius: 0;
     border-bottom-right-radius: 0;
     min-height: 40px;
-    max-height: 40px;
     padding: 0 14px;
 }
 QToolButton#splitCaret {
@@ -716,7 +714,6 @@ QToolButton#splitCaret {
     min-width: 36px;
     max-width: 36px;
     min-height: 40px;
-    max-height: 40px;
     padding: 0;
 }
 QToolButton#splitCaret:hover {
@@ -740,7 +737,6 @@ QWidget#kizSplitPair QToolButton#secondary {
     min-width: 40px;
     max-width: 40px;
     min-height: 40px;
-    max-height: 40px;
     padding: 0;
 }
 /* КИЗ refresh tone — web `.wb-fbs-kiz-split.is-ok` / `.is-error` */

@@ -752,7 +752,6 @@ def render_picking_list_html(
   @media print {{ .no-print {{ display: none; }} }}
 </style></head>
 <body>
-  <button class="no-print" onclick="window.print()">Печать</button>
   <h1>{title}</h1>
   <div class="sub">{name} · ID {sid}</div>
   {body}
@@ -873,7 +872,6 @@ def render_stickers_print_html(supply_id: str, groups: List[Dict[str, Any]]) -> 
   @media print {{ .no-print {{ display: none; }} }}
 </style></head>
 <body>
-  <button class="no-print" onclick="window.print()">Печать</button>
   {pages}
 </body></html>
 """.format(

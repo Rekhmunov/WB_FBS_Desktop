@@ -76,13 +76,9 @@ class HtmlPrintPreviewDialog(QDialog):
         self.btn_pdf.setObjectName("secondary")
         self.btn_pdf.setEnabled(False)
         self.btn_pdf.clicked.connect(self._save_pdf)
-        self.btn_close = QPushButton("Закрыть")
-        self.btn_close.setObjectName("secondary")
-        self.btn_close.clicked.connect(self.reject)
         toolbar.addWidget(self.btn_print)
         toolbar.addWidget(self.btn_pdf)
         toolbar.addStretch(1)
-        toolbar.addWidget(self.btn_close)
         root.addLayout(toolbar)
 
         self._view = QWebEngineView(self)

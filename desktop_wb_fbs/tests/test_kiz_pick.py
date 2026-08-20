@@ -187,6 +187,60 @@ class KizStatusToneTests(unittest.TestCase):
         self.assertEqual(summarize_kiz_check_status(["empty"]), "none")
         self.assertEqual(summarize_kiz_check_status([]), "none")
 
+    def test_check_supply_status_persists_portal_codes(self) -> None:
+        """Refresh next to Маркировка must write portal КИЗ into SQLite."""
+        db = MagicMock()
+        conn = MagicMock()
+        conn.__enter__ = MagicMock(return_value=conn)
+        conn.__exit__ = MagicMock(return_value=False)
+        conn.execute.return_value.fetchall.return_value = []
+        db.connect.return_value = conn
+
+        local_row = {
+            "order_id": 11,
+            "kiz_codes_json": "[]",
+            "kiz_wb_synced": 0,
+            "supplier_status": "confirm",
+            "wb_status": "waiting",
+        }
+        client = MagicMock()
+        client.get_supply_order_ids.return_value = [11]
+        client.get_statuses.return_value = [
+            {"id": 11, "supplierStatus": "confirm", "wbStatus": "waiting"},
+        ]
+        client.get_orders_meta.return_value = [
+            {
+                "id": 11,
+                "metaDetails": [
+                    {
+                        "key": "sgtin",
+                        "value": ["0104604060004010215PORTAL"],
+                        "decision": "filled",
+                    }
+                ],
+            },
+        ]
+        with patch("app.services.kiz_pick.WbFbsClient", return_value=client):
+            with patch(
+                "app.services.kiz_pick.Database.rows_to_dicts",
+                return_value=[local_row],
+            ):
+                with patch("app.services.order_open_cache.upsert_meta") as upsert:
+                    payload = KizService(db).check_supply_status(1, "WB-1", "key")
+        self.assertEqual(payload["status"], "ok")
+        update_calls = [
+            c
+            for c in conn.execute.call_args_list
+            if c.args and "kiz_codes_json" in str(c.args[0])
+        ]
+        self.assertTrue(update_calls)
+        args = update_calls[0].args[1]
+        self.assertIn("0104604060004010215PORTAL", args[0])
+        self.assertEqual(args[2], 1)  # kiz_wb_synced
+        self.assertEqual(args[3], 1)  # source_id
+        self.assertEqual(args[4], 11)  # order_id
+        upsert.assert_called_once()
+
     def test_check_supply_status_live_ok(self) -> None:
         db = MagicMock()
         conn = MagicMock()

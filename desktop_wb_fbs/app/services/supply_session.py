@@ -8,6 +8,7 @@ import time
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from app.db import Database
+from app.services.kiz_pick import kiz_from_meta_row
 from app.services.orders import OrdersService
 from app.wb import kiz_code_clean, parse_json_list
 from app.wb.client import WbFbsClient
@@ -62,21 +63,18 @@ def clear_cancelled_cache(source_id: int, supply_id: str) -> None:
     put_session(session)
 
 def _has_sgtin(meta: Dict[str, Any]) -> bool:
-    if "sgtin" in meta:
-        return True
-    nested = meta.get("meta") if isinstance(meta.get("meta"), dict) else {}
-    return "sgtin" in nested
+    """True when WB meta accepts sgtin (flat key or metaDetails)."""
+    if not isinstance(meta, dict) or not meta:
+        return False
+    return bool(kiz_from_meta_row(meta).get("kiz_required"))
 
 
 def _meta_sgtin_codes(meta: Dict[str, Any]) -> List[str]:
-    wb_codes = meta.get("sgtin")
-    if isinstance(wb_codes, list):
-        return [kiz_code_clean(x) for x in wb_codes if kiz_code_clean(x)]
-    nested = meta.get("meta") if isinstance(meta.get("meta"), dict) else {}
-    wb_codes = nested.get("sgtin") if isinstance(nested, dict) else None
-    if isinstance(wb_codes, list):
-        return [kiz_code_clean(x) for x in wb_codes if kiz_code_clean(x)]
-    return []
+    """Seed codes from cached /orders/meta (including metaDetails.value)."""
+    if not isinstance(meta, dict) or not meta:
+        return []
+    codes = kiz_from_meta_row(meta).get("kiz_codes") or []
+    return [kiz_code_clean(x) for x in codes if kiz_code_clean(x)]
 
 
 def fetch_orders_meta(

@@ -419,6 +419,7 @@ class KizService:
             }
             for oid in order_ids
         }  # type: Dict[int, Dict[str, Any]]
+        meta_by_id_live = {}  # type: Dict[int, Dict[str, Any]]
         active_ids = [oid for oid in order_ids if oid not in cancelled_ids]
         if active_ids:
             try:
@@ -437,6 +438,7 @@ class KizService:
                 if oid <= 0 or oid not in kiz_map or oid in cancelled_ids:
                     continue
                 kiz_map[oid] = kiz_from_meta_row(row)
+                meta_by_id_live[oid] = row
                 seen_meta.add(oid)
             if not seen_meta:
                 raise RuntimeError("Wildberries не вернул статусы КИЗ")
@@ -450,6 +452,7 @@ class KizService:
 
         out_rows = []  # type: List[Dict[str, Any]]
         checked_statuses = []  # type: List[str]
+        persist_codes = []  # type: List[Tuple[int, List[str], bool]]
         for oid in order_ids:
             kiz = kiz_map.get(oid) or {}
             is_cancelled = oid in cancelled_ids
@@ -474,6 +477,13 @@ class KizService:
                 kiz_required = bool(kiz.get("kiz_required"))
                 if not has_filled:
                     status = "empty"
+            # Portal-filled codes must survive reopen: write them to SQLite.
+            # Only persist when live meta actually returned codes (source of truth).
+            if meta_codes and not is_cancelled:
+                local_synced = bool(int(local.get("kiz_wb_synced") or 0))
+                wb_synced = status == "ok" or local_synced
+                if codes != local_codes or bool(wb_synced) != local_synced:
+                    persist_codes.append((oid, list(meta_codes), wb_synced))
             out_rows.append(
                 {
                     "order_id": oid,
@@ -490,6 +500,40 @@ class KizService:
             )
             if has_filled and not is_cancelled:
                 checked_statuses.append(status)
+
+        if persist_codes:
+            now = utc_now()
+            with self.db.connect() as conn:
+                for oid, codes, wb_synced in persist_codes:
+                    conn.execute(
+                        """
+                        UPDATE wb_fbs_orders
+                        SET kiz_codes_json = ?, kiz_saved_at = ?, kiz_wb_synced = ?
+                        WHERE source_id = ? AND order_id = ?
+                        """,
+                        (
+                            json.dumps(codes, ensure_ascii=False),
+                            now,
+                            1 if wb_synced else 0,
+                            source_id,
+                            oid,
+                        ),
+                    )
+                conn.commit()
+
+        # Refresh open-cache meta so reopen does not keep a stale empty sgtin.
+        if meta_by_id_live:
+            try:
+                from app.services import order_open_cache
+
+                order_open_cache.upsert_meta(
+                    self.db,
+                    source_id,
+                    meta_by_id_live,
+                    order_ids=list(meta_by_id_live.keys()),
+                )
+            except Exception:
+                pass
 
         tone = summarize_kiz_check_status(checked_statuses)
         counts = {

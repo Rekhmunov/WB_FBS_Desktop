@@ -240,7 +240,7 @@ class KizDialog(QDialog):
         self._load_timer.timeout.connect(self.load_rows)
 
         self.setObjectName("kizModal")
-        self.setWindowTitle("КИЗ · {}".format(supply_id))
+        self.setWindowTitle("Товары с маркировкой · {}".format(supply_id))
         init_fullscreen_dialog(
             self,
             fullscreen=fullscreen,
@@ -251,7 +251,7 @@ class KizDialog(QDialog):
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
 
-        # Header — title row (left) + actions (right), subtitle below
+        # Header — title row (left) + Save (right)
         header = QFrame()
         header.setObjectName("kizHeader")
         header_lay = QVBoxLayout(header)
@@ -260,7 +260,7 @@ class KizDialog(QDialog):
 
         title_row = QHBoxLayout()
         title_row.setSpacing(16)
-        title = QLabel("КИЗ")
+        title = QLabel("Товары с маркировкой")
         title.setObjectName("kizTitle")
         title.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         title_row.addWidget(title, 0, Qt.AlignLeft | Qt.AlignTop)
@@ -273,16 +273,7 @@ class KizDialog(QDialog):
         self.save_btn.clicked.connect(self.save_all)
         title_row.addWidget(self.save_btn, 0, Qt.AlignRight | Qt.AlignTop)
 
-        sub = QLabel(
-            "Контрольный идентификационный знак, похожий на QR-код. "
-            "Нужен для маркировки товаров в системе «Честный знак»"
-        )
-        sub.setObjectName("kizSub")
-        sub.setWordWrap(True)
-        sub.setAlignment(Qt.AlignLeft | Qt.AlignTop)
-
         header_lay.addLayout(title_row)
-        header_lay.addWidget(sub)
         root.addWidget(header)
 
         # Toolbar: filters + search + counter

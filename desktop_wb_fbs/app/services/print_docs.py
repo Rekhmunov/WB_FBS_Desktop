@@ -39,9 +39,10 @@ _card_meta_cache_lock = threading.Lock()
 _STICKERS_CACHE_TTL_SEC = 120.0
 _stickers_cache = {}  # type: Dict[tuple, tuple]
 _stickers_cache_lock = threading.Lock()
-# Small chunks: each PNG response is huge (base64 images). Preload uses
-# isolated child processes; keep chunks tiny to limit blast radius.
-_PNG_STICKER_CHUNK = 5
+# Match web `_fetch_stickers_map` (chunks of 100). Smaller chunks were only
+# needed to limit blast radius during in-UI preload; print still isolates each
+# chunk in a child process, so 100 is safe and much faster (fewer spawns/sleeps).
+_PNG_STICKER_CHUNK = 100
 
 
 def _api_key_fp(api_key: str) -> str:

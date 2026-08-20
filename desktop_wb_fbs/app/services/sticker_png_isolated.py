@@ -248,7 +248,7 @@ def fetch_png_ids_isolated(
     supply_id: str,
     order_ids: List[int],
     *,
-    chunk_size: int = 5,
+    chunk_size: int = 100,
     progress: Optional[Any] = None,
     timeout_sec: float = 180.0,
 ) -> Dict[int, Dict[str, Any]]:
@@ -256,7 +256,7 @@ def fetch_png_ids_isolated(
     ids = [int(x) for x in order_ids if x is not None]
     if not ids:
         return {}
-    step = max(1, int(chunk_size or 5))
+    step = max(1, int(chunk_size or 100))
     out = {}  # type: Dict[int, Dict[str, Any]]
     total = len(ids)
     if progress:
@@ -278,6 +278,7 @@ def fetch_png_ids_isolated(
                 out.update(single)
                 if progress:
                     progress(min(len(out), total), total)
+                time.sleep(0.05)
         else:
             out.update(part)
             if progress:

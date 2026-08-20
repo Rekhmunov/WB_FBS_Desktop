@@ -33,9 +33,10 @@ from app.services import SourceService
 from app.services.catalog import CategoryService, ProductService
 from app.services.orders import OrdersService
 from app.ui.fbs_page import FbsPage
+from app.ui.fonts import body_font, display_font, load_app_fonts
 from app.ui.layout_utils import fit_tab_button
 from app.ui.settings_page import SettingsPage
-from app.ui.styles import APP_QSS
+from app.ui.styles import get_app_qss
 from app.ui.text_copy import install_text_copy_support, walk_copyable_labels
 
 
@@ -69,8 +70,10 @@ class MainWindow(QMainWindow):
         brand_col.setContentsMargins(0, 12, 8, 12)
         brand = QLabel(APP_NAME)
         brand.setObjectName("brandTitle")
+        brand.setFont(display_font(16))
         sub = QLabel("Локально · WB API · v{}".format(__version__))
         sub.setObjectName("brandSub")
+        sub.setFont(body_font(11))
         brand_col.addWidget(brand)
         brand_col.addWidget(sub)
         top_l.addLayout(brand_col)
@@ -127,22 +130,24 @@ def run() -> int:
     app = QApplication(sys.argv)
     app.setApplicationName(APP_NAME)
     app.setStyle("Fusion")
+    load_app_fonts()
+    app.setFont(body_font(14))
     # Keep menus/tooltips light even when the OS theme is dark (Fusion).
     pal = QPalette()
     pal.setColor(QPalette.Window, QColor("#ffffff"))
-    pal.setColor(QPalette.WindowText, QColor("#0f172a"))
+    pal.setColor(QPalette.WindowText, QColor("#0f1f33"))
     pal.setColor(QPalette.Base, QColor("#ffffff"))
-    pal.setColor(QPalette.AlternateBase, QColor("#f8fafc"))
-    pal.setColor(QPalette.Text, QColor("#0f172a"))
+    pal.setColor(QPalette.AlternateBase, QColor("#f2f8ff"))
+    pal.setColor(QPalette.Text, QColor("#0f1f33"))
     pal.setColor(QPalette.Button, QColor("#ffffff"))
-    pal.setColor(QPalette.ButtonText, QColor("#0f172a"))
-    pal.setColor(QPalette.Highlight, QColor("#dbeafe"))
-    pal.setColor(QPalette.HighlightedText, QColor("#0f172a"))
+    pal.setColor(QPalette.ButtonText, QColor("#0f1f33"))
+    pal.setColor(QPalette.Highlight, QColor("#ddf1ff"))
+    pal.setColor(QPalette.HighlightedText, QColor("#0f1f33"))
     pal.setColor(QPalette.ToolTipBase, QColor("#ffffff"))
-    pal.setColor(QPalette.ToolTipText, QColor("#0f172a"))
-    pal.setColor(QPalette.PlaceholderText, QColor("#94a3b8"))
+    pal.setColor(QPalette.ToolTipText, QColor("#0f1f33"))
+    pal.setColor(QPalette.PlaceholderText, QColor("#8aa0b8"))
     app.setPalette(pal)
-    app.setStyleSheet(APP_QSS)
+    app.setStyleSheet(get_app_qss())
     install_text_copy_support(app)
 
     db = Database()

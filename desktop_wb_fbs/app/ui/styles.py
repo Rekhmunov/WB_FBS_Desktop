@@ -618,13 +618,43 @@ QFrame#sdHeader {
 QFrame#sdBody {
     background: #ffffff;
 }
-QLineEdit#sdSearch {
-    min-height: 32px;
-    max-width: 260px;
-    border-radius: 8px;
-    padding: 0 10px;
+QFrame#sdSearchBox {
     background: #f2f8ff;
     border: 1px solid #d9e8f7;
+    border-radius: 10px;
+    min-height: 40px;
+    max-height: 40px;
+}
+QLineEdit#sdSearch {
+    min-height: 36px;
+    max-height: 36px;
+    border: none;
+    border-radius: 0;
+    padding: 0;
+    background: transparent;
+    selection-background-color: #ddf1ff;
+}
+QLineEdit#sdSearch:focus {
+    border: none;
+    background: transparent;
+}
+QToolButton#sdSearchClear {
+    border: none;
+    background: transparent;
+    color: #8aa0b8;
+    font-size: 13px;
+    font-weight: 600;
+    padding: 0;
+    margin: 0;
+    min-width: 28px;
+    max-width: 28px;
+    min-height: 28px;
+    max-height: 28px;
+}
+QToolButton#sdSearchClear:hover {
+    color: #0f1f33;
+    background: #d9e8f7;
+    border-radius: 8px;
 }
 QPushButton#portalBtn {
     color: #6b21a8;
@@ -648,7 +678,8 @@ QPushButton#portalBtn:pressed {
 QPushButton[waitOrders="true"],
 QToolButton[waitOrders="true"],
 QCheckBox[waitOrders="true"],
-QLineEdit[waitOrders="true"] {
+QLineEdit[waitOrders="true"],
+QFrame[waitOrders="true"] {
     opacity: 0.55;
 }
 QPushButton#secondary:disabled,

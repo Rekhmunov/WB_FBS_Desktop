@@ -330,7 +330,7 @@ class SupplyDetailDialog(QDialog):
         hv.setContentsMargins(24, 12, 24, 10)
         hv.setSpacing(8)
 
-        # One compact top row: title · warehouse · chips · search
+        # One compact top row: title · warehouse · chips
         title_row = QHBoxLayout()
         title_row.setSpacing(12)
         title_row.setAlignment(Qt.AlignVCenter)
@@ -352,16 +352,6 @@ class SupplyDetailDialog(QDialog):
         chips_wrap.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         self.meta_chips = FlowLayout(chips_wrap, h_spacing=8, v_spacing=4)
         title_row.addWidget(chips_wrap, 1, Qt.AlignVCenter)
-
-        self.search_input = QLineEdit()
-        self.search_input.setObjectName("sdSearch")
-        self.search_input.setPlaceholderText("🔍 Поиск…")
-        self.search_input.setClearButtonEnabled(True)
-        self.search_input.setMinimumWidth(180)
-        self.search_input.setMaximumWidth(260)
-        self.search_input.setToolTip("Поиск по заказу, стикеру, названию товара и ШК")
-        self.search_input.textChanged.connect(lambda _t: self._update_search_visibility())
-        title_row.addWidget(self.search_input, 0, Qt.AlignVCenter)
         hv.addLayout(title_row)
 
         self.meta = QLabel("")
@@ -376,7 +366,12 @@ class SupplyDetailDialog(QDialog):
         self.load_status.hide()
         hv.addWidget(self.load_status)
 
-        actions = FlowLayout(h_spacing=8, v_spacing=8)
+        actions_row = QHBoxLayout()
+        actions_row.setSpacing(12)
+        actions_row.setAlignment(Qt.AlignVCenter)
+        actions_wrap = QWidget()
+        actions_wrap.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        actions = FlowLayout(actions_wrap, h_spacing=8, v_spacing=8)
 
         def _sec(btn):
             btn.setObjectName("secondary")
@@ -455,7 +450,40 @@ class SupplyDetailDialog(QDialog):
         portal_btn.setToolTip("Открыть поставку на портале Wildberries")
         portal_btn.clicked.connect(self.open_portal)
         actions.addWidget(portal_btn)
-        hv.addLayout(actions)
+        actions_row.addWidget(actions_wrap, 1)
+
+        search_box = QFrame()
+        search_box.setObjectName("sdSearchBox")
+        search_box.setFixedHeight(40)
+        search_box.setMinimumWidth(200)
+        search_box.setMaximumWidth(280)
+        search_lay = QHBoxLayout(search_box)
+        search_lay.setContentsMargins(12, 0, 4, 0)
+        search_lay.setSpacing(0)
+        self.search_input = QLineEdit()
+        self.search_input.setObjectName("sdSearch")
+        self.search_input.setPlaceholderText("🔍 Поиск…")
+        self.search_input.setClearButtonEnabled(False)
+        self.search_input.setFrame(False)
+        self.search_input.setToolTip("Поиск по заказу, стикеру, названию товара и ШК")
+        search_clear = QToolButton()
+        search_clear.setObjectName("sdSearchClear")
+        search_clear.setText("✕")
+        search_clear.setCursor(Qt.PointingHandCursor)
+        search_clear.setFixedSize(28, 28)
+        search_clear.setToolTip("Очистить")
+        search_clear.hide()
+        search_clear.clicked.connect(self.search_input.clear)
+
+        def _on_search_text(text: str) -> None:
+            search_clear.setVisible(bool(str(text or "").strip()))
+            self._update_search_visibility()
+
+        self.search_input.textChanged.connect(_on_search_text)
+        search_lay.addWidget(self.search_input, 1)
+        search_lay.addWidget(search_clear, 0, Qt.AlignVCenter)
+        actions_row.addWidget(search_box, 0, Qt.AlignRight | Qt.AlignVCenter)
+        hv.addLayout(actions_row)
 
         self._action_widgets = [
             pick_btn,
@@ -469,6 +497,7 @@ class SupplyDetailDialog(QDialog):
             *extra_action_btns,
             portal_btn,
             self.search_input,
+            search_box,
         ]
         root.addWidget(header)
 

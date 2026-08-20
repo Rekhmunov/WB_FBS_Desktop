@@ -2,39 +2,58 @@
 """Local supply QR sticker (web parity: WB-GI id → QR, no /barcode API)."""
 from __future__ import annotations
 
-import io
 from typing import Tuple
 
 from PyQt5.QtCore import QBuffer, QByteArray, QRectF, Qt
-from PyQt5.QtGui import QFont, QImage, QPainter, QPixmap
+from PyQt5.QtGui import QColor, QFont, QImage, QPainter, QPixmap
+
+from app.vendor.qrcodegen import QrCode
 
 
 def supply_qr_payload(supply_id: str) -> str:
     return str(supply_id or "").strip()
 
 
-def _qr_png_bytes(text: str, box_px: int = 280) -> bytes:
-    import qrcode
-    from PIL import Image
-
+def _qr_pixmap(text: str, box_px: int = 280) -> QPixmap:
+    """Render QR with vendored encoder + Qt (no qrcode/Pillow pip deps)."""
     value = str(text or "").strip()
     if not value:
         raise ValueError("Нет кода поставки для QR")
-    qr = qrcode.QRCode(
-        version=None,
-        error_correction=qrcode.constants.ERROR_CORRECT_M,
-        box_size=8,
-        border=2,
-    )
-    qr.add_data(value)
-    qr.make(fit=True)
-    img = qr.make_image(fill_color="black", back_color="white")
-    if not isinstance(img, Image.Image):
-        img = img.get_image()
-    img = img.convert("RGB").resize((int(box_px), int(box_px)), Image.NEAREST)
-    buf = io.BytesIO()
-    img.save(buf, format="PNG")
-    return buf.getvalue()
+    qr = QrCode.encode_text(value, QrCode.Ecc.MEDIUM)
+    size = int(qr.get_size())
+    if size <= 0:
+        raise RuntimeError("Не удалось сформировать QR-код поставки")
+    border = 2
+    dim = size + 2 * border
+    scale = max(1, int(box_px) // dim)
+    out_side = dim * scale
+    image = QImage(out_side, out_side, QImage.Format_RGB32)
+    image.fill(QColor(255, 255, 255))
+    painter = QPainter(image)
+    try:
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(QColor(0, 0, 0))
+        for y in range(size):
+            for x in range(size):
+                if not qr.get_module(x, y):
+                    continue
+                painter.drawRect(
+                    (x + border) * scale,
+                    (y + border) * scale,
+                    scale,
+                    scale,
+                )
+    finally:
+        painter.end()
+    pix = QPixmap.fromImage(image)
+    if pix.width() != int(box_px) or pix.height() != int(box_px):
+        pix = pix.scaled(
+            int(box_px),
+            int(box_px),
+            Qt.IgnoreAspectRatio,
+            Qt.FastTransformation,
+        )
+    return pix
 
 
 def render_supply_qr_sticker_png(
@@ -56,9 +75,8 @@ def render_supply_qr_sticker_png(
     pad = max(6, int(round(1.5 / 25.4 * dpi)))
     qr_side = max(80, min(h - 2 * pad, w - 2 * rail - 4 * pad))
 
-    qr_raw = _qr_png_bytes(sid, box_px=qr_side)
-    qr_pix = QPixmap()
-    if not qr_pix.loadFromData(qr_raw):
+    qr_pix = _qr_pixmap(sid, box_px=qr_side)
+    if qr_pix.isNull():
         raise RuntimeError("Не удалось сформировать QR-код поставки")
 
     image = QImage(w, h, QImage.Format_RGB32)

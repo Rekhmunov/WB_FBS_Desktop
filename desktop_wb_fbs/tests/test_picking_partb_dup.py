@@ -26,14 +26,12 @@ class ExtendedPickingDupHighlightTests(unittest.TestCase):
             },
         ]
         html = render_picking_list_html("WB-1", "Test", groups, variant="extended")
-        self.assertIn('class="partb partb-dup"', html)
+        self.assertEqual(html.count('class="partb partb-dup"'), 2)
         self.assertIn("5731", html)
-        # Unique partB must not get the dup rectangle class.
-        self.assertIn('class="partb"', html)
-        # Exactly two dup occurrences for 5731.
-        self.assertEqual(html.count("partb-dup"), 2)
+        # Unique partB uses plain partb class (one occurrence for 9999).
+        self.assertEqual(html.count('class="partb"'), 1)
 
-    def test_summary_has_no_partb_dup(self) -> None:
+    def test_summary_has_no_partb_markup(self) -> None:
         groups = [
             {
                 "product_name": "Куртка",
@@ -45,7 +43,8 @@ class ExtendedPickingDupHighlightTests(unittest.TestCase):
             }
         ]
         html = render_picking_list_html("WB-1", "Test", groups, variant="summary")
-        self.assertNotIn("partb-dup", html)
+        self.assertNotIn('class="partb', html)
+        self.assertIn("summary-page", html)
 
 
 if __name__ == "__main__":

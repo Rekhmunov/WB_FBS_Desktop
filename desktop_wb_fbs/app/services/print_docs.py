@@ -39,7 +39,7 @@ _card_meta_cache_lock = threading.Lock()
 _STICKERS_CACHE_TTL_SEC = 120.0
 _stickers_cache = {}  # type: Dict[tuple, tuple]
 _stickers_cache_lock = threading.Lock()
-_PNG_STICKER_CHUNK = 20
+_PNG_STICKER_CHUNK = 10
 
 _PICKING_MAX_EMBEDDED_PHOTOS = 40
 _PICKING_PHOTO_MAX_BYTES = 512 * 1024
@@ -441,13 +441,16 @@ def fetch_stickers_map(
             part_a = str(st.get("partA") or "")
             part_b = str(st.get("partB") or "")
             if keep_files:
-                b64 = st.get("file")
+                b64 = st.pop("file", None)
                 b64_text = b64 if isinstance(b64, str) else ""
                 chunk_b64_bytes += len(b64_text)
                 if persist_disk and b64_text:
                     file_path = persist_sticker_png(
                         api_key, str(persist_supply_id), oid, b64_text
                     )
+                    # Drop base64 ASAP — keep only path in cache.
+                    b64_text = ""
+                    b64 = None
                     meta = {
                         "partA": part_a,
                         "partB": part_b,
@@ -462,6 +465,7 @@ def fetch_stickers_map(
                         "file_path": "",
                     }
             else:
+                st.pop("file", None)
                 meta = {
                     "partA": part_a,
                     "partB": part_b,
@@ -475,6 +479,13 @@ def fetch_stickers_map(
             _cache_merge_stickers(cache_key, chunk_out)
         chunk_saved = len(chunk_out)
         chunk_out.clear()
+        stickers_raw = None
+        try:
+            import gc
+
+            gc.collect()
+        except Exception:
+            pass
         if progress:
             progress(min(i + len(chunk), total), total)
         diag_write(

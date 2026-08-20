@@ -6,7 +6,7 @@ import base64
 import hashlib
 import re
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Iterable, Optional
 
 from app.paths import app_data_dir
 
@@ -40,6 +40,28 @@ def clear_supply_sticker_dir(api_key: str, supply_id: str) -> None:
             child.unlink()
         except Exception:
             pass
+
+
+def existing_sticker_paths(
+    api_key: str,
+    supply_id: str,
+    order_ids: Iterable,
+) -> Dict[int, str]:
+    """Return ``{order_id: absolute_png_path}`` for stickers already on disk."""
+    root = supply_sticker_dir(api_key, supply_id)
+    out = {}  # type: Dict[int, str]
+    for raw_oid in order_ids or []:
+        try:
+            oid = int(raw_oid)
+        except (TypeError, ValueError):
+            continue
+        path = root / "{}.png".format(oid)
+        try:
+            if path.is_file() and path.stat().st_size > 0:
+                out[oid] = str(path)
+        except OSError:
+            continue
+    return out
 
 
 def persist_sticker_png(

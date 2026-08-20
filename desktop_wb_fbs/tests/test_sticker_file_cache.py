@@ -6,6 +6,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from app.services.sticker_file_cache import (
+    existing_sticker_paths,
     persist_sticker_png,
     read_sticker_b64,
     supply_sticker_dir,
@@ -32,6 +33,20 @@ class StickerFileCacheTests(unittest.TestCase):
 
     def test_read_inline_b64(self):
         self.assertEqual(read_sticker_b64({"file_b64": "abc"}), "abc")
+
+    def test_existing_sticker_paths_skips_missing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "stickers"
+            root.mkdir(parents=True)
+            (root / "10.png").write_bytes(b"x")
+            (root / "11.png").write_bytes(b"")
+            with patch(
+                "app.services.sticker_file_cache.supply_sticker_dir",
+                return_value=root,
+            ):
+                found = existing_sticker_paths("key", "WB-GI-1", [10, 11, 12])
+            self.assertEqual(list(found.keys()), [10])
+            self.assertTrue(found[10].endswith("10.png"))
 
 
 if __name__ == "__main__":

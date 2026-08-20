@@ -85,8 +85,10 @@ class FetchPngChunkIsolatedTests(unittest.TestCase):
 
     @patch("app.services.sticker_png_isolated.fetch_png_chunk_isolated")
     def test_retries_singles_after_empty_chunk(self, chunk_mock):
+        # Batch call (all ids) fails, then fallback chunk fails, then singles.
         chunk_mock.side_effect = [
-            {},  # first multi-id chunk fails
+            {},  # batch of [1, 2]
+            {},  # fallback chunk of [1, 2]
             {1: {"partA": "", "partB": "", "file_b64": "", "file_path": "/1.png"}},
             {2: {"partA": "", "partB": "", "file_b64": "", "file_path": "/2.png"}},
         ]
@@ -94,7 +96,7 @@ class FetchPngChunkIsolatedTests(unittest.TestCase):
             "key", "WB-1", [1, 2], chunk_size=5
         )
         self.assertEqual(len(out), 2)
-        self.assertEqual(chunk_mock.call_count, 3)
+        self.assertEqual(chunk_mock.call_count, 4)
 
 
 class FetchStickersIsolatedPathTests(unittest.TestCase):

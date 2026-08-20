@@ -22,7 +22,7 @@ from app.db import Database
 from app.diag_log import write as diag_write
 from app.services.catalog import ProductService
 from app.services.orders import OrdersService
-from app.services.sticker_file_cache import read_sticker_b64
+from app.services.sticker_file_cache import sticker_img_src
 from app.wb import parse_json_list
 from app.wb.client import WbFbsClient
 from app.wb.content import WbContentClient
@@ -180,22 +180,18 @@ def open_html(
     except Exception as exc:
         preview_error = str(exc) or exc.__class__.__name__
     _clear_override_cursor()
-    if webengine_ok:
-        if parent is not None:
-            reply = QMessageBox.question(
-                parent,
-                "Предпросмотр",
-                "Документ сохранён:\n{}\n\n"
-                "Не удалось показать его во встроенном окне.\n"
-                "Открыть в браузере?".format(path),
-                QMessageBox.Yes | QMessageBox.No,
-                QMessageBox.No,
-            )
-            if reply == QMessageBox.Yes:
-                QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
-        return path
+    # Always open something the user can print — WebEngine often fails on
+    # large sticker sets; browser fallback must not require an extra click.
     QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
-    if parent is not None:
+    if parent is not None and webengine_ok:
+        detail = (
+            "Документ открыт в браузере для печати.\n\n"
+            "Встроенный предпросмотр не загрузил файл."
+        )
+        if preview_error:
+            detail += "\n\nПричина: {}".format(preview_error)
+        QMessageBox.information(parent, "Печать", detail)
+    elif parent is not None and not webengine_ok:
         detail = (
             "Документ открыт в браузере.\n\n"
             "Встроенный предпросмотр недоступен."
@@ -296,7 +292,7 @@ def build_groups(
                 "order_id": oid,
                 "sticker_part_a": st.get("partA") or "",
                 "sticker_part_b": st.get("partB") or "",
-                "sticker_file": read_sticker_b64(st),
+                "sticker_src": sticker_img_src(st),
                 "article": article,
             }
         )
@@ -789,8 +785,11 @@ def render_stickers_print_html(supply_id: str, groups: List[Dict[str, Any]]) -> 
         )
         for o in g.get("orders") or []:
             page_no += 1
-            b64 = str(o.get("sticker_file") or "").strip()
-            if not b64:
+            src = str(o.get("sticker_src") or o.get("sticker_file") or "").strip()
+            if src and not src.startswith("data:") and not src.startswith("file:"):
+                # Legacy base64 without scheme.
+                src = "data:image/png;base64,{}".format(src)
+            if not src:
                 pages.append(
                     """
                     <section class="label missing">
@@ -805,10 +804,10 @@ def render_stickers_print_html(supply_id: str, groups: List[Dict[str, Any]]) -> 
             pages.append(
                 """
                 <section class="label sticker">
-                  <img src="data:image/png;base64,{}" alt="sticker {}" />
+                  <img src="{}" alt="sticker {}" />
                 </section>
                 """.format(
-                    b64, _esc(o.get("order_id"))
+                    _esc(src), _esc(o.get("order_id"))
                 )
             )
     return """<!doctype html>

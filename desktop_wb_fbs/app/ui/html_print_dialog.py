@@ -82,6 +82,16 @@ class HtmlPrintPreviewDialog(QDialog):
         root.addLayout(toolbar)
 
         self._view = QWebEngineView(self)
+        try:
+            from PyQt5.QtWebEngineWidgets import QWebEngineSettings
+
+            settings = self._view.settings()
+            # Sticker HTML references PNG files on disk via file:// URIs.
+            settings.setAttribute(
+                QWebEngineSettings.LocalContentCanAccessFileUrls, True
+            )
+        except Exception:
+            pass
         root.addWidget(self._view, 1)
         self._view.loadFinished.connect(self._on_load_finished)
         self._view.load(QUrl.fromLocalFile(str(self._html_path.resolve())))

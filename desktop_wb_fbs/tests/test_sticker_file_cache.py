@@ -9,6 +9,7 @@ from app.services.sticker_file_cache import (
     existing_sticker_paths,
     persist_sticker_png,
     read_sticker_b64,
+    sticker_img_src,
     supply_sticker_dir,
 )
 
@@ -33,6 +34,18 @@ class StickerFileCacheTests(unittest.TestCase):
 
     def test_read_inline_b64(self):
         self.assertEqual(read_sticker_b64({"file_b64": "abc"}), "abc")
+
+    def test_sticker_img_src_prefers_file_uri(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "1.png"
+            path.write_bytes(b"png")
+            src = sticker_img_src({"file_path": str(path), "file_b64": "ignored"})
+            self.assertTrue(src.startswith("file:"))
+            self.assertIn("1.png", src)
+
+    def test_sticker_img_src_falls_back_to_data_uri(self):
+        src = sticker_img_src({"file_b64": "abc123"})
+        self.assertEqual(src, "data:image/png;base64,abc123")
 
     def test_existing_sticker_paths_skips_missing(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -28,40 +28,64 @@ def _persist_chunk_worker(
     result_path: str,
 ) -> None:
     """Child entrypoint: fetch stickers, write PNGs to disk, emit meta JSON."""
+    _persist_many_worker(
+        api_key,
+        supply_id,
+        order_ids,
+        result_path,
+        chunk_size=100,
+    )
+
+
+def _persist_many_worker(
+    api_key: str,
+    supply_id: str,
+    order_ids: List[int],
+    result_path: str,
+    *,
+    chunk_size: int = 100,
+) -> None:
+    """Fetch all order stickers in one process (WB max 100/request, 200ms gap)."""
     payload = {"ok": False, "stickers": {}, "error": ""}  # type: Dict[str, Any]
     try:
         from app.services.sticker_file_cache import persist_sticker_png
         from app.wb.client import WbFbsClient
 
         client = WbFbsClient(api_key)
-        raw = client.get_order_stickers(list(order_ids), sticker_type="png")
+        ids = [int(x) for x in order_ids if x is not None]
+        step = max(1, min(100, int(chunk_size or 100)))
         out = {}  # type: Dict[str, Dict[str, Any]]
-        for st in raw or []:
-            if not isinstance(st, dict):
-                continue
-            try:
-                oid = int(st.get("orderId") or st.get("order_id"))
-            except (TypeError, ValueError):
-                continue
-            part_a = str(st.get("partA") or "")
-            part_b = str(st.get("partB") or "")
-            b64 = st.pop("file", None)
-            b64_text = b64 if isinstance(b64, str) else ""
-            file_path = ""
-            if b64_text:
-                file_path = persist_sticker_png(api_key, supply_id, oid, b64_text)
-                b64_text = ""
-                b64 = None
-            out[str(oid)] = {
-                "partA": part_a,
-                "partB": part_b,
-                "barcode": str(st.get("barcode") or "").strip(),
-                "file_b64": "",
-                "file_path": file_path,
-            }
+        for i in range(0, len(ids), step):
+            if i:
+                time.sleep(0.21)  # WB docs: 200 ms interval between requests
+            chunk = ids[i : i + step]
+            raw = client.get_order_stickers(list(chunk), sticker_type="png")
+            for st in raw or []:
+                if not isinstance(st, dict):
+                    continue
+                try:
+                    oid = int(st.get("orderId") or st.get("order_id"))
+                except (TypeError, ValueError):
+                    continue
+                part_a = str(st.get("partA") or "")
+                part_b = str(st.get("partB") or "")
+                b64 = st.pop("file", None)
+                b64_text = b64 if isinstance(b64, str) else ""
+                file_path = ""
+                if b64_text:
+                    file_path = persist_sticker_png(api_key, supply_id, oid, b64_text)
+                    b64_text = ""
+                    b64 = None
+                out[str(oid)] = {
+                    "partA": part_a,
+                    "partB": part_b,
+                    "barcode": str(st.get("barcode") or "").strip(),
+                    "file_b64": "",
+                    "file_path": file_path,
+                }
+            raw = None
         payload["ok"] = True
         payload["stickers"] = out
-        raw = None
     except Exception as exc:
         payload["error"] = str(exc)
     try:
@@ -74,12 +98,19 @@ def _persist_chunk_worker(
 
 
 def run_job_file(job_path: str, result_path: str) -> None:
-    """Load job JSON and persist chunk (used by child ``-c`` / ``-m`` entry)."""
+    """Load job JSON and persist stickers (used by child ``-c`` / ``-m`` entry)."""
     job = json.loads(Path(job_path).read_text(encoding="utf-8"))
     api_key = str(job.get("api_key") or "")
     supply_id = str(job.get("supply_id") or "")
     order_ids = [int(x) for x in (job.get("order_ids") or [])]
-    _persist_chunk_worker(api_key, supply_id, order_ids, result_path)
+    chunk_size = int(job.get("chunk_size") or 100)
+    _persist_many_worker(
+        api_key,
+        supply_id,
+        order_ids,
+        result_path,
+        chunk_size=chunk_size,
+    )
 
 
 def _parse_result(result_path: Path) -> Dict[int, Dict[str, Any]]:
@@ -141,6 +172,7 @@ def fetch_png_chunk_isolated(
                 "api_key": str(api_key),
                 "supply_id": str(supply_id),
                 "order_ids": ids,
+                "chunk_size": 100,
             },
             ensure_ascii=False,
         ),
@@ -252,25 +284,60 @@ def fetch_png_ids_isolated(
     progress: Optional[Any] = None,
     timeout_sec: float = 180.0,
 ) -> Dict[int, Dict[str, Any]]:
-    """Fetch many PNG stickers via isolated chunks; retry singles after crash."""
+    """Fetch many PNG stickers in one isolated process (WB: ≤100/req, 200ms).
+
+    Falls back to per-chunk / per-order spawn only if the batch process fails.
+    """
     ids = [int(x) for x in order_ids if x is not None]
     if not ids:
         return {}
-    step = max(1, int(chunk_size or 100))
-    out = {}  # type: Dict[int, Dict[str, Any]]
+    step = max(1, min(100, int(chunk_size or 100)))
     total = len(ids)
     if progress:
         progress(0, total)
 
-    for i in range(0, len(ids), step):
-        if i:
+    chunks = (total + step - 1) // step
+    # One OS process for the whole batch — much faster than spawn-per-chunk.
+    batch_timeout = max(float(timeout_sec), 45.0 * max(1, chunks))
+    from app.diag_log import write as diag_write
+
+    diag_write(
+        "stickers.png_isolated.batch_begin",
+        sync=True,
+        supply_id=supply_id,
+        order_total=total,
+        chunks=chunks,
+        timeout_sec=batch_timeout,
+    )
+    batch = fetch_png_chunk_isolated(
+        api_key,
+        supply_id,
+        ids,
+        timeout_sec=batch_timeout,
+    )
+    if len(batch) >= total:
+        if progress:
+            progress(total, total)
+        return batch
+    if batch:
+        # Partial success — only retry missing ids.
+        have = set(batch.keys())
+        missing = [oid for oid in ids if oid not in have]
+        out = dict(batch)
+        if progress:
+            progress(min(len(out), total), total)
+    else:
+        missing = list(ids)
+        out = {}
+
+    for i in range(0, len(missing), step):
+        if i or batch:
             time.sleep(0.21)
-        chunk = ids[i : i + step]
+        chunk = missing[i : i + step]
         part = fetch_png_chunk_isolated(
             api_key, supply_id, chunk, timeout_sec=timeout_sec
         )
         if not part and len(chunk) > 1:
-            # Blast radius: retry one-by-one so one bad payload cannot skip many.
             for oid in chunk:
                 single = fetch_png_chunk_isolated(
                     api_key, supply_id, [oid], timeout_sec=timeout_sec
@@ -282,7 +349,7 @@ def fetch_png_ids_isolated(
         else:
             out.update(part)
             if progress:
-                progress(min(i + len(chunk), total), total)
+                progress(min(len(out), total), total)
     return out
 
 

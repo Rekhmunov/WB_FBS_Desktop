@@ -102,3 +102,21 @@ def read_sticker_b64(meta: Optional[Dict[str, Any]]) -> str:
         return base64.b64encode(path.read_bytes()).decode("ascii")
     except Exception:
         return ""
+
+
+def sticker_img_src(meta: Optional[Dict[str, Any]]) -> str:
+    """Prefer on-disk ``file://`` URI for print HTML (avoids huge base64 docs)."""
+    if not meta:
+        return ""
+    file_path = str(meta.get("file_path") or "").strip()
+    if file_path:
+        path = Path(file_path)
+        try:
+            if path.is_file() and path.stat().st_size > 0:
+                return path.resolve().as_uri()
+        except OSError:
+            pass
+    b64 = read_sticker_b64(meta)
+    if not b64:
+        return ""
+    return "data:image/png;base64,{}".format(b64)

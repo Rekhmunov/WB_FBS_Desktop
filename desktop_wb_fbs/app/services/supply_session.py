@@ -316,7 +316,9 @@ def preload_supply_core(
             session.meta_by_id = {}
     session.build_kiz_and_pick_rows(db)
     session.core_ready = True
-    session.png_ready = False
+    # PNG stickers are fetched on demand at print time — full preload of large
+    # supplies crashes on Windows (STATUS_STACK_BUFFER_OVERRUN / -1073740791).
+    session.png_ready = True
     session.sticker_png = {}
     session.sticker_png_count = 0
     put_session(session)
@@ -327,94 +329,28 @@ def preload_sticker_pngs(
     session: SupplySession,
     progress: Optional[ProgressCb] = None,
 ) -> None:
-    """Fetch PNG stickers for print — persisted on disk, indexed in print cache."""
-    import gc
+    """Mark print as allowed without bulk PNG download.
 
-    from app.diag_log import exception as diag_exception
+    Historical full preload (808+ PNG stickers) hard-crashes the process on
+    Windows. Stickers are loaded lazily when the user prints.
+    """
     from app.diag_log import write as diag_write
-    from app.services.print_docs import (
-        _cache_sticker_count,
-        _stickers_cache_key,
-        fetch_stickers_map,
-    )
-    from app.services.sticker_file_cache import clear_supply_sticker_dir
 
-    ids = [int(r["order_id"]) for r in session.rows if r.get("order_id") is not None]
-    order_total = len(ids)
+    order_total = len(
+        [r for r in (session.rows or []) if r.get("order_id") is not None]
+    )
     diag_write(
-        "supply.png_preload.begin",
+        "supply.png_preload.skip",
         sync=True,
         supply_id=session.supply_id,
         source_id=session.source_id,
         order_total=order_total,
+        reason="disabled_crash_prone",
     )
-
-    def _png_progress(done: int, total: int) -> None:
-        if progress:
-            progress(4, _progress_detail(done, order_total or total))
-
+    if progress:
+        progress(3, "")
     session.sticker_png = {}
     session.sticker_png_count = 0
-    if progress:
-        progress(4, _progress_detail(0, order_total))
-    if not ids or not session.api_key:
-        session.png_ready = True
-        put_session(session)
-        diag_write(
-            "supply.png_preload.skip",
-            sync=True,
-            supply_id=session.supply_id,
-            reason="no_ids_or_api_key",
-        )
-        return
-    cache_key = _stickers_cache_key(
-        session.api_key, ids, "png", True
-    )
-    try:
-        diag_write(
-            "supply.png_preload.clear_dir",
-            sync=True,
-            supply_id=session.supply_id,
-        )
-        clear_supply_sticker_dir(session.api_key, session.supply_id)
-        diag_write(
-            "supply.png_preload.fetch_begin",
-            sync=True,
-            supply_id=session.supply_id,
-            order_total=order_total,
-        )
-        fetch_stickers_map(
-            session.api_key,
-            ids,
-            sticker_type="png",
-            keep_files=True,
-            progress=_png_progress,
-            cache_only=True,
-            persist_supply_id=session.supply_id,
-        )
-        session.sticker_png_count = _cache_sticker_count(cache_key)
-        diag_write(
-            "supply.png_preload.fetch_done",
-            sync=True,
-            supply_id=session.supply_id,
-            cached_count=session.sticker_png_count,
-        )
-    except MemoryError as exc:
-        session.sticker_png_count = 0
-        diag_exception(
-            "supply.png_preload.memory_error",
-            exc,
-            supply_id=session.supply_id,
-        )
-    except Exception as exc:
-        session.sticker_png_count = 0
-        diag_exception(
-            "supply.png_preload.error",
-            exc,
-            supply_id=session.supply_id,
-        )
-    finally:
-        gc.collect()
     session.png_ready = True
     put_session(session)
     diag_write(
@@ -422,7 +358,8 @@ def preload_sticker_pngs(
         sync=True,
         supply_id=session.supply_id,
         png_ready=True,
-        cached_count=session.sticker_png_count,
+        cached_count=0,
+        skipped=True,
     )
 
 

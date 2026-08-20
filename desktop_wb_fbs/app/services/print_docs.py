@@ -39,7 +39,7 @@ _card_meta_cache_lock = threading.Lock()
 _STICKERS_CACHE_TTL_SEC = 120.0
 _stickers_cache = {}  # type: Dict[tuple, tuple]
 _stickers_cache_lock = threading.Lock()
-_PNG_STICKER_CHUNK = 50
+_PNG_STICKER_CHUNK = 20
 
 _PICKING_MAX_EMBEDDED_PHOTOS = 40
 _PICKING_PHOTO_MAX_BYTES = 512 * 1024

@@ -1076,29 +1076,31 @@ QScrollBar::handle:horizontal {
 QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {
     width: 0;
 }
-QMenu {
+QMenu, QMenu#appMenu {
     background-color: #ffffff;
     color: #0f1f33;
     border: 1px solid #d9e8f7;
     border-radius: 10px;
-    padding: 4px;
+    padding: 6px;
     font-size: 14px;
+    font-weight: 500;
 }
-QMenu::item {
+QMenu::item, QMenu#appMenu::item {
     background-color: transparent;
     color: #0f1f33;
-    padding: 8px 16px;
-    border-radius: 6px;
-    min-height: 28px;
+    padding: 8px 14px;
+    border-radius: 8px;
+    min-height: 32px;
+    margin: 1px 2px;
 }
-QMenu::item:selected {
+QMenu::item:selected, QMenu#appMenu::item:selected {
     background-color: #ddf1ff;
     color: #0f1f33;
 }
-QMenu::item:disabled {
+QMenu::item:disabled, QMenu#appMenu::item:disabled {
     color: #8aa0b8;
 }
-QMenu::separator {
+QMenu::separator, QMenu#appMenu::separator {
     height: 1px;
     background: #d9e8f7;
     margin: 4px 8px;

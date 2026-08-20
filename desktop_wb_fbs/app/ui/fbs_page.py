@@ -796,7 +796,9 @@ class FbsPage(QWidget):
 
     def _supply_row_menu(self, sid: str) -> QMenu:
         """⋮ menu for assembly supply rows."""
-        menu = QMenu(self)
+        from app.ui.dialog_utils import style_app_menu
+
+        menu = style_app_menu(QMenu(self))
         menu.addAction(
             "Стикеры товаров", lambda s=sid: self._print_stickers_for(s)
         )

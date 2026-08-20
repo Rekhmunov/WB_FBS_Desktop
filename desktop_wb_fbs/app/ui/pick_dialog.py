@@ -38,6 +38,7 @@ from app.ui.dialog_utils import (
     init_fullscreen_dialog,
     init_maximized_window,
     install_live_ru_layout_guard,
+    style_app_menu,
 )
 from app.ui.dialogs_extra import show_png_list
 from app.ui.format_helpers import (
@@ -648,8 +649,7 @@ class PickDialog(QDialog):
         btn.setToolTip("Действия")
         btn.setPopupMode(QToolButton.InstantPopup)
         btn.setFixedSize(32, 32)
-        menu = QMenu(btn)
-        menu.setObjectName("appMenu")
+        menu = style_app_menu(QMenu(btn))
         menu.addAction("Напечатать стикер", partial(self._print_sticker, oid))
         btn.setMenu(menu)
         lay.addWidget(btn, 0, Qt.AlignTop)

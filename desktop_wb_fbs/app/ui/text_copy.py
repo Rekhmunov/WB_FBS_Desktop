@@ -141,6 +141,9 @@ class TextCopySupport(QObject):
             return False
 
         menu = QMenu(obj)
+        from app.ui.dialog_utils import style_app_menu
+
+        menu = style_app_menu(menu)
         action = menu.addAction("Копировать")
         chosen = menu.exec_(event.globalPos())
         if chosen is action:

@@ -45,6 +45,7 @@ from app.ui.dialog_utils import (
     init_fullscreen_dialog,
     init_maximized_window,
     prepare_modal_dialog,
+    style_app_menu,
 )
 from app.ui.dialogs_extra import show_png_list, show_supply_qr
 from app.ui.format_helpers import (
@@ -386,7 +387,7 @@ class SupplyDetailDialog(QDialog):
         pick_caret.setToolButtonStyle(Qt.ToolButtonTextOnly)
         pick_caret.setArrowType(Qt.NoArrow)
         pick_caret.setFixedSize(36, 40)
-        pick_menu = QMenu(pick_caret)
+        pick_menu = style_app_menu(QMenu(pick_caret))
         pick_menu.addAction(
             "Расширенный лист подбора", partial(self.picking_list, "extended")
         )
@@ -402,7 +403,7 @@ class SupplyDetailDialog(QDialog):
         st_caret.setToolButtonStyle(Qt.ToolButtonTextOnly)
         st_caret.setArrowType(Qt.NoArrow)
         st_caret.setFixedSize(36, 40)
-        st_menu = QMenu(st_caret)
+        st_menu = style_app_menu(QMenu(st_caret))
         st_menu.addAction("Печать по категориям", self.stickers_by_category)
         st_caret.setMenu(st_menu)
         actions.addWidget(self._split_pair(st_btn, st_caret))
@@ -1358,8 +1359,7 @@ class SupplyDetailDialog(QDialog):
         btn.setToolTip("Действия")
         btn.setPopupMode(QToolButton.InstantPopup)
         btn.setFixedSize(32, 32)
-        menu = QMenu(btn)
-        menu.setObjectName("appMenu")
+        menu = style_app_menu(QMenu(btn))
         menu.addAction(
             "Напечатать стикер", partial(self.print_one_order_sticker, order_id)
         )

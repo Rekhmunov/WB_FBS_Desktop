@@ -6,11 +6,13 @@ import time
 from typing import Optional, Tuple
 
 from PyQt5.QtCore import Qt
+from PyQt5.QtGui import QColor, QPalette
 from PyQt5.QtWidgets import (
     QDialog,
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QMenu,
     QPushButton,
     QVBoxLayout,
     QWidget,
@@ -194,3 +196,27 @@ def install_live_ru_layout_guard(
         block_ru_layout_scan(parent, field, text=text)
 
     field.textChanged.connect(_on_text)
+
+
+def style_app_menu(menu: QMenu) -> QMenu:
+    """Light SaaS popup menu — avoid Fusion/OS black plate under QMenu.
+
+    Rounded menus on some platforms leave a dark window chrome behind the
+    stylesheet fill; force a white palette + styled background.
+    """
+    menu.setObjectName("appMenu")
+    menu.setAttribute(Qt.WA_StyledBackground, True)
+    menu.setAutoFillBackground(True)
+    pal = menu.palette()
+    for group in (QPalette.Active, QPalette.Inactive, QPalette.Disabled):
+        pal.setColor(group, QPalette.Window, QColor("#ffffff"))
+        pal.setColor(group, QPalette.Base, QColor("#ffffff"))
+        pal.setColor(group, QPalette.AlternateBase, QColor("#f2f8ff"))
+        pal.setColor(group, QPalette.Text, QColor("#0f1f33"))
+        pal.setColor(group, QPalette.WindowText, QColor("#0f1f33"))
+        pal.setColor(group, QPalette.Button, QColor("#ffffff"))
+        pal.setColor(group, QPalette.ButtonText, QColor("#0f1f33"))
+        pal.setColor(group, QPalette.Highlight, QColor("#ddf1ff"))
+        pal.setColor(group, QPalette.HighlightedText, QColor("#0f1f33"))
+    menu.setPalette(pal)
+    return menu

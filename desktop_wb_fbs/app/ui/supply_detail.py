@@ -368,7 +368,7 @@ class SupplyDetailDialog(QDialog):
         st_caret.setMenu(st_menu)
         actions.addWidget(self._split_pair(st_btn, st_caret))
 
-        kiz_btn = _sec(QPushButton("Маркировка"))
+        kiz_btn = _sec(QPushButton("Товары с маркировкой"))
         kiz_btn.clicked.connect(self.open_kiz)
         kiz_ref = _sec(_SpinRefreshButton())
         kiz_ref.setToolTip("Проверить статусы КИЗ на ВБ")

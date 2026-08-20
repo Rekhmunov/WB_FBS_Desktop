@@ -1331,8 +1331,6 @@ class SupplyDetailDialog(QDialog):
         lab = QLabel("КИЗ")
         lab.setObjectName("sdKizBadge")
         lab.setAlignment(Qt.AlignCenter)
-        from PyQt5.QtWidgets import QSizePolicy
-
         lab.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
         # Keep label text short («КИЗ») so the colored pill does not stick out;
         # status is conveyed by color + tooltip.

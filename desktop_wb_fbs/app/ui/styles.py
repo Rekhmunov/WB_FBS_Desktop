@@ -862,7 +862,6 @@ QLabel#sdKizBadge {
     color: #5f7691;
     max-width: 64px;
     min-height: 24px;
-    qproperty-alignment: AlignCenter;
 }
 QLabel#sdKizBadge[kizState="pending"] {
     background: #fef3c7;

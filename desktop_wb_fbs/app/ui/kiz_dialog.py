@@ -56,6 +56,11 @@ def _sticker_number(part_a: str, part_b: str) -> str:
 
 _RENDER_BATCH = 50
 _FILTER_EMPTY_MSG = "Нет строк по выбранным фильтрам"
+_LOAD_STEPS = (
+    "Заказы",
+    "Номера стикеров",
+    "Отрисовка таблицы",
+)
 
 
 class _KizSaveWorker(QThread):
@@ -218,6 +223,9 @@ class KizDialog(QDialog):
         self._rows_ready = False
         self._closing = False
         self._load_gen = 0
+        self._load_step = 0
+        self._load_detail = ""
+        self._loading_table_label = None  # type: Optional[QLabel]
         self._saving = False
         self._save_worker = None  # type: Optional[_KizSaveWorker]
         self._alive_workers = []  # type: List[QThread]
@@ -258,22 +266,12 @@ class KizDialog(QDialog):
         title_row.addWidget(title, 0, Qt.AlignLeft | Qt.AlignTop)
         title_row.addStretch(1)
 
-        head_actions = QHBoxLayout()
-        head_actions.setSpacing(8)
-        head_actions.setAlignment(Qt.AlignRight | Qt.AlignTop)
         self.save_btn = QPushButton("Сохранить")
         self.save_btn.setObjectName("bottomPrimary")
         self.save_btn.setFixedHeight(40)
         self.save_btn.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
         self.save_btn.clicked.connect(self.save_all)
-        close_btn = QToolButton()
-        close_btn.setObjectName("iconBtn")
-        close_btn.setText("✕")
-        close_btn.setToolTip("Закрыть")
-        close_btn.clicked.connect(self.reject)
-        head_actions.addWidget(self.save_btn)
-        head_actions.addWidget(close_btn)
-        title_row.addLayout(head_actions, 0)
+        title_row.addWidget(self.save_btn, 0, Qt.AlignRight | Qt.AlignTop)
 
         sub = QLabel(
             "Контрольный идентификационный знак, похожий на QR-код. "
@@ -302,15 +300,17 @@ class KizDialog(QDialog):
         for cb in (self.chk_filled, self.chk_empty, self.chk_errors, self.chk_cancelled):
             cb.setObjectName("kizFilterCheck")
             filters.addWidget(cb)
-        self.search_input = QLineEdit()
-        self.search_input.setObjectName("kizSearch")
-        self.search_input.setPlaceholderText("🔍 Поиск...")
-        self.search_input.setMinimumWidth(180)
-        filters.addWidget(self.search_input)
-        tb.addLayout(filters, 1)
+        tb.addLayout(filters, 0)
+        tb.addStretch(1)
         self.counter = QLabel("Просканировано 0 из 0 КИЗ")
         self.counter.setObjectName("kizScanCount")
-        tb.addWidget(self.counter)
+        tb.addWidget(self.counter, 0, Qt.AlignRight | Qt.AlignVCenter)
+        self.search_input = QLineEdit()
+        self.search_input.setObjectName("kizSearch")
+        self.search_input.setPlaceholderText("Поиск…")
+        self.search_input.setFixedWidth(140)
+        self.search_input.setMaximumWidth(140)
+        tb.addWidget(self.search_input, 0, Qt.AlignRight | Qt.AlignVCenter)
         root.addWidget(toolbar)
 
         self.chk_filled.toggled.connect(self._on_filled_toggled)
@@ -602,15 +602,61 @@ class KizDialog(QDialog):
         self.table.clearContents()
         self._row_index_by_oid = {}
         self._code_inputs = {}
+        self._loading_table_label = None
 
     def _show_loading_row(self) -> None:
         self._clear_table()
         self.table.setRowCount(1)
         self.table.setSpan(0, 0, 1, self.table.columnCount())
-        loading = QTableWidgetItem("Загрузка…")
-        loading.setTextAlignment(Qt.AlignCenter)
-        loading.setFlags(Qt.ItemIsEnabled)
-        self.table.setItem(0, 0, loading)
+        loading = QLabel("")
+        loading.setObjectName("hint")
+        loading.setAlignment(Qt.AlignCenter)
+        loading.setWordWrap(True)
+        loading.setContentsMargins(24, 32, 24, 32)
+        self._loading_table_label = loading
+        self._load_step = 0
+        self._load_detail = ""
+        self._render_load_status()
+        self.table.setCellWidget(0, 0, loading)
+
+    def _render_load_status(self) -> None:
+        lab = self._loading_table_label
+        if lab is None:
+            return
+        step = int(self._load_step or 0)
+        total = len(_LOAD_STEPS)
+        if step <= 0:
+            lines = ["<b>Подготовка маркировки…</b>"]
+            lines.extend("○ {}".format(name) for name in _LOAD_STEPS)
+            lab.setTextFormat(Qt.RichText)
+            lab.setText("<br>".join(lines))
+            return
+        lines = [
+            "<b>Загрузка · шаг {} из {}</b>".format(min(step, total), total)
+        ]
+        for i, name in enumerate(_LOAD_STEPS, start=1):
+            if i < step:
+                mark, style = "✓", "color:#166534;"
+            elif i == step:
+                mark, style = "→", "color:#1d4ed8;font-weight:700;"
+            else:
+                mark, style = "○", "color:#64748b;"
+            detail = ""
+            if i == step and self._load_detail:
+                detail = " <span style='color:#64748b;font-weight:500;'>({})</span>".format(
+                    self._load_detail
+                )
+            lines.append(
+                "<span style='{}'>{} {}{}</span>".format(style, mark, name, detail)
+            )
+        lab.setTextFormat(Qt.RichText)
+        lab.setText("<br>".join(lines))
+
+    def _set_load_step(self, step: int, detail: str = "") -> None:
+        self._load_step = int(step or 0)
+        self._load_detail = str(detail or "").strip()
+        self._render_load_status()
+        QApplication.processEvents()
 
     def load_rows(self) -> None:
         gen = self._load_gen
@@ -619,7 +665,7 @@ class KizDialog(QDialog):
         self._set_filters_ready(False)
         self.save_btn.setEnabled(False)
         self._show_loading_row()
-        QApplication.processEvents()
+        self._set_load_step(1, "из локальной базы")
         if self._load_aborted(gen):
             return
         session = supply_session.get_session(self.source_id, self.supply_id)
@@ -647,14 +693,21 @@ class KizDialog(QDialog):
         self._sticker_map = {}
         self._code_inputs = {}
         stickers = {}  # type: Dict[int, Dict[str, Any]]
+        order_n = len(self.rows)
         if session and session.sticker_numbers:
+            self._set_load_step(2, "из сессии · {} шт.".format(order_n))
             stickers = session.sticker_numbers
         else:
+            self._set_load_step(2, "0 из {}".format(order_n) if order_n else "")
             try:
                 ids = [int(r["order_id"]) for r in self.rows]
                 stickers = _fetch_picking_stickers(self.api_key, ids)
             except Exception:
                 stickers = {}
+            if not self._load_aborted(gen):
+                self._set_load_step(
+                    2, "{} из {}".format(len(stickers), order_n) if order_n else ""
+                )
         if self._load_aborted(gen):
             return
         for r in self.rows:
@@ -670,6 +723,9 @@ class KizDialog(QDialog):
             r["sticker_barcode"] = barcode
             full = _sticker_number(part_a, part_b)
             r["sticker_number"] = full or str(r.get("sticker_number") or "")
+        self._set_load_step(3, "{} строк".format(order_n) if order_n else "")
+        if self._load_aborted(gen):
+            return
         self._render_table()
         if self._load_aborted(gen):
             return

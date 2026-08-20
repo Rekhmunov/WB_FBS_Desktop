@@ -1016,6 +1016,7 @@ QCheckBox#kizFilterCheck {
 }
 QLineEdit#kizSearch {
     min-height: 36px;
+    max-width: 140px;
     padding: 8px 12px;
     border: 1px solid #cbd5e1;
     border-radius: 8px;

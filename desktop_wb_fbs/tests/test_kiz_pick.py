@@ -9,7 +9,42 @@ from app.services.kiz_pick import (
     extract_gtin,
     gtin_matches_skus,
     pending_wb_save_jobs,
+    row_matches_modal_search,
 )
+
+
+class ModalSearchTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.row = {
+            "order_id": 266846035,
+            "article": "ART-RED-42",
+            "product_name": "Куртка зимняя красная",
+            "brand": "BrandX",
+            "nm_id": 123456,
+            "sticker_part_a": "5806",
+            "sticker_part_b": "1234",
+            "sticker_number": "58061234",
+            "sticker_barcode": "2001234567890",
+            "pick_barcode": "4604060004010",
+            "skus": ["4604060004010", "04604060004010"],
+        }
+
+    def test_matches_name_article_sku_order_sticker(self) -> None:
+        self.assertTrue(row_matches_modal_search(self.row, "куртка"))
+        self.assertTrue(row_matches_modal_search(self.row, "ART-RED"))
+        self.assertTrue(row_matches_modal_search(self.row, "4604060004010"))
+        self.assertTrue(row_matches_modal_search(self.row, "266846035"))
+        self.assertTrue(row_matches_modal_search(self.row, "58061234"))
+        self.assertTrue(row_matches_modal_search(self.row, "1234"))
+        self.assertTrue(row_matches_modal_search(self.row, "2001234567890"))
+
+    def test_parses_skus_json_string(self) -> None:
+        row = {"order_id": 1, "skus": '["999888777"]'}
+        self.assertTrue(row_matches_modal_search(row, "999888777"))
+
+    def test_empty_query_matches_all(self) -> None:
+        self.assertTrue(row_matches_modal_search(self.row, "  "))
+        self.assertFalse(row_matches_modal_search(self.row, "неттакого"))
 
 
 class GtinValidationTests(unittest.TestCase):

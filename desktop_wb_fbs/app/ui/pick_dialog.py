@@ -27,7 +27,7 @@ from PyQt5.QtWidgets import (
     QApplication,
 )
 
-from app.services.kiz_pick import PickVerifyService
+from app.services.kiz_pick import PickVerifyService, row_matches_modal_search
 from app.services import supply_session
 from app.services.print_docs import _fetch_picking_stickers
 from app.services.sticker_lookup import find_row_by_sticker, normalize_scan
@@ -406,21 +406,7 @@ class PickDialog(QDialog):
 
     @staticmethod
     def _row_matches_search(row: Dict[str, Any], query: str) -> bool:
-        q = str(query or "").strip().lower()
-        if not q:
-            return True
-        skus = row.get("skus") or []
-        hay = [
-            row.get("order_id"),
-            row.get("article"),
-            row.get("sticker_number"),
-            row.get("sticker_part_a"),
-            row.get("sticker_part_b"),
-            row.get("product_name"),
-            row.get("pick_barcode"),
-            *skus,
-        ]
-        return any(q in str(v or "").strip().lower() for v in hay)
+        return row_matches_modal_search(row, query)
 
     def _update_counter(self) -> None:
         filled = sum(1 for r in self.rows if self._row_is_verified(r))

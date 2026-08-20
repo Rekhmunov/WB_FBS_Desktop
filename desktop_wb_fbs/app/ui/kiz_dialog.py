@@ -29,7 +29,7 @@ from PyQt5.QtWidgets import (
 )
 
 from app.db import Database
-from app.services.kiz_pick import KizService, pending_wb_save_jobs
+from app.services.kiz_pick import KizService, pending_wb_save_jobs, row_matches_modal_search
 from app.services import supply_session
 from app.services.print_docs import _fetch_picking_stickers
 from app.services.sticker_lookup import find_row_by_sticker, normalize_scan
@@ -550,22 +550,7 @@ class KizDialog(QDialog):
 
     @staticmethod
     def _row_matches_search(row: Dict[str, Any], query: str) -> bool:
-        q = str(query or "").strip().lower()
-        if not q:
-            return True
-        skus = row.get("skus") or []
-        hay = [
-            row.get("order_id"),
-            row.get("article"),
-            row.get("sticker_number"),
-            row.get("sticker_part_a"),
-            row.get("sticker_part_b"),
-            row.get("product_name"),
-            row.get("brand"),
-            row.get("nm_id"),
-            *skus,
-        ]
-        return any(q in str(v or "").strip().lower() for v in hay)
+        return row_matches_modal_search(row, query)
 
     def _update_counter(self) -> None:
         filled = 0

@@ -28,6 +28,39 @@ def extract_gtin(cis: str) -> Optional[str]:
     return m.group(1) if m else None
 
 
+def row_matches_modal_search(row: Dict[str, Any], query: str) -> bool:
+    """KIZ / pick modal search — web ``_wbFbsKizRowMatchesSearch`` parity.
+
+    Matches order id, sticker parts/number/barcode, product name, article,
+    brand, nm_id, product SKUs/barcodes, and pick barcode when present.
+    """
+    q = str(query or "").strip().lower()
+    if not q:
+        return True
+    skus = row.get("skus")
+    if skus is None:
+        skus = row.get("barcodes")
+    if isinstance(skus, str):
+        skus = parse_json_list(skus)
+    elif not isinstance(skus, (list, tuple)):
+        skus = []
+    hay = [
+        row.get("order_id"),
+        row.get("article"),
+        row.get("product_name"),
+        row.get("title"),
+        row.get("name"),
+        row.get("brand"),
+        row.get("nm_id"),
+        row.get("sticker_number"),
+        row.get("sticker_part_a"),
+        row.get("sticker_part_b"),
+        row.get("sticker_barcode"),
+        row.get("pick_barcode"),
+        *list(skus),
+    ]
+    return any(q in str(v or "").strip().lower() for v in hay)
+
 def gtin_matches_skus(gtin: str, skus: List[Any]) -> bool:
     g = str(gtin or "").strip()
     if not g:

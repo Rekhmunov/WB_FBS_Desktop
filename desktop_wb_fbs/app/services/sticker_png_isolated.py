@@ -55,6 +55,7 @@ def _persist_chunk_worker(
             out[str(oid)] = {
                 "partA": part_a,
                 "partB": part_b,
+                "barcode": str(st.get("barcode") or "").strip(),
                 "file_b64": "",
                 "file_path": file_path,
             }
@@ -100,6 +101,7 @@ def _parse_result(result_path: Path) -> Dict[int, Dict[str, Any]]:
             out[oid] = {
                 "partA": str(meta.get("partA") or ""),
                 "partB": str(meta.get("partB") or ""),
+                "barcode": str(meta.get("barcode") or ""),
                 "file_b64": "",
                 "file_path": str(meta.get("file_path") or ""),
             }

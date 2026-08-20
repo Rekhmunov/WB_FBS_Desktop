@@ -120,9 +120,11 @@ class SupplySession:
             st = self.sticker_numbers.get(oid) or {}
             part_a = str(st.get("partA") or "").strip()
             part_b = str(st.get("partB") or "").strip()
+            barcode = str(st.get("barcode") or "").strip()
             r["sticker_part_a"] = part_a
             r["sticker_part_b"] = part_b
             r["sticker_number"] = "{}{}".format(part_a, part_b)
+            r["sticker_barcode"] = barcode
 
     def build_kiz_and_pick_rows(self, db: Database) -> None:
         from app.services.catalog import ProductService
@@ -179,6 +181,7 @@ class SupplySession:
                         ).strip(),
                         "brand": "",
                         "created_date": r.get("created_date") or "—",
+                        "sticker_barcode": str(r.get("sticker_barcode") or ""),
                         "sticker_part_a": part_a,
                         "sticker_part_b": part_b,
                         "sticker_number": r.get("sticker_number") or "",
@@ -226,6 +229,7 @@ class SupplySession:
                         "pick_verified": bool(int(r.get("pick_verified") or 0)),
                         "pick_barcode": str(r.get("pick_barcode") or ""),
                         "pick_verified_at": r.get("pick_verified_at"),
+                        "sticker_barcode": str(r.get("sticker_barcode") or ""),
                         "sticker_part_a": r.get("sticker_part_a") or "",
                         "sticker_part_b": r.get("sticker_part_b") or "",
                         "sticker_number": r.get("sticker_number") or "",
@@ -302,6 +306,7 @@ def preload_supply_core(
         oid: {
             "partA": str((st or {}).get("partA") or ""),
             "partB": str((st or {}).get("partB") or ""),
+            "barcode": str((st or {}).get("barcode") or ""),
             "file_b64": "",
         }
         for oid, st in stickers.items()

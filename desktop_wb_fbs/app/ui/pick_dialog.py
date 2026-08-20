@@ -30,6 +30,7 @@ from PyQt5.QtWidgets import (
 from app.services.kiz_pick import PickVerifyService
 from app.services import supply_session
 from app.services.print_docs import _fetch_picking_stickers
+from app.services.sticker_lookup import find_row_by_sticker, normalize_scan
 from app.services.trbx_stickers import StickersService
 from app.ui.dialog_utils import (
     apply_fullscreen_on_show,
@@ -37,6 +38,7 @@ from app.ui.dialog_utils import (
     fullscreen_parent,
     init_fullscreen_dialog,
     init_maximized_window,
+    install_live_ru_layout_guard,
 )
 from app.ui.dialogs_extra import show_png_list
 from app.ui.format_helpers import make_badge, make_photo_label
@@ -86,6 +88,7 @@ class PickSkuScanDialog(QDialog):
         self.sku_input.setObjectName("kizScanInput")
         self.sku_input.setPlaceholderText("Сканируйте ШК с того же изделия")
         self.sku_input.returnPressed.connect(self._accept_sku)
+        install_live_ru_layout_guard(self.sku_input, self)
         clear_btn = QToolButton()
         clear_btn.setObjectName("kizScanClear")
         clear_btn.setText("✕")
@@ -235,6 +238,7 @@ class PickDialog(QDialog):
         self.sticker_input.setObjectName("kizScanInput")
         self.sticker_input.setPlaceholderText("Сканируйте QR стикера заказа")
         self.sticker_input.returnPressed.connect(self.on_sticker)
+        install_live_ru_layout_guard(self.sticker_input, self)
         sticker_clear = QToolButton()
         sticker_clear.setObjectName("kizScanClear")
         sticker_clear.setText("✕")
@@ -276,12 +280,15 @@ class PickDialog(QDialog):
         root.addWidget(self.table, 1)
 
         self._set_filters_ready(False)
-        self.load_rows()
-        self.sticker_input.setFocus()
+        self._show_loading_row()
+        # Shell-first open (web parity): paint modal, then fill from session.
+        QTimer.singleShot(0, self.load_rows)
 
     def showEvent(self, event) -> None:
         super(PickDialog, self).showEvent(event)
         apply_fullscreen_on_show(self)
+        if self._rows_ready:
+            self.sticker_input.setFocus()
 
     def _set_filters_ready(self, ready: bool) -> None:
         self._rows_ready = bool(ready)
@@ -293,7 +300,10 @@ class PickDialog(QDialog):
         ):
             w.setEnabled(ready)
         self.search_input.setReadOnly(not ready)
-        self.sticker_input.setEnabled(ready)
+        self.sticker_input.setReadOnly(not ready)
+        self.sticker_input.setToolTip(
+            "" if ready else "Дождитесь загрузки строк"
+        )
 
     def _set_info(self, text: str = "", ok: bool = False) -> None:
         msg = str(text or "").strip()
@@ -439,14 +449,14 @@ class PickDialog(QDialog):
             st = stickers.get(oid) or {}
             part_a = str(st.get("partA") or r.get("sticker_part_a") or "").strip()
             part_b = str(st.get("partB") or r.get("sticker_part_b") or "").strip()
+            barcode = str(
+                st.get("barcode") or r.get("sticker_barcode") or ""
+            ).strip()
             r["sticker_part_a"] = part_a
             r["sticker_part_b"] = part_b
+            r["sticker_barcode"] = barcode
             full = _sticker_number(part_a, part_b)
             r["sticker_number"] = full or str(r.get("sticker_number") or "")
-            if full:
-                self._sticker_map[full] = r
-            if part_b:
-                self._sticker_map[part_b] = r
         self._render_table()
         if not self.rows:
             self._set_info("В поставке нет заказов для проверки ШК")
@@ -753,38 +763,33 @@ class PickDialog(QDialog):
         self._apply_filters()
 
     def _find_by_sticker(self, raw: str) -> Optional[Dict[str, Any]]:
-        scan = raw.replace(" ", "").strip()
-        if not scan:
+        found, ambiguous, matches = find_row_by_sticker(self.rows, raw)
+        if ambiguous:
+            ids = ", ".join(str(r.get("order_id") or "") for r in matches[:5])
+            more = "…" if len(matches) > 5 else ""
+            self._set_info(
+                "Код стикера совпадает у нескольких заказов ({}{}). "
+                "Отсканируйте QR стикера ещё раз.".format(ids, more)
+            )
             return None
-        found = self._sticker_map.get(scan)
-        if found:
-            return found
-        tail = scan[-4:] if len(scan) >= 4 else scan
-        matches = [
-            r
-            for r in self.rows
-            if str(r.get("sticker_number") or "").endswith(tail)
-            or str(r.get("sticker_part_b") or "") == tail
-        ]
-        if len(matches) == 1:
-            return matches[0]
-        return None
+        return found
 
     def on_sticker(self) -> None:
-        if not self._rows_ready:
+        if not self._rows_ready or self.sticker_input.isReadOnly():
             return
         if block_ru_layout_scan(self, self.sticker_input):
             return
-        raw = self.sticker_input.text().replace(" ", "").strip()
+        raw = normalize_scan(self.sticker_input.text())
         if not raw:
             return
         found = self._find_by_sticker(raw)
         if not found:
-            self._set_info(
-                "Заказ со стикером «{}» не найден среди товаров для проверки ШК.".format(
-                    raw
+            if not self.info_banner.isVisible():
+                self._set_info(
+                    "Заказ со стикером «{}» не найден среди товаров для проверки ШК.".format(
+                        raw
+                    )
                 )
-            )
             self.sticker_input.selectAll()
             return
         self._set_info("")

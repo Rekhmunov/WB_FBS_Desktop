@@ -445,6 +445,7 @@ def fetch_stickers_map(
                 continue
             part_a = str(st.get("partA") or "")
             part_b = str(st.get("partB") or "")
+            barcode = str(st.get("barcode") or "").strip()
             if keep_files:
                 b64 = st.pop("file", None)
                 b64_text = b64 if isinstance(b64, str) else ""
@@ -452,6 +453,7 @@ def fetch_stickers_map(
                 meta = {
                     "partA": part_a,
                     "partB": part_b,
+                    "barcode": barcode,
                     "file_b64": b64_text,
                     "file_path": "",
                 }
@@ -460,6 +462,7 @@ def fetch_stickers_map(
                 meta = {
                     "partA": part_a,
                     "partB": part_b,
+                    "barcode": barcode,
                     "file_b64": "",
                     "file_path": "",
                 }

@@ -2,10 +2,19 @@
 """Shared helpers for modal / workflow dialogs."""
 from __future__ import annotations
 
+import time
 from typing import Optional, Tuple
 
 from PyQt5.QtCore import Qt
-from PyQt5.QtWidgets import QApplication, QDialog, QLineEdit, QMessageBox, QWidget
+from PyQt5.QtWidgets import (
+    QDialog,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QPushButton,
+    QVBoxLayout,
+    QWidget,
+)
 
 from app.ui.format_helpers import (
     RU_LAYOUT_SCAN_MESSAGE,
@@ -110,6 +119,47 @@ def prepare_modal_dialog(
     return dialog
 
 
+class RuLayoutWarningDialog(QDialog):
+    """Web-like RU layout modal — avoids QMessageBox eating scanner Enter."""
+
+    def __init__(self, parent: Optional[QWidget] = None) -> None:
+        super(RuLayoutWarningDialog, self).__init__(parent)
+        self.setWindowTitle(RU_LAYOUT_SCAN_TITLE)
+        self.setModal(True)
+        self.setWindowFlags(self.windowFlags() & ~Qt.WindowContextHelpButtonHint)
+        self._opened_at = time.monotonic()
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(24, 20, 24, 20)
+        lay.setSpacing(14)
+        title = QLabel(RU_LAYOUT_SCAN_TITLE)
+        title.setObjectName("dialogTitle")
+        lay.addWidget(title)
+        body = QLabel(RU_LAYOUT_SCAN_MESSAGE)
+        body.setWordWrap(True)
+        body.setObjectName("hint")
+        lay.addWidget(body)
+        row = QHBoxLayout()
+        row.addStretch(1)
+        ok = QPushButton("Понятно")
+        ok.setDefault(True)
+        ok.clicked.connect(self._try_accept)
+        row.addWidget(ok)
+        lay.addLayout(row)
+        self.resize(420, 180)
+
+    def _try_accept(self) -> None:
+        # Swallow trailing scanner Enter for ~500ms (web parity).
+        if time.monotonic() - self._opened_at < 0.5:
+            return
+        self.accept()
+
+    def keyPressEvent(self, event) -> None:  # type: ignore[override]
+        if event.key() in (Qt.Key_Return, Qt.Key_Enter):
+            self._try_accept()
+            return
+        super(RuLayoutWarningDialog, self).keyPressEvent(event)
+
+
 def block_ru_layout_scan(
     parent: QWidget,
     field: Optional[QLineEdit] = None,
@@ -121,7 +171,26 @@ def block_ru_layout_scan(
     if not scan_has_ru_layout(raw):
         return False
     if field is not None:
+        field.blockSignals(True)
         field.clear()
+        field.blockSignals(False)
         field.setFocus()
-    QMessageBox.warning(parent, RU_LAYOUT_SCAN_TITLE, RU_LAYOUT_SCAN_MESSAGE)
+    dlg = RuLayoutWarningDialog(parent)
+    dlg.exec_()
+    if field is not None:
+        field.setFocus()
     return True
+
+
+def install_live_ru_layout_guard(
+    field: QLineEdit,
+    parent: QWidget,
+) -> None:
+    """Clear + warn as soon as Cyrillic/RU layout chars appear (web oninput)."""
+
+    def _on_text(text: str) -> None:
+        if not scan_has_ru_layout(text):
+            return
+        block_ru_layout_scan(parent, field, text=text)
+
+    field.textChanged.connect(_on_text)

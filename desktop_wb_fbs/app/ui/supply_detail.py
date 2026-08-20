@@ -1029,7 +1029,7 @@ class SupplyDetailDialog(QDialog):
 
         QApplication.setOverrideCursor(QCursor(Qt.WaitCursor))
         try:
-            path = print_picking_list(
+            print_picking_list(
                 self.db,
                 self.orders,
                 self.source_id,
@@ -1039,9 +1039,6 @@ class SupplyDetailDialog(QDialog):
                 preloaded_stickers=preloaded,
                 parent=self,
             )
-            self._last_status_note = "открыт {}".format(path.name)
-            self.meta.setText(self._last_status_note)
-            self.meta.show()
         except Exception as exc:
             QMessageBox.critical(self, "Лист подбора", str(exc))
         finally:

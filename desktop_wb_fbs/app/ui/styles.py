@@ -938,25 +938,39 @@ QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {
     width: 0;
 }
 QMenu {
-    background: #ffffff;
-    border: 1px solid #e8eef5;
+    background-color: #ffffff;
+    color: #0f172a;
+    border: 1px solid #e2e8f0;
     border-radius: 8px;
     padding: 4px;
     font-size: 14px;
 }
 QMenu::item {
+    background-color: transparent;
+    color: #0f172a;
     padding: 8px 16px;
     border-radius: 6px;
     min-height: 28px;
 }
 QMenu::item:selected {
-    background: #eff6ff;
+    background-color: #eff6ff;
     color: #0f172a;
+}
+QMenu::item:disabled {
+    color: #94a3b8;
 }
 QMenu::separator {
     height: 1px;
-    background: #e8eef5;
+    background: #e2e8f0;
     margin: 4px 8px;
+}
+QToolTip {
+    background-color: #ffffff;
+    color: #0f172a;
+    border: 1px solid #e2e8f0;
+    border-radius: 6px;
+    padding: 6px 10px;
+    font-size: 13px;
 }
 
 /* ========== КИЗ marking modal (web parity) ========== */
@@ -1007,6 +1021,28 @@ QToolButton#iconBtn:hover {
     background: #f8fafc;
     color: #0f172a;
     border-color: #cbd5e1;
+}
+QToolButton#kizRowMenu {
+    min-width: 32px;
+    max-width: 32px;
+    min-height: 32px;
+    max-height: 32px;
+    padding: 0;
+    color: #64748b;
+    border: 1px solid #e2e8f0;
+    background: #ffffff;
+    border-radius: 8px;
+    font-size: 16px;
+    font-weight: 600;
+}
+QToolButton#kizRowMenu:hover {
+    background: #f8fafc;
+    color: #0f172a;
+    border-color: #cbd5e1;
+}
+QToolButton#kizRowMenu::menu-indicator {
+    image: none;
+    width: 0;
 }
 QFrame#kizToolbar {
     background: #ffffff;

@@ -29,10 +29,10 @@ def extract_gtin(cis: str) -> Optional[str]:
 
 
 def row_matches_modal_search(row: Dict[str, Any], query: str) -> bool:
-    """KIZ / pick modal search — web ``_wbFbsKizRowMatchesSearch`` parity.
+    """KIZ / pick modal search — same fields as supply detail search.
 
     Matches order id, sticker parts/number/barcode, product name, article,
-    brand, nm_id, product SKUs/barcodes, and pick barcode when present.
+    brand, nm_id, product SKUs/barcodes, pick barcode, and cancel label.
     """
     q = str(query or "").strip().lower()
     if not q:

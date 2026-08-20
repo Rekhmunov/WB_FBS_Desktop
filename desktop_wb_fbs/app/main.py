@@ -4,6 +4,7 @@ from __future__ import annotations
 import sys
 
 from PyQt5.QtCore import Qt
+from PyQt5.QtGui import QColor, QPalette
 
 # QtWebEngine must be imported before QApplication on Windows, otherwise
 # QWebEngineView fails at runtime even when PyQtWebEngine is installed.
@@ -126,6 +127,21 @@ def run() -> int:
     app = QApplication(sys.argv)
     app.setApplicationName(APP_NAME)
     app.setStyle("Fusion")
+    # Keep menus/tooltips light even when the OS theme is dark (Fusion).
+    pal = QPalette()
+    pal.setColor(QPalette.Window, QColor("#ffffff"))
+    pal.setColor(QPalette.WindowText, QColor("#0f172a"))
+    pal.setColor(QPalette.Base, QColor("#ffffff"))
+    pal.setColor(QPalette.AlternateBase, QColor("#f8fafc"))
+    pal.setColor(QPalette.Text, QColor("#0f172a"))
+    pal.setColor(QPalette.Button, QColor("#ffffff"))
+    pal.setColor(QPalette.ButtonText, QColor("#0f172a"))
+    pal.setColor(QPalette.Highlight, QColor("#dbeafe"))
+    pal.setColor(QPalette.HighlightedText, QColor("#0f172a"))
+    pal.setColor(QPalette.ToolTipBase, QColor("#ffffff"))
+    pal.setColor(QPalette.ToolTipText, QColor("#0f172a"))
+    pal.setColor(QPalette.PlaceholderText, QColor("#94a3b8"))
+    app.setPalette(pal)
     app.setStyleSheet(APP_QSS)
     install_text_copy_support(app)
 

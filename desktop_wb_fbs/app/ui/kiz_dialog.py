@@ -838,17 +838,20 @@ class KizDialog(QDialog):
         wrap = QWidget()
         lay = QHBoxLayout(wrap)
         lay.setContentsMargins(4, 8, 8, 8)
+        lay.setAlignment(Qt.AlignTop | Qt.AlignHCenter)
         btn = QToolButton()
-        btn.setObjectName("iconBtn")
+        btn.setObjectName("kizRowMenu")
         btn.setText("⋮")
         btn.setToolTip("Действия")
         btn.setPopupMode(QToolButton.InstantPopup)
+        btn.setFixedSize(32, 32)
         menu = QMenu(btn)
+        menu.setObjectName("appMenu")
         menu.addAction(
             "Напечатать стикер", partial(self._print_sticker, oid)
         )
         btn.setMenu(menu)
-        lay.addWidget(btn)
+        lay.addWidget(btn, 0, Qt.AlignTop)
         return wrap
 
     def _on_code_edited(self, order_id: int) -> None:

@@ -951,11 +951,13 @@ class SupplyDetailDialog(QDialog):
 
     def _build_row_menu(self, order_id: int) -> QWidget:
         btn = QToolButton()
-        btn.setObjectName("iconBtn")
+        btn.setObjectName("kizRowMenu")
         btn.setText("⋮")
         btn.setToolTip("Действия")
         btn.setPopupMode(QToolButton.InstantPopup)
+        btn.setFixedSize(32, 32)
         menu = QMenu(btn)
+        menu.setObjectName("appMenu")
         menu.addAction(
             "Напечатать стикер", partial(self.print_one_order_sticker, order_id)
         )

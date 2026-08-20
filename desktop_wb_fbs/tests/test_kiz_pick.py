@@ -8,8 +8,11 @@ from app.services.kiz_pick import (
     PickVerifyService,
     extract_gtin,
     gtin_matches_skus,
+    kiz_from_meta_row,
+    kiz_status_from_decision,
     pending_wb_save_jobs,
     row_matches_modal_search,
+    summarize_kiz_check_status,
 )
 
 
@@ -157,6 +160,102 @@ class PickRowsSplitTests(unittest.TestCase):
             pick = PickVerifyService(db)
             rows = pick.rows(1, "WB-GI-1", "key")
         self.assertEqual([r["order_id"] for r in rows], [2])
+
+
+class KizStatusToneTests(unittest.TestCase):
+    def test_status_from_decision(self) -> None:
+        self.assertEqual(kiz_status_from_decision("filled", ["01…"]), "ok")
+        self.assertEqual(kiz_status_from_decision("sgtinIntroduced", ["01…"]), "ok")
+        self.assertEqual(kiz_status_from_decision("sgtinRetired", ["01…"]), "error")
+        self.assertEqual(kiz_status_from_decision("required", ["01…"]), "pending")
+        self.assertEqual(kiz_status_from_decision("required", []), "empty")
+
+    def test_meta_row_and_summarize(self) -> None:
+        parsed = kiz_from_meta_row(
+            {
+                "id": 1,
+                "metaDetails": [
+                    {"key": "sgtin", "value": ["010467…"], "decision": "filled"}
+                ],
+            }
+        )
+        self.assertTrue(parsed["kiz_required"])
+        self.assertEqual(parsed["kiz_status"], "ok")
+        self.assertEqual(summarize_kiz_check_status(["ok", "ok"]), "ok")
+        self.assertEqual(summarize_kiz_check_status(["ok", "error"]), "error")
+        self.assertEqual(summarize_kiz_check_status(["ok", "pending"]), "pending")
+        self.assertEqual(summarize_kiz_check_status(["empty"]), "none")
+        self.assertEqual(summarize_kiz_check_status([]), "none")
+
+    def test_check_supply_status_live_ok(self) -> None:
+        db = MagicMock()
+        conn = MagicMock()
+        conn.__enter__ = MagicMock(return_value=conn)
+        conn.__exit__ = MagicMock(return_value=False)
+        conn.execute.return_value.fetchall.return_value = []
+        db.connect.return_value = conn
+
+        client = MagicMock()
+        client.get_supply_order_ids.return_value = [11, 22]
+        client.get_statuses.return_value = [
+            {"id": 11, "supplierStatus": "confirm", "wbStatus": "waiting"},
+            {"id": 22, "supplierStatus": "confirm", "wbStatus": "waiting"},
+        ]
+        client.get_orders_meta.return_value = [
+            {
+                "id": 11,
+                "metaDetails": [
+                    {"key": "sgtin", "value": ["010467…"], "decision": "filled"}
+                ],
+            },
+            {"id": 22, "metaDetails": []},
+        ]
+        with patch("app.services.kiz_pick.WbFbsClient", return_value=client):
+            with patch(
+                "app.services.kiz_pick.Database.rows_to_dicts",
+                return_value=[],
+            ):
+                payload = KizService(db).check_supply_status(1, "WB-1", "key")
+        self.assertEqual(payload["status"], "ok")
+        self.assertEqual(payload["counts"]["ok"], 1)
+        by_id = {r["order_id"]: r for r in payload["orders"]}
+        self.assertEqual(by_id[11]["kiz_status"], "ok")
+        self.assertFalse(by_id[22]["kiz_required"])
+
+    def test_check_supply_status_error_and_cancelled_ignored(self) -> None:
+        db = MagicMock()
+        conn = MagicMock()
+        conn.__enter__ = MagicMock(return_value=conn)
+        conn.__exit__ = MagicMock(return_value=False)
+        conn.execute.return_value.fetchall.return_value = []
+        db.connect.return_value = conn
+
+        client = MagicMock()
+        client.get_supply_order_ids.return_value = [11, 33]
+        client.get_statuses.return_value = [
+            {"id": 11, "supplierStatus": "confirm", "wbStatus": "waiting"},
+            {"id": 33, "supplierStatus": "cancel", "wbStatus": "canceled"},
+        ]
+        client.get_orders_meta.return_value = [
+            {
+                "id": 11,
+                "metaDetails": [
+                    {"key": "sgtin", "value": ["010467…"], "decision": "sgtinRetired"}
+                ],
+            },
+        ]
+        with patch("app.services.kiz_pick.WbFbsClient", return_value=client):
+            with patch(
+                "app.services.kiz_pick.Database.rows_to_dicts",
+                return_value=[],
+            ):
+                payload = KizService(db).check_supply_status(1, "WB-1", "key")
+        self.assertEqual(payload["status"], "error")
+        # Cancelled order must not request meta / affect tone
+        client.get_orders_meta.assert_called_once_with([11])
+        by_id = {r["order_id"]: r for r in payload["orders"]}
+        self.assertEqual(by_id[33]["kiz_status"], "empty")
+        self.assertTrue(by_id[33]["cancelled"])
 
 
 if __name__ == "__main__":

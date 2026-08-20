@@ -879,3 +879,146 @@ class PickVerifyService:
                 ),
             )
             conn.commit()
+
+    def check_supply_status(
+        self, source_id: int, supply_id: str, api_key: str = ""
+    ) -> Dict[str, Any]:
+        """Local sticker + ШК completeness for «Товары без маркировки» refresh.
+
+        Green (``ok``) only when every non-cancelled pick order has a sticker
+        and a verified barcode matching SKUs. Any missing ШК → default tone.
+        """
+        del api_key  # local check; signature matches KIZ refresh call sites
+        from app.services import order_open_cache, supply_session
+
+        sid = str(supply_id or "").strip()
+        session = supply_session.get_session(source_id, sid)
+        rows = list(session.pick_rows) if session and session.pick_rows else []
+        if not rows and session and session.rows:
+            session.build_kiz_and_pick_rows(self.db)
+            rows = list(session.pick_rows or [])
+        if not rows:
+            with self.db.connect() as conn:
+                db_rows = conn.execute(
+                    """
+                    SELECT * FROM wb_fbs_orders
+                    WHERE source_id = ? AND supply_id = ?
+                    ORDER BY article COLLATE NOCASE, order_id
+                    """,
+                    (source_id, sid),
+                ).fetchall()
+            for r in Database.rows_to_dicts(db_rows):
+                local_codes = parse_json_list(r.get("kiz_codes_json"))
+                if any(kiz_code_clean(c) for c in local_codes):
+                    continue
+                rows.append(
+                    {
+                        "order_id": int(r["order_id"]),
+                        "skus": parse_json_list(r.get("skus_json")),
+                        "pick_verified": bool(int(r.get("pick_verified") or 0)),
+                        "pick_barcode": str(r.get("pick_barcode") or ""),
+                        "sticker_part_a": "",
+                        "sticker_part_b": "",
+                        "sticker_number": "",
+                        "supplier_status": r.get("supplier_status"),
+                        "wb_status": r.get("wb_status"),
+                    }
+                )
+
+        ids = [
+            int(r["order_id"])
+            for r in rows
+            if r.get("order_id") is not None
+        ]
+        cached = (
+            order_open_cache.load_many(self.db, source_id, ids) if ids else {}
+        )
+        stickers = (
+            order_open_cache.stickers_from_cache(cached, ids) if ids else {}
+        )
+
+        pick_by_id = {}  # type: Dict[int, Dict[str, Any]]
+        if ids:
+            placeholders = ",".join("?" for _ in ids)
+            with self.db.connect() as conn:
+                fresh = conn.execute(
+                    """
+                    SELECT order_id, pick_verified, pick_barcode, skus_json,
+                           supplier_status, wb_status
+                    FROM wb_fbs_orders
+                    WHERE source_id = ? AND order_id IN ({})
+                    """.format(
+                        placeholders
+                    ),
+                    (source_id, *ids),
+                ).fetchall()
+            for fr in Database.rows_to_dicts(fresh):
+                pick_by_id[int(fr["order_id"])] = fr
+
+        out_rows = []  # type: List[Dict[str, Any]]
+        checked = []  # type: List[str]
+        for r in rows:
+            oid = int(r.get("order_id") or 0)
+            if not oid:
+                continue
+            fresh = pick_by_id.get(oid) or {}
+            ss = fresh.get("supplier_status", r.get("supplier_status"))
+            ws = fresh.get("wb_status", r.get("wb_status"))
+            cancel_label = cancel_reason_label(supplier_status=ss, wb_status=ws)
+            cancelled = bool(cancel_label) or is_cancelled_status(
+                supplier_status=ss, wb_status=ws
+            )
+            st = stickers.get(oid) or {}
+            part_a = str(
+                st.get("partA") or r.get("sticker_part_a") or ""
+            ).strip()
+            part_b = str(
+                st.get("partB") or r.get("sticker_part_b") or ""
+            ).strip()
+            sticker_number = str(
+                r.get("sticker_number") or "{}{}".format(part_a, part_b)
+            ).strip()
+            sticker_ok = bool(part_a and part_b) or bool(sticker_number)
+            verified = bool(
+                int(fresh.get("pick_verified", r.get("pick_verified") or 0))
+            )
+            barcode = str(
+                fresh.get("pick_barcode", r.get("pick_barcode") or "")
+            ).strip()
+            skus = parse_json_list(fresh.get("skus_json"))
+            if not skus:
+                skus = list(r.get("skus") or [])
+            barcode_ok = False
+            if verified and barcode:
+                barcode_ok, _err = self.validate_barcode(barcode, skus)
+            complete = bool(sticker_ok and barcode_ok and not cancelled)
+            status = "ok" if complete else "empty"
+            if not cancelled:
+                checked.append(status)
+            out_rows.append(
+                {
+                    "order_id": oid,
+                    "sticker_ok": sticker_ok,
+                    "pick_verified": verified,
+                    "pick_barcode": barcode,
+                    "barcode_ok": barcode_ok,
+                    "status": status,
+                    "cancelled": cancelled,
+                    "cancel_reason_label": cancel_label,
+                }
+            )
+
+        tone = "ok" if checked and all(s == "ok" for s in checked) else "none"
+        return {
+            "ok": True,
+            "supply_id": sid,
+            "source_id": int(source_id),
+            "status": tone,
+            "counts": {
+                "checked": len(checked),
+                "ok": sum(1 for s in checked if s == "ok"),
+                "empty": sum(1 for s in checked if s != "ok"),
+                "cancelled": sum(1 for r in out_rows if r.get("cancelled")),
+            },
+            "orders": out_rows,
+        }

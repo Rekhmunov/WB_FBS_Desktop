@@ -312,5 +312,78 @@ class KizStatusToneTests(unittest.TestCase):
         self.assertTrue(by_id[33]["cancelled"])
 
 
+class PickCheckStatusTests(unittest.TestCase):
+    def test_all_complete_is_ok(self) -> None:
+        import tempfile
+        from pathlib import Path
+
+        from app.db import Database
+        from app.services import order_open_cache
+
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        db = Database(Path(tmp.name) / "t.db")
+        db.init_schema()
+        with db.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO supply_sources (id, name, api_key, created_at)
+                VALUES (1, 't', 'k', '2024-01-01')
+                """
+            )
+            conn.execute(
+                """
+                INSERT INTO wb_fbs_orders
+                (source_id, order_id, supply_id, article, skus_json, tab,
+                 pick_verified, pick_barcode, synced_at)
+                VALUES (1, 10, 'WB-1', 'A', ?, 'assembly', 1, '4604060004010',
+                        '2024-01-01')
+                """,
+                (json.dumps(["4604060004010"]),),
+            )
+            conn.commit()
+        order_open_cache.upsert_stickers(
+            db, 1, {10: {"partA": "AAAA", "partB": "1234", "barcode": "BC"}}
+        )
+        payload = PickVerifyService(db).check_supply_status(1, "WB-1")
+        self.assertEqual(payload["status"], "ok")
+        self.assertEqual(payload["counts"]["ok"], 1)
+
+    def test_missing_barcode_stays_default(self) -> None:
+        import tempfile
+        from pathlib import Path
+
+        from app.db import Database
+        from app.services import order_open_cache
+
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        db = Database(Path(tmp.name) / "t.db")
+        db.init_schema()
+        with db.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO supply_sources (id, name, api_key, created_at)
+                VALUES (1, 't', 'k', '2024-01-01')
+                """
+            )
+            conn.execute(
+                """
+                INSERT INTO wb_fbs_orders
+                (source_id, order_id, supply_id, article, skus_json, tab,
+                 pick_verified, pick_barcode, synced_at)
+                VALUES (1, 10, 'WB-1', 'A', ?, 'assembly', 0, '', '2024-01-01')
+                """,
+                (json.dumps(["4604060004010"]),),
+            )
+            conn.commit()
+        order_open_cache.upsert_stickers(
+            db, 1, {10: {"partA": "AAAA", "partB": "1234", "barcode": "BC"}}
+        )
+        payload = PickVerifyService(db).check_supply_status(1, "WB-1")
+        self.assertEqual(payload["status"], "none")
+        self.assertEqual(payload["counts"]["empty"], 1)
+
+
 if __name__ == "__main__":
     unittest.main()

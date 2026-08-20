@@ -696,14 +696,17 @@ QFrame#sdHeader QPushButton#portalBtn:hover {
     color: #581c87;
 }
 QWidget#splitPair,
-QWidget#kizSplitPair {
+QWidget#kizSplitPair,
+QWidget#pickSplitPair {
     min-height: 40px;
 }
 QWidget#splitPair QPushButton#secondary,
-QWidget#kizSplitPair QPushButton#secondary {
+QWidget#kizSplitPair QPushButton#secondary,
+QWidget#pickSplitPair QPushButton#secondary {
     border-top-right-radius: 0;
     border-bottom-right-radius: 0;
     min-height: 40px;
+    max-height: 40px;
     padding: 0 14px;
 }
 QToolButton#splitCaret {
@@ -718,7 +721,14 @@ QToolButton#splitCaret {
     min-width: 36px;
     max-width: 36px;
     min-height: 40px;
+    max-height: 40px;
     padding: 0;
+}
+QToolButton#splitCaret::menu-indicator {
+    image: none;
+    width: 0px;
+    height: 0px;
+    border: none;
 }
 QToolButton#splitCaret:hover {
     background: #ddf1ff;
@@ -732,7 +742,8 @@ QToolButton#splitCaret:pressed {
     border-left: none;
 }
 QWidget#splitPair QToolButton#secondary,
-QWidget#kizSplitPair QToolButton#secondary {
+QWidget#kizSplitPair QToolButton#secondary,
+QWidget#pickSplitPair QToolButton#secondary {
     border-left: none;
     border-top-left-radius: 0;
     border-bottom-left-radius: 0;
@@ -741,6 +752,7 @@ QWidget#kizSplitPair QToolButton#secondary {
     min-width: 40px;
     max-width: 40px;
     min-height: 40px;
+    max-height: 40px;
     padding: 0;
 }
 /* КИЗ refresh tone — web `.wb-fbs-kiz-split.is-ok` / `.is-error` */
@@ -776,6 +788,25 @@ QWidget#kizSplitPair[kizTone="error"] QToolButton#secondary:pressed:enabled {
 }
 QWidget#kizSplitPair[kizTone="ok"] QToolButton#secondary,
 QWidget#kizSplitPair[kizTone="error"] QToolButton#secondary {
+    border-left: 1px solid rgba(15, 23, 42, 0.12);
+}
+/* Pick (без маркировки) — green only when all stickers + ШК complete */
+QWidget#pickSplitPair[pickTone="ok"] QPushButton#secondary,
+QWidget#pickSplitPair[pickTone="ok"] QToolButton#secondary {
+    color: #166534;
+    border-color: #86efac;
+    background: #dcfce7;
+}
+QWidget#pickSplitPair[pickTone="ok"] QPushButton#secondary:hover:enabled,
+QWidget#pickSplitPair[pickTone="ok"] QToolButton#secondary:hover:enabled {
+    background: #bbf7d0;
+    border-color: #4ade80;
+}
+QWidget#pickSplitPair[pickTone="ok"] QPushButton#secondary:pressed:enabled,
+QWidget#pickSplitPair[pickTone="ok"] QToolButton#secondary:pressed:enabled {
+    background: #86efac;
+}
+QWidget#pickSplitPair[pickTone="ok"] QToolButton#secondary {
     border-left: 1px solid rgba(15, 23, 42, 0.12);
 }
 QTableWidget#sdTable {

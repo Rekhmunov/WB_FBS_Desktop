@@ -141,6 +141,36 @@ class _KizStatusWorker(QThread):
             self.failed.emit(str(exc))
 
 
+class _PickStatusWorker(QThread):
+    """Background local pick ШК / sticker completeness check."""
+
+    ready = pyqtSignal(object)
+    failed = pyqtSignal(str)
+
+    def __init__(
+        self,
+        pick: PickVerifyService,
+        source_id: int,
+        supply_id: str,
+        api_key: str,
+        parent: Optional[QWidget] = None,
+    ) -> None:
+        super(_PickStatusWorker, self).__init__(parent)
+        self.pick = pick
+        self.source_id = source_id
+        self.supply_id = supply_id
+        self.api_key = api_key
+
+    def run(self) -> None:
+        try:
+            payload = self.pick.check_supply_status(
+                self.source_id, self.supply_id, self.api_key
+            )
+            self.ready.emit(payload)
+        except Exception as exc:
+            self.failed.emit(str(exc))
+
+
 class _SupplyCoreLoadWorker(QThread):
     """Staged preload: orders → sticker numbers → KIZ/pick meta."""
 
@@ -274,6 +304,12 @@ class SupplyDetailDialog(QDialog):
         self.kiz_btn = None  # type: Optional[QPushButton]
         self.kiz_ref = None  # type: Optional[_SpinRefreshButton]
         self._kiz_split = None  # type: Optional[QWidget]
+        self.pick_btn = None  # type: Optional[QPushButton]
+        self.pick_ref = None  # type: Optional[_SpinRefreshButton]
+        self._pick_split = None  # type: Optional[QWidget]
+        self._pick_status_worker = None  # type: Optional[QThread]
+        self._pick_status_gen = 0
+        self._pick_status_refreshing = False
 
         self.setWindowTitle("Поставка {}".format(supply_id))
         init_fullscreen_dialog(
@@ -352,6 +388,9 @@ class SupplyDetailDialog(QDialog):
         pick_caret.setObjectName("splitCaret")
         pick_caret.setText("▾")
         pick_caret.setPopupMode(QToolButton.InstantPopup)
+        pick_caret.setToolButtonStyle(Qt.ToolButtonTextOnly)
+        pick_caret.setArrowType(Qt.NoArrow)
+        pick_caret.setFixedSize(36, 40)
         pick_menu = QMenu(pick_caret)
         pick_menu.addAction(
             "Расширенный лист подбора", partial(self.picking_list, "extended")
@@ -365,6 +404,9 @@ class SupplyDetailDialog(QDialog):
         st_caret.setObjectName("splitCaret")
         st_caret.setText("▾")
         st_caret.setPopupMode(QToolButton.InstantPopup)
+        st_caret.setToolButtonStyle(Qt.ToolButtonTextOnly)
+        st_caret.setArrowType(Qt.NoArrow)
+        st_caret.setFixedSize(36, 40)
         st_menu = QMenu(st_caret)
         st_menu.addAction("Печать по категориям", self.stickers_by_category)
         st_caret.setMenu(st_menu)
@@ -382,9 +424,20 @@ class SupplyDetailDialog(QDialog):
         self._kiz_split = kiz_split
         actions.addWidget(kiz_split)
 
+        pick_verify_btn = _sec(QPushButton("Товары без маркировки"))
+        pick_verify_btn.clicked.connect(self.open_pick)
+        pick_ref = _sec(_SpinRefreshButton())
+        pick_ref.setToolTip("Проверить заполнение стикеров и ШК")
+        pick_ref.clicked.connect(self.refresh_pick_status)
+        pick_split = self._split_pair(pick_verify_btn, pick_ref)
+        pick_split.setObjectName("pickSplitPair")
+        self.pick_btn = pick_verify_btn
+        self.pick_ref = pick_ref
+        self._pick_split = pick_split
+        actions.addWidget(pick_split)
+
         extra_action_btns = []  # type: List[QPushButton]
         for text, slot in (
-            ("Товары без маркировки", self.open_pick),
             ("Грузоместа", self.manage_trbx),
             ("Отмененные заказы", self.show_cancelled),
         ):
@@ -409,6 +462,8 @@ class SupplyDetailDialog(QDialog):
             st_caret,
             kiz_btn,
             kiz_ref,
+            pick_verify_btn,
+            pick_ref,
             *extra_action_btns,
             portal_btn,
             self.search_input,
@@ -494,6 +549,8 @@ class SupplyDetailDialog(QDialog):
             w.style().polish(w)
         if ready and self._kiz_status_refreshing:
             self._set_kiz_refresh_busy(True)
+        if ready and self._pick_status_refreshing:
+            self._set_pick_refresh_busy(True)
 
     def _require_actions_ready(self) -> bool:
         return bool(self._actions_ready)
@@ -675,6 +732,7 @@ class SupplyDetailDialog(QDialog):
 
     def accept(self) -> None:
         self._stop_kiz_status_worker()
+        self._stop_pick_status_worker()
         self._stop_load_worker()
         self._loading = False
         self._teardown_table()
@@ -682,6 +740,7 @@ class SupplyDetailDialog(QDialog):
 
     def reject(self) -> None:
         self._stop_kiz_status_worker()
+        self._stop_pick_status_worker()
         self._stop_load_worker()
         self._loading = False
         self._teardown_table()
@@ -689,6 +748,7 @@ class SupplyDetailDialog(QDialog):
 
     def closeEvent(self, event) -> None:
         self._stop_kiz_status_worker()
+        self._stop_pick_status_worker()
         self._stop_load_worker()
         self._loading = False
         self._teardown_table()
@@ -733,6 +793,14 @@ class SupplyDetailDialog(QDialog):
             self._disconnect_worker(worker, "ready", "failed")
         self._set_kiz_refresh_busy(False)
 
+    def _stop_pick_status_worker(self) -> None:
+        self._pick_status_gen += 1
+        worker = self._pick_status_worker
+        self._pick_status_worker = None
+        if worker is not None:
+            self._disconnect_worker(worker, "ready", "failed")
+        self._set_pick_refresh_busy(False)
+
     def _set_kiz_split_tone(self, tone: str) -> None:
         """Web ``_wbFbsKizSplitSetTone``: ok→green, error→red, else default."""
         wrap = self._kiz_split
@@ -745,6 +813,21 @@ class SupplyDetailDialog(QDialog):
             wrap.setProperty("kizTone", "error")
         else:
             wrap.setProperty("kizTone", "")
+        wrap.style().unpolish(wrap)
+        wrap.style().polish(wrap)
+        for child in wrap.findChildren(QWidget):
+            child.style().unpolish(child)
+            child.style().polish(child)
+            child.update()
+        wrap.update()
+
+    def _set_pick_split_tone(self, tone: str) -> None:
+        """Green only when every pick row has sticker + valid ШК."""
+        wrap = self._pick_split
+        if wrap is None:
+            return
+        t = str(tone or "").strip().lower()
+        wrap.setProperty("pickTone", "ok" if t == "ok" else "")
         wrap.style().unpolish(wrap)
         wrap.style().polish(wrap)
         for child in wrap.findChildren(QWidget):
@@ -770,6 +853,23 @@ class SupplyDetailDialog(QDialog):
             if btn is not None:
                 btn.setEnabled(True)
 
+    def _set_pick_refresh_busy(self, busy: bool) -> None:
+        self._pick_status_refreshing = bool(busy)
+        ref = self.pick_ref
+        btn = self.pick_btn
+        if isinstance(ref, _SpinRefreshButton):
+            ref.set_spinning(busy)
+        if busy:
+            if ref is not None:
+                ref.setEnabled(False)
+            if btn is not None:
+                btn.setEnabled(False)
+        elif self._actions_ready:
+            if ref is not None:
+                ref.setEnabled(True)
+            if btn is not None:
+                btn.setEnabled(True)
+
     def _teardown_table(self) -> None:
         self.table.blockSignals(True)
         self.select_all_cb.blockSignals(True)
@@ -781,20 +881,22 @@ class SupplyDetailDialog(QDialog):
 
     @staticmethod
     def _split_pair(main: QWidget, caret: QWidget) -> QWidget:
-        """Main + caret/refresh: stretch to same height (web picking-split)."""
+        """Main + caret/refresh: same height (web picking-split)."""
         wrap = QWidget()
         wrap.setObjectName("splitPair")
         lay = QHBoxLayout(wrap)
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(0)
-        # Stretch — avoid fixed max height that clips the 1px bottom border on hover.
         for w in (main, caret):
             w.setMinimumHeight(40)
-            w.setMaximumHeight(16777215)
+            w.setMaximumHeight(40)
             w.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
+        if str(caret.objectName() or "") == "splitCaret":
+            caret.setFixedSize(36, 40)
         lay.addWidget(main)
         lay.addWidget(caret)
         wrap.setMinimumHeight(40)
+        wrap.setMaximumHeight(40)
         return wrap
 
     def _place_header_select(self, *_args) -> None:
@@ -2011,6 +2113,58 @@ class SupplyDetailDialog(QDialog):
         self._last_status_note = "Статусы КИЗ обновлены"
         self.meta.setText(self._last_status_note)
         self.meta.show()
+
+    def refresh_pick_status(self) -> None:
+        if not self._require_actions_ready():
+            return
+        if self._pick_status_refreshing:
+            return
+        self._pick_status_gen += 1
+        gen = self._pick_status_gen
+        old = self._pick_status_worker
+        if old is not None:
+            self._disconnect_worker(old, "ready", "failed")
+            self._pick_status_worker = None
+        self._set_pick_refresh_busy(True)
+        worker = _PickStatusWorker(
+            self.pick, self.source_id, self.supply_id, self.api_key, self
+        )
+        self._pick_status_worker = worker
+
+        def _on_ready(payload: object, g: int = gen) -> None:
+            if g != self._pick_status_gen:
+                return
+            self._pick_status_worker = None
+            data = payload if isinstance(payload, dict) else {}
+            self._set_pick_split_tone(str(data.get("status") or ""))
+            self._set_pick_refresh_busy(False)
+            counts = data.get("counts") if isinstance(data.get("counts"), dict) else {}
+            ok_n = int(counts.get("ok") or 0)
+            total = int(counts.get("checked") or 0)
+            if str(data.get("status") or "") == "ok":
+                note = "ШК проверены: все {} заказ(ов) заполнены".format(total)
+            elif total:
+                note = "ШК: заполнено {} из {}".format(ok_n, total)
+            else:
+                note = "Нет заказов без маркировки для проверки"
+            self._last_status_note = note
+            self.meta.setText(note)
+            self.meta.show()
+
+        def _on_failed(message: str, g: int = gen) -> None:
+            if g != self._pick_status_gen:
+                return
+            self._pick_status_worker = None
+            self._set_pick_refresh_busy(False)
+            self._set_pick_split_tone("")
+            QMessageBox.critical(
+                self, "Проверка ШК", str(message or "Ошибка проверки ШК")
+            )
+
+        worker.ready.connect(_on_ready)
+        worker.failed.connect(_on_failed)
+        worker.finished.connect(lambda w=worker: self._disconnect_worker(w))
+        worker.start()
 
 
 class TrbxDialog(QDialog):

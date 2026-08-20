@@ -1592,14 +1592,20 @@ class TrbxDialog(QDialog):
         root.addWidget(self.info)
 
         self.table = QTableWidget(0, 2)
-        self.table.setAlternatingRowColors(True)
+        self.table.setObjectName("trbxTable")
+        self.table.setAlternatingRowColors(False)
         self.table.setHorizontalHeaderLabels(["Грузоместо", "Действия"])
-        self.table.setColumnWidth(1, 96)
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
-        self.table.horizontalHeader().setStretchLastSection(True)
+        self.table.setShowGrid(False)
+        self.table.setFocusPolicy(Qt.NoFocus)
+        hdr = self.table.horizontalHeader()
+        hdr.setStretchLastSection(False)
+        hdr.setSectionResizeMode(0, QHeaderView.Stretch)
+        hdr.setSectionResizeMode(1, QHeaderView.Fixed)
+        self.table.setColumnWidth(1, 120)
         self.table.verticalHeader().setVisible(False)
-        self.table.verticalHeader().setDefaultSectionSize(44)
+        self.table.verticalHeader().setDefaultSectionSize(52)
         root.addWidget(self.table, 1)
 
         action_bar = FlowLayout(h_spacing=8, v_spacing=8)
@@ -1618,9 +1624,6 @@ class TrbxDialog(QDialog):
         action_bar.addWidget(self.delete_all_btn)
         root.addLayout(action_bar)
 
-        close = QDialogButtonBox(QDialogButtonBox.Close)
-        close.rejected.connect(self.reject)
-        root.addWidget(close)
         self.reload()
         self._apply_done_state()
 
@@ -1685,31 +1688,48 @@ class TrbxDialog(QDialog):
         self.table.setRowCount(len(self.boxes))
         for i, b in enumerate(self.boxes):
             bid = self._box_id(b)
-            self.table.setItem(i, 0, QTableWidgetItem(bid))
+            self.table.setCellWidget(i, 0, self._build_box_id_cell(bid))
             self.table.setCellWidget(i, 1, self._build_box_actions(bid))
+            self.table.setRowHeight(i, 52)
         has_boxes = bool(self.boxes)
         self.print_all_btn.setEnabled(has_boxes)
         self.delete_all_btn.setEnabled(has_boxes and not self.supply_done)
 
+    @staticmethod
+    def _build_box_id_cell(box_id: str) -> QWidget:
+        wrap = QWidget()
+        lay = QHBoxLayout(wrap)
+        lay.setContentsMargins(16, 8, 12, 8)
+        lay.setSpacing(0)
+        lab = QLabel(box_id or "—")
+        lab.setObjectName("trbxBoxId")
+        lab.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        lab.setWordWrap(True)
+        lab.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        lay.addWidget(lab, 1)
+        return wrap
+
     def _build_box_actions(self, box_id: str) -> QWidget:
         wrap = QWidget()
         lay = QHBoxLayout(wrap)
-        lay.setContentsMargins(4, 2, 4, 2)
-        lay.setSpacing(6)
+        lay.setContentsMargins(8, 6, 16, 6)
+        lay.setSpacing(8)
+        lay.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
         print_btn = QToolButton()
-        print_btn.setObjectName("secondary")
+        print_btn.setObjectName("trbxBoxBtn")
         print_btn.setText("QR")
         print_btn.setToolTip("Печать QR грузоместа {}".format(box_id))
+        print_btn.setFixedSize(40, 40)
         print_btn.clicked.connect(partial(self.print_one_box, box_id))
         lay.addWidget(print_btn)
         if not self.supply_done:
             delete_btn = QToolButton()
-            delete_btn.setObjectName("dangerToolBtn")
+            delete_btn.setObjectName("trbxBoxDeleteBtn")
             delete_btn.setText("✕")
             delete_btn.setToolTip("Удалить грузоместо {}".format(box_id))
+            delete_btn.setFixedSize(40, 40)
             delete_btn.clicked.connect(partial(self.delete_one_box, box_id))
             lay.addWidget(delete_btn)
-        lay.addStretch(1)
         return wrap
 
     def create_boxes(self) -> None:

@@ -1289,4 +1289,56 @@ QLabel#kizPromptMeta {
     font-size: 14px;
     background: transparent;
 }
+
+/* ========== Грузоместа (TRBX) ========== */
+QTableWidget#trbxTable {
+    border: 1px solid #e2e8f0;
+    border-radius: 8px;
+    background: #ffffff;
+    gridline-color: transparent;
+}
+QTableWidget#trbxTable::item {
+    padding: 0;
+    border-bottom: 1px solid #f1f5f9;
+}
+QTableWidget#trbxTable QHeaderView::section {
+    background: #f8fafc;
+    color: #64748b;
+    font-size: 12px;
+    font-weight: 600;
+    border: none;
+    border-bottom: 1px solid #e2e8f0;
+    padding: 10px 16px;
+}
+QLabel#trbxBoxId {
+    font-size: 14px;
+    font-weight: 600;
+    color: #0f172a;
+    background: transparent;
+}
+QToolButton#trbxBoxBtn,
+QToolButton#trbxBoxDeleteBtn {
+    min-width: 40px;
+    max-width: 40px;
+    min-height: 40px;
+    max-height: 40px;
+    padding: 0;
+    color: #0f172a;
+    background: #f8fafc;
+    border: 1px solid #e2e8f0;
+    border-radius: 8px;
+    font-size: 13px;
+    font-weight: 600;
+}
+QToolButton#trbxBoxBtn:hover,
+QToolButton#trbxBoxDeleteBtn:hover {
+    background: #f1f5f9;
+}
+QToolButton#trbxBoxDeleteBtn {
+    color: #b91c1c;
+}
+QToolButton#trbxBoxDeleteBtn:hover {
+    background: #fef2f2;
+    border-color: #fecaca;
+}
 """

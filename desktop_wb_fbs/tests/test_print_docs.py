@@ -273,7 +273,27 @@ class OpenHtmlTests(unittest.TestCase):
     @patch("app.ui.html_print_dialog.show_html_print_preview")
     @patch("app.ui.html_print_dialog.webengine_status")
     @patch("PyQt5.QtWidgets.QMessageBox")
-    def test_webengine_load_fail_opens_browser(
+    def test_in_app_preview_skips_browser(
+        self, msg_box, webengine_status, show_preview, desktop
+    ):
+        from app.services import print_docs
+
+        webengine_status.return_value = (True, "")
+        # Dialog was shown — even if loadFinished was flaky, do not open browser.
+        show_preview.return_value = True
+        parent = MagicMock()
+
+        path = print_docs.open_html("<html></html>", "test_doc_ok", parent=parent)
+
+        self.assertTrue(path.exists())
+        desktop.openUrl.assert_not_called()
+        msg_box.information.assert_not_called()
+
+    @patch("app.services.print_docs.QDesktopServices")
+    @patch("app.ui.html_print_dialog.show_html_print_preview")
+    @patch("app.ui.html_print_dialog.webengine_status")
+    @patch("PyQt5.QtWidgets.QMessageBox")
+    def test_preview_dialog_unavailable_opens_browser(
         self, msg_box, webengine_status, show_preview, desktop
     ):
         from app.services import print_docs

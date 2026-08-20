@@ -58,7 +58,10 @@ class HtmlPrintPreviewDialog(QDialog):
         super(HtmlPrintPreviewDialog, self).__init__(parent)
         self._html_path = Path(html_path)
         self._loaded = False
+        self._presented = True
         self._load_started = False
+        self._load_attempts = 0
+        self._load_warned = False
         doc_title = str(title or self._html_path.stem)
         self.setWindowTitle(doc_title)
         # Full-screen preview at 100% zoom.
@@ -121,6 +124,10 @@ class HtmlPrintPreviewDialog(QDialog):
 
         self.showEvent = _show_event  # type: ignore[method-assign]
 
+    def _page_base_url(self) -> QUrl:
+        # Trailing slash matters for resolving relative sticker assets (42.png).
+        return QUrl.fromLocalFile(str(self._html_path.parent.resolve()) + "/")
+
     def _start_load(self) -> None:
         if self._load_started:
             return
@@ -129,21 +136,43 @@ class HtmlPrintPreviewDialog(QDialog):
         QTimer.singleShot(0, self._load_html)
 
     def _load_html(self) -> None:
+        self._load_attempts += 1
         try:
             self._view.setZoomFactor(1.0)
         except Exception:
             pass
-        self._view.load(QUrl.fromLocalFile(str(self._html_path.resolve())))
+        # Prefer setHtml + baseUrl so relative PNG stickers resolve next to the
+        # temp HTML file. Fall back to load(file://) if the file cannot be read.
+        try:
+            html = self._html_path.read_text(encoding="utf-8")
+        except Exception:
+            self._view.load(QUrl.fromLocalFile(str(self._html_path.resolve())))
+            return
+        self._view.setHtml(html, self._page_base_url())
 
     def _on_load_finished(self, ok: bool) -> None:
-        self._loaded = bool(ok)
-        try:
-            self._view.setZoomFactor(1.0)
-        except Exception:
-            pass
+        if ok:
+            self._loaded = True
+            try:
+                self._view.setZoomFactor(1.0)
+            except Exception:
+                pass
+            for btn in (self.btn_print, self.btn_pdf):
+                btn.setEnabled(True)
+            return
+
+        # Ignore a late failure after a successful paint (WebEngine can emit this).
+        if self._loaded:
+            return
+
+        if self._load_attempts < 2:
+            QTimer.singleShot(120, self._load_html)
+            return
+
         for btn in (self.btn_print, self.btn_pdf):
-            btn.setEnabled(ok)
-        if not ok:
+            btn.setEnabled(False)
+        if not self._load_warned:
+            self._load_warned = True
             QMessageBox.warning(
                 self,
                 "Предпросмотр",
@@ -224,7 +253,14 @@ def show_html_print_preview(
     title: str = "",
     parent: Optional[QWidget] = None,
 ) -> bool:
-    """Open modal preview. Returns True when the document loaded successfully."""
+    """
+    Open modal preview.
+
+    Returns True when the in-app dialog was presented. Callers must not fall
+    back to the system browser after a successful present — even if WebEngine
+    reported a flaky loadFinished(False), the user already saw (or closed) the
+    preview window.
+    """
     if not _HAS_WEBENGINE:
         return False
     app = QApplication.instance()
@@ -233,4 +269,4 @@ def show_html_print_preview(
             app.restoreOverrideCursor()
     dlg = HtmlPrintPreviewDialog(html_path, title=title, parent=parent)
     dlg.exec_()
-    return bool(getattr(dlg, "_loaded", False))
+    return bool(getattr(dlg, "_presented", False))

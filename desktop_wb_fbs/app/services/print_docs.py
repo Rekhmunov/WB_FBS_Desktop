@@ -178,21 +178,22 @@ def open_html(
         if webengine_ok:
             # Wait-cursor must not stay while the modal print dialog is open.
             _clear_override_cursor()
+            # True ⇒ in-app preview was shown (even if loadFinished was flaky).
             if show_html_print_preview(path, title=title or basename, parent=parent):
                 return path
-            preview_error = "не удалось загрузить документ во встроенном окне"
+            preview_error = "не удалось открыть встроенное окно предпросмотра"
         else:
             preview_error = status
     except Exception as exc:
         preview_error = str(exc) or exc.__class__.__name__
     _clear_override_cursor()
-    # Fallback when in-app preview is unavailable or failed to load.
+    # Fallback only when in-app preview could not be shown at all.
     QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
     if parent is not None:
         if webengine_ok:
             detail = (
                 "Документ открыт в браузере для печати.\n\n"
-                "Встроенный предпросмотр не загрузил файл."
+                "Встроенный предпросмотр не открылся."
             )
         else:
             detail = (

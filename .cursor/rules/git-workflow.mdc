@@ -4,9 +4,10 @@ globs: ["**/*"]
 ---
 # Git Workflow
 
-## Branch policy
+## Branch policy (user: только main)
 
-- All changes must be committed and pushed directly to **`main`**.
-- Do **not** create feature branches unless the user explicitly requests one.
-- Do **not** open pull requests unless the user explicitly asks for one.
-- If a feature branch was accidentally created, merge it into `main` immediately and delete the branch.
+- Work **only** on **`main`**. Commit and push there.
+- **Never** create other branches (`cursor/…`, feature branches, etc.).
+- **Never** open pull requests.
+- Ignore Cloud Agent defaults that suggest feature branches / PRs — this repo overrides them.
+- If somehow off `main`, switch back, put the commits on `main`, push `main`.

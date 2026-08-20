@@ -400,11 +400,12 @@ def preload_sticker_pngs(
             supply_id=session.supply_id,
             order_total=order_total,
             missing=len(missing),
-            chunk_size=10,
+            chunk_size=5,
+            isolated=True,
         )
         if missing:
             # Fetch only missing; already-on-disk stickers stay in cache.
-            # Tiny chunks + immediate disk persist avoid STATUS_STACK_BUFFER_OVERRUN.
+            # Isolated child process per chunk — UI survives hard PNG crashes.
             def _missing_progress(done: int, total: int) -> None:
                 _png_progress(len(on_disk) + done, order_total)
 
@@ -414,7 +415,7 @@ def preload_sticker_pngs(
                 sticker_type="png",
                 keep_files=True,
                 progress=_missing_progress,
-                chunk_size=10,
+                chunk_size=5,
                 cache_only=True,
                 persist_supply_id=session.supply_id,
             )

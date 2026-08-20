@@ -22,7 +22,7 @@ from app.db import Database
 from app.diag_log import write as diag_write
 from app.services.catalog import ProductService
 from app.services.orders import OrdersService
-from app.services.sticker_file_cache import persist_sticker_png, read_sticker_b64
+from app.services.sticker_file_cache import read_sticker_b64
 from app.wb import parse_json_list
 from app.wb.client import WbFbsClient
 from app.wb.content import WbContentClient
@@ -39,7 +39,9 @@ _card_meta_cache_lock = threading.Lock()
 _STICKERS_CACHE_TTL_SEC = 120.0
 _stickers_cache = {}  # type: Dict[tuple, tuple]
 _stickers_cache_lock = threading.Lock()
-_PNG_STICKER_CHUNK = 10
+# Small chunks: each PNG response is huge (base64 images). Preload uses
+# isolated child processes; keep chunks tiny to limit blast radius.
+_PNG_STICKER_CHUNK = 5
 
 
 def _api_key_fp(api_key: str) -> str:
@@ -378,7 +380,36 @@ def fetch_stickers_map(
         chunk_size=step,
         cache_only=cache_only,
         persist_disk=persist_disk,
+        isolated=persist_disk,
     )
+    # PNG + disk persist: never decode huge base64 JSON in the UI process.
+    if persist_disk:
+        from app.services.sticker_png_isolated import fetch_png_ids_isolated
+
+        isolated = fetch_png_ids_isolated(
+            api_key,
+            str(persist_supply_id),
+            ids,
+            chunk_size=step,
+            progress=progress,
+        )
+        if cache_key is not None and isolated:
+            _cache_merge_stickers(cache_key, isolated)
+        if not cache_only:
+            out.update(isolated)
+        diag_write(
+            "stickers.fetch.done",
+            sync=True,
+            supply_id=persist_supply_id or "",
+            order_total=total,
+            cache_only=cache_only,
+            isolated=True,
+            saved=len(isolated),
+        )
+        if cache_only:
+            return {}
+        return out
+
     for i in range(0, len(ids), step):
         if i:
             time.sleep(0.21)
@@ -418,26 +449,12 @@ def fetch_stickers_map(
                 b64 = st.pop("file", None)
                 b64_text = b64 if isinstance(b64, str) else ""
                 chunk_b64_bytes += len(b64_text)
-                if persist_disk and b64_text:
-                    file_path = persist_sticker_png(
-                        api_key, str(persist_supply_id), oid, b64_text
-                    )
-                    # Drop base64 ASAP — keep only path in cache.
-                    b64_text = ""
-                    b64 = None
-                    meta = {
-                        "partA": part_a,
-                        "partB": part_b,
-                        "file_b64": "",
-                        "file_path": file_path,
-                    }
-                else:
-                    meta = {
-                        "partA": part_a,
-                        "partB": part_b,
-                        "file_b64": b64_text,
-                        "file_path": "",
-                    }
+                meta = {
+                    "partA": part_a,
+                    "partB": part_b,
+                    "file_b64": b64_text,
+                    "file_path": "",
+                }
             else:
                 st.pop("file", None)
                 meta = {

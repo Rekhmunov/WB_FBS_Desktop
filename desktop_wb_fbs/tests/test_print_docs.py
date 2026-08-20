@@ -82,26 +82,26 @@ class FetchStickersCacheTests(unittest.TestCase):
         print_docs.fetch_stickers_map("secret-key", [1])
         deepcopy_mock.assert_not_called()
 
-    @patch("app.services.print_docs.WbFbsClient")
-    def test_cache_only_preload_does_not_duplicate_payload(self, client_cls):
+    @patch("app.services.sticker_png_isolated.fetch_png_ids_isolated")
+    def test_cache_only_preload_does_not_duplicate_payload(self, isolated_mock):
         from app.services import print_docs
 
-        client = client_cls.return_value
-        client.get_order_stickers.return_value = [
-            {"orderId": i, "partA": "A", "partB": str(i), "file": "ZmlsZQ=="}
+        isolated_mock.return_value = {
+            i: {
+                "partA": "A",
+                "partB": str(i),
+                "file_b64": "",
+                "file_path": "/tmp/{}.png".format(i),
+            }
             for i in range(1, 4)
-        ]
+        }
         print_docs._stickers_cache.clear()
-        with patch(
-            "app.services.print_docs.persist_sticker_png",
-            return_value="/tmp/1.png",
-        ):
-            print_docs.fetch_stickers_map(
-                "secret-key",
-                [1, 2, 3],
-                cache_only=True,
-                persist_supply_id="WB-GI-1",
-            )
+        print_docs.fetch_stickers_map(
+            "secret-key",
+            [1, 2, 3],
+            cache_only=True,
+            persist_supply_id="WB-GI-1",
+        )
         cached = print_docs.get_cached_stickers_map("secret-key", [1, 2, 3])
         self.assertEqual(len(cached or {}), 3)
         self.assertEqual(
@@ -110,6 +110,10 @@ class FetchStickersCacheTests(unittest.TestCase):
             ),
             3,
         )
+        isolated_mock.assert_called_once()
+        for meta in cached.values():
+            self.assertEqual(meta.get("file_b64"), "")
+            self.assertTrue(meta.get("file_path"))
 
     @patch("app.services.print_docs.WbFbsClient")
     def test_reports_chunk_progress(self, client_cls):

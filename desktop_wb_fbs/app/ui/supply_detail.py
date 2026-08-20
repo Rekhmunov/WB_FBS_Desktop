@@ -514,11 +514,20 @@ class SupplyDetailDialog(QDialog):
         )
         return cached if cached else None
 
-    def _sync_kiz_session(self, marking_rows: List[Dict[str, Any]]) -> None:
-        """Keep supply session / cache aligned after KIZ status refresh."""
+    def _sync_kiz_session(self, status_rows: List[Dict[str, Any]]) -> None:
+        """Merge live КИЗ status into session without wiping product fields.
+
+        ``check_supply_status`` returns status-only rows (no name/article/photo).
+        Replacing ``session.kiz_rows`` with those made Маркировка empty after refresh.
+        """
         session = supply_session.get_session(self.source_id, self.supply_id)
         if not session:
             return
+        status_by_oid = {
+            int(r["order_id"]): r
+            for r in status_rows
+            if isinstance(r, dict) and r.get("order_id") is not None
+        }
         by_ui_oid = {
             int(r["order_id"]): r
             for r in self._all_rows
@@ -532,19 +541,121 @@ class SupplyDetailDialog(QDialog):
             r["kiz_required"] = bool(src.get("kiz_required"))
             r["kiz_codes"] = list(src.get("kiz_codes") or [])
             r["kiz_status"] = src.get("kiz_status") or "empty"
+            if "kiz_decision" in src:
+                r["kiz_decision"] = src.get("kiz_decision") or ""
             if "kiz_wb_synced" in src:
                 r["kiz_wb_synced"] = src.get("kiz_wb_synced")
+            if src.get("cancel_reason_label"):
+                r["cancel_reason_label"] = src.get("cancel_reason_label")
+
+        prev_by_oid = {
+            int(r["order_id"]): dict(r)
+            for r in (session.kiz_rows or [])
+            if isinstance(r, dict) and r.get("order_id") is not None
+        }
+        detail_by_oid = {
+            int(r["order_id"]): r
+            for r in (session.rows or [])
+            if isinstance(r, dict) and r.get("order_id") is not None
+        }
+
+        def _fill_product(kr: Dict[str, Any], detail: Dict[str, Any]) -> None:
+            if not str(kr.get("article") or "").strip():
+                kr["article"] = str(detail.get("article") or "").strip()
+            if kr.get("nm_id") in (None, ""):
+                kr["nm_id"] = detail.get("nm_id")
+            if not str(kr.get("product_name") or "").strip():
+                kr["product_name"] = str(
+                    detail.get("product_name") or detail.get("name") or ""
+                ).strip()
+            if not str(kr.get("product_photo") or "").strip():
+                kr["product_photo"] = str(
+                    detail.get("product_photo")
+                    or detail.get("photo_path")
+                    or ""
+                ).strip()
+            if not str(kr.get("brand") or "").strip():
+                kr["brand"] = str(detail.get("brand") or "").strip()
+            if not kr.get("skus"):
+                skus = detail.get("skus")
+                if isinstance(skus, list):
+                    kr["skus"] = list(skus)
+                else:
+                    kr["skus"] = parse_json_list(detail.get("skus_json"))
+            if not str(kr.get("created_date") or "").strip():
+                kr["created_date"] = str(detail.get("created_date") or "—")
+            if not str(kr.get("created_ago") or "").strip():
+                kr["created_ago"] = str(detail.get("created_ago") or "")
+            if "skip_kiz_gtin_check" not in kr and "skip_kiz_gtin_check" in detail:
+                kr["skip_kiz_gtin_check"] = bool(detail.get("skip_kiz_gtin_check"))
+            if not str(kr.get("sticker_barcode") or "").strip():
+                kr["sticker_barcode"] = str(detail.get("sticker_barcode") or "")
+
         kiz_rows = []  # type: List[Dict[str, Any]]
-        for src in marking_rows:
-            kr = dict(src)
-            oid = int(kr["order_id"])
+        # Prefer required orders from live status; if caller passed a mixed list,
+        # keep only those that belong in Маркировка.
+        for oid, src in status_by_oid.items():
+            if not src.get("kiz_required"):
+                continue
+            detail = detail_by_oid.get(oid) or by_ui_oid.get(oid) or {}
+            kr = prev_by_oid.get(oid) or {}
+            kr = dict(kr)
+            _fill_product(kr, detail)
+            kr["order_id"] = oid
+            kr["kiz_required"] = True
+            kr["kiz_codes"] = list(src.get("kiz_codes") or kr.get("kiz_codes") or [""])
+            kr["kiz_status"] = str(src.get("kiz_status") or kr.get("kiz_status") or "empty")
+            kr["kiz_decision"] = str(src.get("kiz_decision") or "")
+            if "kiz_wb_synced" in src:
+                kr["kiz_wb_synced"] = bool(src.get("kiz_wb_synced"))
+            elif kr.get("kiz_status") == "ok":
+                kr["kiz_wb_synced"] = True
             st = session.sticker_numbers.get(oid) or {}
-            part_a = str(st.get("partA") or kr.get("sticker_part_a") or "").strip()
-            part_b = str(st.get("partB") or kr.get("sticker_part_b") or "").strip()
+            part_a = str(
+                st.get("partA") or kr.get("sticker_part_a") or detail.get("sticker_part_a") or ""
+            ).strip()
+            part_b = str(
+                st.get("partB") or kr.get("sticker_part_b") or detail.get("sticker_part_b") or ""
+            ).strip()
             kr["sticker_part_a"] = part_a
             kr["sticker_part_b"] = part_b
-            kr["sticker_number"] = "{}{}".format(part_a, part_b)
+            kr["sticker_number"] = (
+                "{}{}".format(part_a, part_b)
+                if (part_a or part_b)
+                else str(kr.get("sticker_number") or detail.get("sticker_number") or "")
+            )
+            if src.get("cancelled") or src.get("cancel_reason_label"):
+                kr["cancel_reason_label"] = str(
+                    src.get("cancel_reason_label")
+                    or kr.get("cancel_reason_label")
+                    or "Отменен"
+                ).strip() or "Отменен"
+            elif detail.get("cancel_reason_label"):
+                kr["cancel_reason_label"] = detail.get("cancel_reason_label")
+            if detail.get("supplier_status") is not None:
+                kr.setdefault("supplier_status", detail.get("supplier_status"))
+            if detail.get("wb_status") is not None:
+                kr.setdefault("wb_status", detail.get("wb_status"))
             kiz_rows.append(kr)
+
+        # If live status had no required rows but we still got a payload, keep
+        # previous kiz_rows and only patch statuses when oids match.
+        if not kiz_rows and prev_by_oid and status_by_oid:
+            for oid, kr0 in prev_by_oid.items():
+                kr = dict(kr0)
+                src = status_by_oid.get(oid)
+                if src:
+                    kr["kiz_codes"] = list(
+                        src.get("kiz_codes") or kr.get("kiz_codes") or [""]
+                    )
+                    kr["kiz_status"] = str(
+                        src.get("kiz_status") or kr.get("kiz_status") or "empty"
+                    )
+                    kr["kiz_decision"] = str(src.get("kiz_decision") or "")
+                    if "kiz_wb_synced" in src:
+                        kr["kiz_wb_synced"] = bool(src.get("kiz_wb_synced"))
+                kiz_rows.append(kr)
+
         session.kiz_rows = kiz_rows
         supply_session.put_session(session)
         supply_detail_cache.put(
@@ -1732,7 +1843,9 @@ class SupplyDetailDialog(QDialog):
         marking_rows = [
             r for r in orders if isinstance(r, dict) and r.get("kiz_required")
         ]
-        self._sync_kiz_session(marking_rows if marking_rows else list(by_oid.values()))
+        # Always pass status rows (required + others) so sync can patch existing
+        # kiz_rows; never replace product-bearing rows with status-only dicts.
+        self._sync_kiz_session(list(by_oid.values()) if by_oid else marking_rows)
         self._render_table()
         # Tone after render — same order as web (render must not wipe color).
         self._set_kiz_split_tone(str(payload.get("status") or ""))

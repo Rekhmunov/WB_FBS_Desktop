@@ -114,6 +114,9 @@ def make_badge(text: str, kind: str = "") -> QLabel:
     elif kind == "pvz":
         lab.setProperty("kind", "pvz")
     lab.setStyleSheet(_badge_qss(kind))
+    # Keep pill width to text (avoid full-column red/gray bars in VBox layouts).
+    lab.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Fixed)
+    lab.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
     return lab
 
 

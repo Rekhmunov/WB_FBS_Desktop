@@ -108,6 +108,24 @@ CREATE TABLE IF NOT EXISTS wb_fbs_supplies (
 
 CREATE INDEX IF NOT EXISTS idx_supplies_src
     ON wb_fbs_supplies(source_id, done, created_at_wb DESC);
+
+-- Persists sticker numbers + order meta across app restarts so supply open
+-- can skip WB API when Sync/reload has not invalidated the cache.
+CREATE TABLE IF NOT EXISTS wb_fbs_order_open_cache (
+    source_id INTEGER NOT NULL,
+    order_id INTEGER NOT NULL,
+    sticker_part_a TEXT NOT NULL DEFAULT '',
+    sticker_part_b TEXT NOT NULL DEFAULT '',
+    sticker_barcode TEXT NOT NULL DEFAULT '',
+    stickers_ready INTEGER NOT NULL DEFAULT 0,
+    meta_json TEXT NOT NULL DEFAULT '{}',
+    meta_ready INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (source_id, order_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_order_open_cache_src
+    ON wb_fbs_order_open_cache(source_id);
 """
 
 

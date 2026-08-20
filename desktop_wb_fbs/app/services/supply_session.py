@@ -49,6 +49,11 @@ def invalidate(source_id: int, supply_id: str) -> None:
         _sessions.pop(_key(source_id, supply_id), None)
 
 
+def clear_all_sessions() -> None:
+    with _lock:
+        _sessions.clear()
+
+
 def _has_sgtin(meta: Dict[str, Any]) -> bool:
     if "sgtin" in meta:
         return True
@@ -271,10 +276,18 @@ def preload_supply_core(
     api_key: str,
     supply_pickup_allowed: bool = False,
     progress: Optional[ProgressCb] = None,
+    *,
+    force_network: bool = False,
 ) -> SupplySession:
-    """Load orders + sticker numbers + meta. Safe to call off UI thread."""
+    """Load orders + sticker numbers + meta. Safe to call off UI thread.
+
+    Sticker numbers and order meta are persisted in SQLite
+    (``wb_fbs_order_open_cache``). On a normal open, WB is called only for
+    missing cache rows. Pass ``force_network=True`` after Sync/reload.
+    """
     from app.ui.format_helpers import ago_label, format_date_short
     from app.services.print_docs import _fetch_picking_stickers
+    from app.services import order_open_cache
 
     def _prog(step: int, detail: str = "") -> None:
         if progress:
@@ -300,17 +313,50 @@ def preload_supply_core(
     ids = [int(r["order_id"]) for r in rows if r.get("order_id") is not None]
     order_total = len(ids)
 
+    cached = {}  # type: Dict[int, Dict[str, Any]]
+    if ids and not force_network:
+        cached = order_open_cache.load_many(db, source_id, ids)
+
+    stickers = {}  # type: Dict[int, Dict[str, Any]]
+    if force_network:
+        missing_sticker_ids = list(ids)
+    else:
+        stickers = order_open_cache.stickers_from_cache(cached, ids)
+        missing_sticker_ids = order_open_cache.missing_sticker_ids(cached, ids)
+
     def _sticker_progress(done: int, total: int) -> None:
         _prog(2, _progress_detail(done, order_total or total))
 
-    stickers = {}  # type: Dict[int, Dict[str, Any]]
-    if ids and api_key:
+    if not missing_sticker_ids:
+        _prog(2, "из локального кэша" if ids else "")
+    elif ids and api_key:
+        fetch_ok = False
         try:
-            stickers = _fetch_picking_stickers(
-                api_key, ids, progress=_sticker_progress
+            fetched = _fetch_picking_stickers(
+                api_key, missing_sticker_ids, progress=_sticker_progress
             )
+            fetch_ok = True
         except Exception:
-            stickers = {}
+            fetched = {}
+        stickers.update(fetched or {})
+        if fetch_ok:
+            store = {}  # type: Dict[int, Dict[str, Any]]
+            for oid in missing_sticker_ids:
+                st = stickers.get(oid) or {
+                    "partA": "",
+                    "partB": "",
+                    "barcode": "",
+                    "file_b64": "",
+                }
+                stickers[oid] = st
+                store[oid] = st
+            try:
+                order_open_cache.upsert_stickers(db, source_id, store)
+            except Exception:
+                pass
+    else:
+        _prog(2, _progress_detail(0, order_total))
+
     session.sticker_numbers = {
         oid: {
             "partA": str((st or {}).get("partA") or ""),
@@ -322,12 +368,35 @@ def preload_supply_core(
     }
     session.apply_sticker_numbers_to_rows()
 
-    _prog(3, _progress_detail(order_total, order_total, fallback="метаданные"))
-    if ids and api_key:
-        try:
-            session.meta_by_id = fetch_orders_meta(api_key, ids)
-        except Exception:
-            session.meta_by_id = {}
+    if force_network:
+        missing_meta_ids = list(ids)
+        meta_by_id = {}  # type: Dict[int, Dict[str, Any]]
+    else:
+        meta_by_id = order_open_cache.meta_from_cache(cached, ids)
+        missing_meta_ids = order_open_cache.missing_meta_ids(cached, ids)
+
+    if not missing_meta_ids:
+        _prog(3, "из локального кэша" if ids else "")
+    else:
+        _prog(3, _progress_detail(order_total, order_total, fallback="метаданные"))
+        fetched_meta = {}  # type: Dict[int, Dict[str, Any]]
+        meta_ok = False
+        if missing_meta_ids and api_key:
+            try:
+                fetched_meta = fetch_orders_meta(api_key, missing_meta_ids)
+                meta_ok = True
+            except Exception:
+                fetched_meta = {}
+        meta_by_id.update(fetched_meta or {})
+        if meta_ok:
+            try:
+                order_open_cache.upsert_meta(
+                    db, source_id, meta_by_id, order_ids=missing_meta_ids
+                )
+            except Exception:
+                pass
+
+    session.meta_by_id = meta_by_id
     session.build_kiz_and_pick_rows(db)
     session.core_ready = True
     # Like web portal: PNG stickers are fetched on print, not on supply open.

@@ -335,11 +335,6 @@ class SupplyDetailDialog(QDialog):
         self.header.setObjectName("sdTitle")
         self.header.setWordWrap(True)
         title_row.addWidget(self.header, 1)
-        close_x = QPushButton("✕")
-        close_x.setObjectName("iconBtn")
-        close_x.setToolTip("Закрыть")
-        close_x.clicked.connect(self.accept)
-        title_row.addWidget(close_x, 0, Qt.AlignTop)
         hv.addLayout(title_row)
 
         self.warehouse = QLabel("📍 —")

@@ -121,6 +121,160 @@ def pending_wb_save_jobs(
     return jobs
 
 
+def _int_or_zero(value: object) -> int:
+    try:
+        return int(str(value).strip())
+    except (TypeError, ValueError):
+        return 0
+
+
+def _kiz_codes_from_value(value: object) -> List[str]:
+    if value is None:
+        return []
+    if isinstance(value, dict):
+        return _kiz_codes_from_value(value.get("value"))
+    if isinstance(value, list):
+        return [kiz_code_clean(x) for x in value if kiz_code_clean(x)]
+    text = kiz_code_clean(value)
+    return [text] if text else []
+
+
+def _kiz_decision_raw(item: Dict[str, Any]) -> str:
+    """Read WB validation flag from metaDetails (field names vary slightly)."""
+    for key in ("decision", "status", "validationStatus", "state"):
+        val = item.get(key)
+        if val is None:
+            continue
+        text = str(val).strip()
+        if text:
+            return text
+    return ""
+
+
+def kiz_status_from_decision(decision: str, codes: List[str]) -> str:
+    """UI status: empty | pending | ok | error — web ``_kiz_status_from_decision``."""
+    dec = str(decision or "").strip().lower().replace("-", "_")
+    if not dec and not codes:
+        return "empty"
+    error_exact = {
+        "invalid",
+        "sgtininvalid",
+        "sgtin_invalid",
+        "sgtininvalidformat",
+        "sgtin_invalid_format",
+        "sgtinnotfound",
+        "sgtin_not_found",
+        "notfound",
+        "sgtinretired",
+        "sgtin_retired",
+        "sgtinwithdrawn",
+        "sgtin_withdrawn",
+        "sgtinwrittenoff",
+        "sgtin_written_off",
+        "sgtinemitted",
+        "sgtin_emitted",
+        "sgtinapplied",
+        "sgtin_applied",
+        "sgtindisaggregated",
+        "sgtin_disaggregated",
+        "error",
+        "failed",
+        "fail",
+        "rejected",
+        "reject",
+        "ошибка",
+    }
+    if (
+        dec in error_exact
+        or "invalid" in dec
+        or "notfound" in dec
+        or "not_found" in dec
+        or "retired" in dec
+        or "withdrawn" in dec
+        or "writtenoff" in dec
+        or "written_off" in dec
+        or "disaggregat" in dec
+        or ("error" in dec and "sgtin" in dec)
+        or "fail" in dec
+    ):
+        return "error"
+    if dec in {
+        "filled",
+        "sgtinintroduced",
+        "sgtin_introduced",
+        "introduced",
+        "ok",
+        "valid",
+        "success",
+        "passed",
+        "approved",
+    } or "introduced" in dec:
+        return "ok"
+    if dec in {"optional", "required"} and not codes:
+        return "empty"
+    if dec in {"pending", "deadlineexceeded", "deadline_exceeded"}:
+        return "pending" if codes else "empty"
+    if codes:
+        if dec.startswith("sgtin"):
+            return "error"
+        return "pending"
+    return "empty"
+
+
+def kiz_from_meta_row(row: Dict[str, Any]) -> Dict[str, Any]:
+    """Parse POST /orders/meta row for sgtin slot + verification decision."""
+    meta = row.get("meta") if isinstance(row.get("meta"), dict) else {}
+    details = row.get("metaDetails") if isinstance(row.get("metaDetails"), list) else []
+    required = False
+    codes = []  # type: List[str]
+    decision = ""
+    for item in details:
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("key") or "").strip().lower() != "sgtin":
+            continue
+        required = True
+        codes = _kiz_codes_from_value(item.get("value"))
+        decision = _kiz_decision_raw(item)
+        break
+    if not required and "sgtin" in meta:
+        required = True
+        codes = _kiz_codes_from_value(meta.get("sgtin"))
+    status = kiz_status_from_decision(decision, codes) if required else "empty"
+    return {
+        "kiz_required": required,
+        "kiz_bound": bool(codes),
+        "kiz_codes": codes,
+        "kiz_decision": decision,
+        "kiz_status": status,
+    }
+
+
+def summarize_kiz_check_status(statuses: List[str]) -> str:
+    """Aggregate tone for supply-detail «Маркировка» refresh (web parity).
+
+    Returns:
+      ``ok`` — every filled code approved → green;
+      ``error`` — any filled code failed → red;
+      ``pending`` — mix / still checking without errors → default;
+      ``none`` — no filled КИЗ to check → default.
+    """
+    cleaned = [
+        str(s or "").strip().lower()
+        for s in (statuses or [])
+        if str(s or "").strip()
+    ]
+    cleaned = [s for s in cleaned if s != "empty"]
+    if not cleaned:
+        return "none"
+    if any(s == "error" for s in cleaned):
+        return "error"
+    if all(s == "ok" for s in cleaned):
+        return "ok"
+    return "pending"
+    return jobs
+
+
 def _format_created(iso: object) -> str:
     raw = str(iso or "").strip()
     if not raw:
@@ -151,6 +305,213 @@ class KizService:
     def __init__(self, db: Database) -> None:
         self.db = db
         self.products = ProductService(db)
+
+    def check_supply_status(
+        self, source_id: int, supply_id: str, api_key: str
+    ) -> Dict[str, Any]:
+        """Live meta check for КИЗ next to «Маркировка» — web ``check_supply_kiz_status``.
+
+        Tone uses only filled codes on non-cancelled orders. Meta failures raise
+        (do not paint a false green/default from local fallbacks).
+        """
+        sid = str(supply_id or "").strip()
+        if not sid:
+            raise ValueError("Укажите supply_id")
+        if not api_key:
+            raise ValueError("Нет API-ключа источника")
+
+        client = WbFbsClient(api_key)
+        order_ids = []  # type: List[int]
+        try:
+            for item in client.get_supply_order_ids(sid) or []:
+                oid = _int_or_zero(item)
+                if oid > 0:
+                    order_ids.append(oid)
+        except Exception:
+            order_ids = []
+
+        local_by_id = {}  # type: Dict[int, Dict[str, Any]]
+        with self.db.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM wb_fbs_orders
+                WHERE source_id = ? AND supply_id = ?
+                ORDER BY article COLLATE NOCASE, order_id
+                """,
+                (source_id, sid),
+            ).fetchall()
+        for r in Database.rows_to_dicts(rows):
+            oid = _int_or_zero(r.get("order_id"))
+            if oid:
+                local_by_id[oid] = r
+
+        if not order_ids:
+            order_ids = list(local_by_id.keys())
+
+        seen = set()  # type: set
+        unique_ids = []  # type: List[int]
+        for oid in order_ids:
+            if oid in seen:
+                continue
+            seen.add(oid)
+            unique_ids.append(oid)
+        order_ids = unique_ids
+
+        cancelled_ids = set()  # type: set
+        cancel_labels = {}  # type: Dict[int, str]
+        for oid, r in local_by_id.items():
+            label = cancel_reason_label(
+                supplier_status=r.get("supplier_status"),
+                wb_status=r.get("wb_status"),
+            )
+            if label or is_cancelled_status(
+                supplier_status=r.get("supplier_status"),
+                wb_status=r.get("wb_status"),
+            ):
+                cancelled_ids.add(oid)
+                cancel_labels[oid] = label or "Отменен"
+
+        persist_cancel = {}  # type: Dict[int, Tuple[str, str]]
+        if order_ids:
+            try:
+                live_statuses = client.get_statuses(order_ids)
+            except Exception:
+                live_statuses = []
+            for st in live_statuses:
+                if not isinstance(st, dict):
+                    continue
+                oid = _int_or_zero(st.get("id") or st.get("orderId"))
+                if oid <= 0:
+                    continue
+                ss = str(st.get("supplierStatus") or "").strip()
+                ws = str(st.get("wbStatus") or "").strip()
+                label = cancel_reason_label(supplier_status=ss, wb_status=ws)
+                if label or is_cancelled_status(supplier_status=ss, wb_status=ws):
+                    cancelled_ids.add(oid)
+                    cancel_labels[oid] = label or cancel_labels.get(oid) or "Отменен"
+                    if ss or ws:
+                        persist_cancel[oid] = (ss, ws)
+        if persist_cancel:
+            now = utc_now()
+            with self.db.connect() as conn:
+                for oid, (ss, ws) in persist_cancel.items():
+                    tab = compute_tab(
+                        supplier_status=ss, wb_status=ws, is_archive=False
+                    )
+                    conn.execute(
+                        """
+                        UPDATE wb_fbs_orders
+                        SET supplier_status = ?, wb_status = ?, tab = ?,
+                            updated_at = ?
+                        WHERE source_id = ? AND order_id = ?
+                        """,
+                        (ss, ws, tab, now, source_id, oid),
+                    )
+                conn.commit()
+
+        kiz_map = {
+            oid: {
+                "kiz_required": False,
+                "kiz_bound": False,
+                "kiz_codes": [],
+                "kiz_decision": "",
+                "kiz_status": "empty",
+            }
+            for oid in order_ids
+        }  # type: Dict[int, Dict[str, Any]]
+        active_ids = [oid for oid in order_ids if oid not in cancelled_ids]
+        if active_ids:
+            try:
+                meta_rows = client.get_orders_meta(active_ids)
+            except Exception as exc:
+                raise RuntimeError(
+                    "Не удалось проверить КИЗ на Wildberries: {}".format(exc)
+                ) from exc
+            if not isinstance(meta_rows, list):
+                raise RuntimeError("Некорректный ответ Wildberries при проверке КИЗ")
+            seen_meta = set()  # type: set
+            for row in meta_rows:
+                if not isinstance(row, dict):
+                    continue
+                oid = _int_or_zero(row.get("id") or row.get("orderId"))
+                if oid <= 0 or oid not in kiz_map or oid in cancelled_ids:
+                    continue
+                kiz_map[oid] = kiz_from_meta_row(row)
+                seen_meta.add(oid)
+            if not seen_meta:
+                raise RuntimeError("Wildberries не вернул статусы КИЗ")
+            missing = [oid for oid in active_ids if oid not in seen_meta]
+            if missing:
+                raise RuntimeError(
+                    "Wildberries не вернул статусы КИЗ для {} заказ(ов)".format(
+                        len(missing)
+                    )
+                )
+
+        out_rows = []  # type: List[Dict[str, Any]]
+        checked_statuses = []  # type: List[str]
+        for oid in order_ids:
+            kiz = kiz_map.get(oid) or {}
+            is_cancelled = oid in cancelled_ids
+            meta_codes = [
+                kiz_code_clean(x)
+                for x in (kiz.get("kiz_codes") or [])
+                if kiz_code_clean(x)
+            ]
+            local = local_by_id.get(oid) or {}
+            local_codes = [
+                kiz_code_clean(x)
+                for x in parse_json_list(local.get("kiz_codes_json"))
+                if kiz_code_clean(x)
+            ]
+            codes = meta_codes or local_codes
+            has_filled = bool(codes)
+            status = str(kiz.get("kiz_status") or "empty")
+            if is_cancelled:
+                status = "empty"
+                kiz_required = False
+            else:
+                kiz_required = bool(kiz.get("kiz_required"))
+                if not has_filled:
+                    status = "empty"
+            out_rows.append(
+                {
+                    "order_id": oid,
+                    "kiz_required": kiz_required,
+                    "kiz_bound": has_filled,
+                    "kiz_codes": codes,
+                    "kiz_decision": str(kiz.get("kiz_decision") or ""),
+                    "kiz_status": status,
+                    "cancelled": is_cancelled,
+                    "cancel_reason_label": cancel_labels.get(oid, ""),
+                    "kiz_wb_synced": status == "ok",
+                    "kiz_error": status == "error",
+                }
+            )
+            if has_filled and not is_cancelled:
+                checked_statuses.append(status)
+
+        tone = summarize_kiz_check_status(checked_statuses)
+        counts = {
+            "checked": len(checked_statuses),
+            "required": sum(1 for r in out_rows if r.get("kiz_required")),
+            "ok": sum(1 for s in checked_statuses if s == "ok"),
+            "error": sum(1 for s in checked_statuses if s == "error"),
+            "pending": sum(1 for s in checked_statuses if s == "pending"),
+            "empty": sum(1 for r in out_rows if not r.get("kiz_bound")),
+            "cancelled": len(cancelled_ids),
+            "cancelled_with_kiz": sum(
+                1 for r in out_rows if r.get("cancelled") and r.get("kiz_bound")
+            ),
+        }
+        return {
+            "ok": True,
+            "supply_id": sid,
+            "source_id": int(source_id),
+            "status": tone,
+            "counts": counts,
+            "orders": out_rows,
+        }
 
     def marking_rows(self, source_id: int, supply_id: str, api_key: str) -> List[Dict[str, Any]]:
         """Orders in supply that require КИЗ (sgtin key present in WB meta)."""

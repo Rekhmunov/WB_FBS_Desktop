@@ -5,8 +5,8 @@ import json
 from functools import partial
 from typing import Any, Dict, List, Optional, Tuple
 
-from PyQt5.QtCore import Qt, QThread, pyqtSignal
-from PyQt5.QtGui import QCursor, QDesktopServices
+from PyQt5.QtCore import QRect, Qt, QThread, QTimer, QUrl, pyqtSignal
+from PyQt5.QtGui import QCursor, QDesktopServices, QPainter
 from PyQt5.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -23,13 +23,14 @@ from PyQt5.QtWidgets import (
     QPushButton,
     QSizePolicy,
     QSpinBox,
+    QStyle,
+    QStyleOptionToolButton,
     QTableWidget,
     QTableWidgetItem,
     QToolButton,
     QVBoxLayout,
     QWidget,
 )
-from PyQt5.QtCore import QUrl
 
 from app.db import Database
 from app.services.kiz_pick import KizService, PickVerifyService
@@ -64,6 +65,78 @@ _LOAD_STEPS = (
     "Номера стикеров",
     "КИЗ и проверка ШК",
 )
+
+
+class _SpinRefreshButton(QToolButton):
+    """Refresh glyph that rotates while a live КИЗ check is in flight (web spin)."""
+
+    def __init__(self, parent: Optional[QWidget] = None) -> None:
+        super(_SpinRefreshButton, self).__init__(parent)
+        self._angle = 0
+        self._spinning = False
+        self._timer = QTimer(self)
+        self._timer.timeout.connect(self._on_tick)
+        self.setText("↻")
+
+    def set_spinning(self, on: bool) -> None:
+        self._spinning = bool(on)
+        if self._spinning:
+            if not self._timer.isActive():
+                self._timer.start(50)
+        else:
+            self._timer.stop()
+            self._angle = 0
+            self.update()
+
+    def _on_tick(self) -> None:
+        self._angle = (self._angle + 30) % 360
+        self.update()
+
+    def paintEvent(self, event) -> None:  # noqa: N802
+        if not self._spinning:
+            super(_SpinRefreshButton, self).paintEvent(event)
+            return
+        opt = QStyleOptionToolButton()
+        self.initStyleOption(opt)
+        opt.text = ""
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing, True)
+        self.style().drawComplexControl(QStyle.CC_ToolButton, opt, painter, self)
+        painter.translate(self.rect().center())
+        painter.rotate(self._angle)
+        painter.setPen(self.palette().buttonText().color())
+        painter.drawText(QRect(-12, -12, 24, 24), Qt.AlignCenter, "↻")
+        painter.end()
+
+
+class _KizStatusWorker(QThread):
+    """Background live КИЗ status check (POST /orders/meta)."""
+
+    ready = pyqtSignal(object)
+    failed = pyqtSignal(str)
+
+    def __init__(
+        self,
+        kiz: KizService,
+        source_id: int,
+        supply_id: str,
+        api_key: str,
+        parent: Optional[QWidget] = None,
+    ) -> None:
+        super(_KizStatusWorker, self).__init__(parent)
+        self.kiz = kiz
+        self.source_id = source_id
+        self.supply_id = supply_id
+        self.api_key = api_key
+
+    def run(self) -> None:
+        try:
+            payload = self.kiz.check_supply_status(
+                self.source_id, self.supply_id, self.api_key
+            )
+            self.ready.emit(payload)
+        except Exception as exc:
+            self.failed.emit(str(exc))
 
 
 class _SupplyCoreLoadWorker(QThread):
@@ -184,6 +257,9 @@ class SupplyDetailDialog(QDialog):
         self._supply_pickup_allowed = False
         self._last_status_note = ""
         self._load_worker = None  # type: Optional[_SupplyCoreLoadWorker]
+        self._kiz_status_worker = None  # type: Optional[_KizStatusWorker]
+        self._kiz_status_gen = 0
+        self._kiz_status_refreshing = False
         self._alive_workers = []  # type: List[QThread]
         self._load_gen = 0
         self._loading = False
@@ -193,6 +269,9 @@ class SupplyDetailDialog(QDialog):
         self._action_widgets = []  # type: List[QWidget]
         self._saved_tooltips = {}  # type: Dict[QWidget, str]
         self.supply_mutated = False
+        self.kiz_btn = None  # type: Optional[QPushButton]
+        self.kiz_ref = None  # type: Optional[_SpinRefreshButton]
+        self._kiz_split = None  # type: Optional[QWidget]
 
         self.setWindowTitle("Поставка {}".format(supply_id))
         init_fullscreen_dialog(
@@ -289,11 +368,15 @@ class SupplyDetailDialog(QDialog):
 
         kiz_btn = _sec(QPushButton("Маркировка"))
         kiz_btn.clicked.connect(self.open_kiz)
-        kiz_ref = _sec(QToolButton())
-        kiz_ref.setText("↻")
+        kiz_ref = _sec(_SpinRefreshButton())
         kiz_ref.setToolTip("Проверить статусы КИЗ на ВБ")
         kiz_ref.clicked.connect(self.refresh_kiz_status)
-        actions.addWidget(self._split_pair(kiz_btn, kiz_ref))
+        kiz_split = self._split_pair(kiz_btn, kiz_ref)
+        kiz_split.setObjectName("kizSplitPair")
+        self.kiz_btn = kiz_btn
+        self.kiz_ref = kiz_ref
+        self._kiz_split = kiz_split
+        actions.addWidget(kiz_split)
 
         extra_action_btns = []  # type: List[QPushButton]
         for text, slot in (
@@ -400,6 +483,8 @@ class SupplyDetailDialog(QDialog):
                     w.setEnabled(True)
             w.style().unpolish(w)
             w.style().polish(w)
+        if ready and self._kiz_status_refreshing:
+            self._set_kiz_refresh_busy(True)
 
     def _require_actions_ready(self) -> bool:
         return bool(self._actions_ready)
@@ -469,16 +554,19 @@ class SupplyDetailDialog(QDialog):
         )
 
     def accept(self) -> None:
+        self._stop_kiz_status_worker()
         self._stop_load_worker()
         self._teardown_table()
         super(SupplyDetailDialog, self).accept()
 
     def reject(self) -> None:
+        self._stop_kiz_status_worker()
         self._stop_load_worker()
         self._teardown_table()
         super(SupplyDetailDialog, self).reject()
 
     def closeEvent(self, event) -> None:
+        self._stop_kiz_status_worker()
         self._stop_load_worker()
         self._teardown_table()
         super(SupplyDetailDialog, self).closeEvent(event)
@@ -512,6 +600,51 @@ class SupplyDetailDialog(QDialog):
         if core is not None:
             self._disconnect_worker(core, "progress", "core_ready", "failed")
         self._loading = False
+
+    def _stop_kiz_status_worker(self) -> None:
+        self._kiz_status_gen += 1
+        worker = self._kiz_status_worker
+        self._kiz_status_worker = None
+        if worker is not None:
+            self._disconnect_worker(worker, "ready", "failed")
+        self._set_kiz_refresh_busy(False)
+
+    def _set_kiz_split_tone(self, tone: str) -> None:
+        """Web ``_wbFbsKizSplitSetTone``: ok→green, error→red, else default."""
+        wrap = self._kiz_split
+        if wrap is None:
+            return
+        t = str(tone or "").strip().lower()
+        if t == "ok":
+            wrap.setProperty("kizTone", "ok")
+        elif t == "error":
+            wrap.setProperty("kizTone", "error")
+        else:
+            wrap.setProperty("kizTone", "")
+        wrap.style().unpolish(wrap)
+        wrap.style().polish(wrap)
+        for child in wrap.findChildren(QWidget):
+            child.style().unpolish(child)
+            child.style().polish(child)
+            child.update()
+        wrap.update()
+
+    def _set_kiz_refresh_busy(self, busy: bool) -> None:
+        self._kiz_status_refreshing = bool(busy)
+        ref = self.kiz_ref
+        btn = self.kiz_btn
+        if isinstance(ref, _SpinRefreshButton):
+            ref.set_spinning(busy)
+        if busy:
+            if ref is not None:
+                ref.setEnabled(False)
+            if btn is not None:
+                btn.setEnabled(False)
+        elif self._actions_ready:
+            if ref is not None:
+                ref.setEnabled(True)
+            if btn is not None:
+                btn.setEnabled(True)
 
     def _teardown_table(self) -> None:
         self.table.blockSignals(True)
@@ -1483,35 +1616,84 @@ class SupplyDetailDialog(QDialog):
     def refresh_kiz_status(self) -> None:
         if not self._require_actions_ready():
             return
-        QApplication.setOverrideCursor(QCursor(Qt.WaitCursor))
-        try:
-            rows = self.kiz.marking_rows(self.source_id, self.supply_id, self.api_key)
-            by_oid = {int(r["order_id"]): r for r in rows if r.get("order_id") is not None}
-            for r in self._all_rows:
-                oid = int(r.get("order_id") or 0)
-                src = by_oid.get(oid)
-                if not src:
+        if self._kiz_status_refreshing:
+            return
+        self._kiz_status_gen += 1
+        gen = self._kiz_status_gen
+        old = self._kiz_status_worker
+        if old is not None:
+            self._disconnect_worker(old, "ready", "failed")
+            self._kiz_status_worker = None
+        self._set_kiz_refresh_busy(True)
+        worker = _KizStatusWorker(
+            self.kiz, self.source_id, self.supply_id, self.api_key, self
+        )
+        self._kiz_status_worker = worker
+
+        def _on_ready(payload: object, g: int = gen) -> None:
+            if g != self._kiz_status_gen:
+                return
+            self._kiz_status_worker = None
+            self._apply_kiz_status_payload(payload if isinstance(payload, dict) else {})
+            self._set_kiz_refresh_busy(False)
+
+        def _on_failed(message: str, g: int = gen) -> None:
+            if g != self._kiz_status_gen:
+                return
+            self._kiz_status_worker = None
+            self._set_kiz_refresh_busy(False)
+            QMessageBox.critical(self, "КИЗ", str(message or "Ошибка проверки КИЗ"))
+
+        worker.ready.connect(_on_ready)
+        worker.failed.connect(_on_failed)
+        worker.finished.connect(lambda w=worker: self._disconnect_worker(w))
+        worker.start()
+
+    def _apply_kiz_status_payload(self, payload: Dict[str, Any]) -> None:
+        """Merge live check into table rows + tone (web refresh merge)."""
+        orders = payload.get("orders") if isinstance(payload, dict) else None
+        if not isinstance(orders, list):
+            orders = []
+        by_oid = {
+            int(r["order_id"]): r
+            for r in orders
+            if isinstance(r, dict) and r.get("order_id") is not None
+        }
+        live_set = set(by_oid.keys())
+        for r in self._all_rows:
+            oid = int(r.get("order_id") or 0)
+            src = by_oid.get(oid)
+            if not src:
+                if live_set:
                     r["kiz_required"] = False
-                    continue
-                r["kiz_required"] = True
-                r["kiz_codes"] = list(src.get("kiz_codes") or [])
-                if src.get("kiz_error"):
-                    r["kiz_status"] = "error"
-                elif any(str(c).strip() for c in (src.get("kiz_codes") or [])):
-                    r["kiz_status"] = (
-                        "ok" if src.get("kiz_wb_synced") else "pending"
-                    )
-                else:
+                    r["kiz_bound"] = False
+                    r["kiz_codes"] = []
+                    r["kiz_decision"] = ""
                     r["kiz_status"] = "empty"
-            self._sync_kiz_session(rows)
-            self._render_table()
-            self._last_status_note = "Статусы КИЗ обновлены"
-            self.meta.setText(self._last_status_note)
-            self.meta.show()
-        except Exception as exc:
-            QMessageBox.critical(self, "КИЗ", str(exc))
-        finally:
-            QApplication.restoreOverrideCursor()
+                continue
+            r["kiz_required"] = bool(src.get("kiz_required"))
+            r["kiz_bound"] = bool(src.get("kiz_bound"))
+            r["kiz_codes"] = list(src.get("kiz_codes") or [])
+            r["kiz_decision"] = str(src.get("kiz_decision") or "")
+            r["kiz_status"] = str(src.get("kiz_status") or "empty")
+            if "kiz_wb_synced" in src:
+                r["kiz_wb_synced"] = bool(src.get("kiz_wb_synced"))
+            if src.get("cancelled") or src.get("cancel_reason_label"):
+                r["cancel_reason_label"] = str(
+                    src.get("cancel_reason_label")
+                    or r.get("cancel_reason_label")
+                    or "Отменен"
+                ).strip() or "Отменен"
+        marking_rows = [
+            r for r in orders if isinstance(r, dict) and r.get("kiz_required")
+        ]
+        self._sync_kiz_session(marking_rows if marking_rows else list(by_oid.values()))
+        self._render_table()
+        # Tone after render — same order as web (render must not wipe color).
+        self._set_kiz_split_tone(str(payload.get("status") or ""))
+        self._last_status_note = "Статусы КИЗ обновлены"
+        self.meta.setText(self._last_status_note)
+        self.meta.show()
 
 
 class TrbxDialog(QDialog):

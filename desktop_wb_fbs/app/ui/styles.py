@@ -639,11 +639,13 @@ QFrame#sdHeader QPushButton#secondary {
     max-height: 40px;
     padding: 0 14px;
 }
-QWidget#splitPair {
+QWidget#splitPair,
+QWidget#kizSplitPair {
     min-height: 40px;
     max-height: 40px;
 }
-QWidget#splitPair QPushButton#secondary {
+QWidget#splitPair QPushButton#secondary,
+QWidget#kizSplitPair QPushButton#secondary {
     border-top-right-radius: 0;
     border-bottom-right-radius: 0;
     min-height: 40px;
@@ -665,7 +667,8 @@ QToolButton#splitCaret {
     max-height: 40px;
     padding: 0;
 }
-QWidget#splitPair QToolButton#secondary {
+QWidget#splitPair QToolButton#secondary,
+QWidget#kizSplitPair QToolButton#secondary {
     border-left: none;
     border-top-left-radius: 0;
     border-bottom-left-radius: 0;
@@ -676,6 +679,41 @@ QWidget#splitPair QToolButton#secondary {
     min-height: 40px;
     max-height: 40px;
     padding: 0;
+}
+/* КИЗ refresh tone — web `.wb-fbs-kiz-split.is-ok` / `.is-error` */
+QWidget#kizSplitPair[kizTone="ok"] QPushButton#secondary,
+QWidget#kizSplitPair[kizTone="ok"] QToolButton#secondary {
+    color: #166534;
+    border-color: #86efac;
+    background: #dcfce7;
+}
+QWidget#kizSplitPair[kizTone="ok"] QPushButton#secondary:hover:enabled,
+QWidget#kizSplitPair[kizTone="ok"] QToolButton#secondary:hover:enabled {
+    background: #bbf7d0;
+    border-color: #4ade80;
+}
+QWidget#kizSplitPair[kizTone="ok"] QPushButton#secondary:pressed:enabled,
+QWidget#kizSplitPair[kizTone="ok"] QToolButton#secondary:pressed:enabled {
+    background: #86efac;
+}
+QWidget#kizSplitPair[kizTone="error"] QPushButton#secondary,
+QWidget#kizSplitPair[kizTone="error"] QToolButton#secondary {
+    color: #991b1b;
+    border-color: #fca5a5;
+    background: #fee2e2;
+}
+QWidget#kizSplitPair[kizTone="error"] QPushButton#secondary:hover:enabled,
+QWidget#kizSplitPair[kizTone="error"] QToolButton#secondary:hover:enabled {
+    background: #fecaca;
+    border-color: #f87171;
+}
+QWidget#kizSplitPair[kizTone="error"] QPushButton#secondary:pressed:enabled,
+QWidget#kizSplitPair[kizTone="error"] QToolButton#secondary:pressed:enabled {
+    background: #fca5a5;
+}
+QWidget#kizSplitPair[kizTone="ok"] QToolButton#secondary,
+QWidget#kizSplitPair[kizTone="error"] QToolButton#secondary {
+    border-left: 1px solid rgba(15, 23, 42, 0.12);
 }
 QTableWidget#sdTable {
     border: none;

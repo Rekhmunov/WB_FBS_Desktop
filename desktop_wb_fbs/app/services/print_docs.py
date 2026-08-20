@@ -302,29 +302,6 @@ def build_groups(
     return list(grouped.values())
 
 
-def _photo_data_uri(path: str, max_bytes: int = _PICKING_PHOTO_MAX_BYTES) -> str:
-    p = Path(path)
-    if not p.is_file():
-        return ""
-    try:
-        if p.stat().st_size > max_bytes:
-            return ""
-        raw = p.read_bytes()
-    except Exception:
-        return ""
-    suffix = p.suffix.lower()
-    mime = {
-        ".png": "image/png",
-        ".jpg": "image/jpeg",
-        ".jpeg": "image/jpeg",
-        ".webp": "image/webp",
-        ".gif": "image/gif",
-    }.get(suffix, "image/jpeg")
-    import base64
-
-    return "data:{};base64,{}".format(mime, base64.b64encode(raw).decode("ascii"))
-
-
 def sticker_groups_for_category_print(
     db: Database,
     orders_svc: OrdersService,
@@ -727,7 +704,6 @@ def render_picking_list_html(
   }}
   .sku-title {{ font-weight: 700; }}
   .sku-meta, .sku-article, .sku-barcode, .sku-color, .sku-qty {{ color: #475569; }}
-  .sku-photo img {{ max-width: 72px; max-height: 72px; object-fit: contain; margin-bottom: 6px; }}
   .order-row.dup .sticker {{ color: #b91c1c; font-weight: 700; }}
   .check {{ width: 70px; text-align: center; }}
   @media print {{ .no-print {{ display: none; }} }}

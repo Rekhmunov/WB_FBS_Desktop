@@ -44,6 +44,7 @@ from app.ui.dialog_utils import (
     fullscreen_parent,
     init_fullscreen_dialog,
     init_maximized_window,
+    make_modal_search_box,
     prepare_modal_dialog,
     style_app_menu,
 )
@@ -452,36 +453,10 @@ class SupplyDetailDialog(QDialog):
         actions.addWidget(portal_btn)
         actions_row.addWidget(actions_wrap, 1)
 
-        search_box = QFrame()
-        search_box.setObjectName("sdSearchBox")
-        search_box.setFixedHeight(40)
-        search_box.setMinimumWidth(200)
-        search_box.setMaximumWidth(280)
-        search_lay = QHBoxLayout(search_box)
-        search_lay.setContentsMargins(12, 0, 4, 0)
-        search_lay.setSpacing(0)
-        self.search_input = QLineEdit()
-        self.search_input.setObjectName("sdSearch")
-        self.search_input.setPlaceholderText("🔍 Поиск…")
-        self.search_input.setClearButtonEnabled(False)
-        self.search_input.setFrame(False)
-        self.search_input.setToolTip("Поиск по заказу, стикеру, названию товара и ШК")
-        search_clear = QToolButton()
-        search_clear.setObjectName("sdSearchClear")
-        search_clear.setText("✕")
-        search_clear.setCursor(Qt.PointingHandCursor)
-        search_clear.setFixedSize(28, 28)
-        search_clear.setToolTip("Очистить")
-        search_clear.hide()
-        search_clear.clicked.connect(self.search_input.clear)
-
-        def _on_search_text(text: str) -> None:
-            search_clear.setVisible(bool(str(text or "").strip()))
-            self._update_search_visibility()
-
-        self.search_input.textChanged.connect(_on_search_text)
-        search_lay.addWidget(self.search_input, 1)
-        search_lay.addWidget(search_clear, 0, Qt.AlignVCenter)
+        search_box, self.search_input = make_modal_search_box()
+        self.search_input.textChanged.connect(
+            lambda _t: self._update_search_visibility()
+        )
         actions_row.addWidget(search_box, 0, Qt.AlignRight | Qt.AlignVCenter)
         hv.addLayout(actions_row)
 

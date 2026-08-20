@@ -41,6 +41,7 @@ from app.ui.dialog_utils import (
     init_fullscreen_dialog,
     init_maximized_window,
     install_live_ru_layout_guard,
+    make_modal_search_box,
     style_app_menu,
 )
 from app.ui.dialogs_extra import show_png_list
@@ -296,16 +297,8 @@ class KizDialog(QDialog):
             filters.addWidget(cb)
         tb.addLayout(filters, 0)
         tb.addStretch(1)
-        self.search_input = QLineEdit()
-        self.search_input.setObjectName("kizSearch")
-        self.search_input.setPlaceholderText("🔍 Поиск…")
-        self.search_input.setClearButtonEnabled(True)
-        self.search_input.setMinimumWidth(200)
-        self.search_input.setMaximumWidth(280)
-        self.search_input.setToolTip(
-            "Поиск по заказу, стикеру, названию товара и ШК"
-        )
-        tb.addWidget(self.search_input, 0, Qt.AlignRight | Qt.AlignVCenter)
+        search_box, self.search_input = make_modal_search_box()
+        tb.addWidget(search_box, 0, Qt.AlignRight | Qt.AlignVCenter)
         self.counter = QLabel("Просканировано 0 из 0 КИЗ")
         self.counter.setObjectName("kizScanCount")
         tb.addWidget(self.counter, 0, Qt.AlignRight | Qt.AlignVCenter)

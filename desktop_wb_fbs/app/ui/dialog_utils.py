@@ -9,11 +9,13 @@ from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QColor, QPalette
 from PyQt5.QtWidgets import (
     QDialog,
+    QFrame,
     QHBoxLayout,
     QLabel,
     QLineEdit,
     QMenu,
     QPushButton,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -196,6 +198,47 @@ def install_live_ru_layout_guard(
         block_ru_layout_scan(parent, field, text=text)
 
     field.textChanged.connect(_on_text)
+
+
+def make_modal_search_box(
+    *,
+    placeholder: str = "🔍 Поиск…",
+    tooltip: str = "Поиск по заказу, стикеру, названию товара и ШК",
+    height: int = 40,
+    min_width: int = 200,
+    max_width: int = 280,
+) -> Tuple[QFrame, QLineEdit]:
+    """Search field with a vertically centered clear ✕ (supply / КИЗ / pick)."""
+    box = QFrame()
+    box.setObjectName("sdSearchBox")
+    box.setFixedHeight(height)
+    box.setMinimumWidth(min_width)
+    box.setMaximumWidth(max_width)
+    lay = QHBoxLayout(box)
+    lay.setContentsMargins(12, 0, 4, 0)
+    lay.setSpacing(0)
+    edit = QLineEdit()
+    edit.setObjectName("sdSearch")
+    edit.setPlaceholderText(placeholder)
+    edit.setClearButtonEnabled(False)
+    edit.setFrame(False)
+    edit.setToolTip(tooltip)
+    clear_btn = QToolButton()
+    clear_btn.setObjectName("sdSearchClear")
+    clear_btn.setText("✕")
+    clear_btn.setCursor(Qt.PointingHandCursor)
+    clear_btn.setFixedSize(28, 28)
+    clear_btn.setToolTip("Очистить")
+    clear_btn.hide()
+    clear_btn.clicked.connect(edit.clear)
+
+    def _on_text(text: str) -> None:
+        clear_btn.setVisible(bool(str(text or "").strip()))
+
+    edit.textChanged.connect(_on_text)
+    lay.addWidget(edit, 1)
+    lay.addWidget(clear_btn, 0, Qt.AlignVCenter)
+    return box, edit
 
 
 def style_app_menu(menu: QMenu) -> QMenu:

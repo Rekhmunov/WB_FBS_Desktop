@@ -1225,19 +1225,6 @@ QCheckBox#kizFilterCheck {
     font-size: 14px;
     spacing: 8px;
 }
-QLineEdit#kizSearch {
-    min-height: 36px;
-    max-width: 280px;
-    border-radius: 10px;
-    padding: 0 12px;
-    background: #f2f8ff;
-    border: 1px solid #d9e8f7;
-    font-size: 14px;
-}
-QLineEdit#kizSearch:focus {
-    border-color: #c2d9f2;
-    background: #ffffff;
-}
 QLabel#kizScanCount {
     color: #0f1f33;
     font-size: 14px;

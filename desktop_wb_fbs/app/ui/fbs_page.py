@@ -144,18 +144,13 @@ class FbsPage(QWidget):
         root.setContentsMargins(24, 20, 24, 16)
         root.setSpacing(12)
 
-        # Title row: source select (section title lives in the top bar)
-        title_row = QHBoxLayout()
-        title_row.setSpacing(12)
-        title_row.addStretch(1)
-        self.source_combo = QComboBox()
+        # Title lives in the top bar; source combo is hosted there too.
+        self.source_combo = QComboBox(self)
         self.source_combo.setObjectName("sourceCombo")
         self.source_combo.setMinimumWidth(180)
         self.source_combo.setMaximumWidth(280)
         self.source_combo.setToolTip("Источник")
         self.source_combo.currentIndexChanged.connect(self.on_source_change)
-        title_row.addWidget(self.source_combo)
-        root.addLayout(title_row)
 
         # Toolbar panel (web .wb-fbs-toolbar)
         toolbar_panel = QFrame()

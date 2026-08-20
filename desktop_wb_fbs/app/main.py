@@ -93,6 +93,8 @@ class MainWindow(QMainWindow):
         self.settings_page = SettingsPage(
             db, self.sources, self.products, self.categories
         )
+        # Source select sits in the top bar, opposite «Настройки».
+        top_l.addWidget(self.fbs_page.source_combo, 0, Qt.AlignVCenter)
         self.stack.addWidget(self.fbs_page)
         self.stack.addWidget(self.settings_page)
         layout.addWidget(self.stack, 1)
@@ -107,6 +109,7 @@ class MainWindow(QMainWindow):
         self.stack.setCurrentIndex(index)
         self.btn_fbs.setChecked(index == 0)
         self.btn_settings.setChecked(index == 1)
+        self.fbs_page.source_combo.setVisible(index == 0)
         if index == 0:
             self.page_title.setText("Поставки — ВБ ФБС")
             self.fbs_page.reload_sources()

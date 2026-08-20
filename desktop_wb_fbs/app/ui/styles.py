@@ -406,11 +406,15 @@ QComboBox QAbstractItemView::item {
 QComboBox#sourceCombo {
     min-width: 180px;
     max-width: 280px;
+    min-height: 36px;
     background: #ffffff;
     border: 1px solid #d9e8f7;
     border-radius: 10px;
     padding-left: 12px;
     font-weight: 500;
+}
+QFrame#topBar QComboBox#sourceCombo {
+    margin: 0;
 }
 QSpinBox {
     padding-right: 28px;

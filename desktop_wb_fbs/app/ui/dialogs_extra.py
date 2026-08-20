@@ -3,8 +3,8 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional, Tuple
 
-from PyQt5.QtCore import Qt
-from PyQt5.QtGui import QPainter, QPixmap
+from PyQt5.QtCore import QRect, Qt
+from PyQt5.QtGui import QFontMetrics, QPainter, QPen, QPixmap
 from PyQt5.QtPrintSupport import QPrintDialog, QPrinter
 from PyQt5.QtWidgets import (
     QButtonGroup,
@@ -344,16 +344,16 @@ def build_picking_list_pixmaps(
             for o in orders:
                 pb = str(o.get("sticker_part_b") or "").strip()
                 pa = str(o.get("sticker_part_a") or "").strip()
-                sticker = (pa + pb) if (pa or pb) else "—"
                 blocks.append(
                     (
                         "order",
                         {
                             "oid": o.get("order_id"),
-                            "sticker": sticker,
-                            "dup": pb in dup,
+                            "part_a": pa,
+                            "part_b": pb,
+                            "dup": bool(pb) and pb in dup,
                         },
-                        28,
+                        30,
                     )
                 )
 
@@ -467,21 +467,82 @@ def build_picking_list_pixmaps(
                     painter.setPen(Qt.black)
                     painter.drawLine(margin, y + h - 2, page_w - margin, y + h - 2)
                 elif kind == "order":
-                    font.setBold(bool(payload.get("dup")))
+                    oid_text = str(payload.get("oid") or "")
+                    part_a = str(payload.get("part_a") or "").strip()
+                    part_b = str(payload.get("part_b") or "").strip()
+                    is_dup = bool(payload.get("dup")) and bool(part_b)
+                    # Fallback for older callers that only pass combined sticker.
+                    if not part_a and not part_b:
+                        combined = str(payload.get("sticker") or "").strip()
+                        if combined and combined != "—":
+                            part_a, part_b = combined, ""
+
+                    font.setBold(False)
                     font.setPointSize(10)
                     painter.setFont(font)
-                    painter.setPen(Qt.red if payload.get("dup") else Qt.black)
+                    painter.setPen(Qt.black)
                     painter.drawText(
                         margin + 8, y, 160, h - 2,
-                        Qt.AlignLeft | Qt.AlignVCenter, str(payload.get("oid") or ""),
+                        Qt.AlignLeft | Qt.AlignVCenter, oid_text,
                     )
-                    painter.drawText(
-                        margin + 180, y, 280, h - 2,
-                        Qt.AlignLeft | Qt.AlignVCenter, str(payload.get("sticker") or "—"),
-                    )
+
+                    sticker_x = margin + 180
+                    sticker_w = page_w - margin - 100 - sticker_x
+                    if not part_a and not part_b:
+                        painter.drawText(
+                            sticker_x, y, sticker_w, h - 2,
+                            Qt.AlignLeft | Qt.AlignVCenter, "—",
+                        )
+                    else:
+                        fm = QFontMetrics(font)
+                        cursor_x = sticker_x
+                        if part_a:
+                            painter.drawText(
+                                cursor_x, y, sticker_w, h - 2,
+                                Qt.AlignLeft | Qt.AlignVCenter, part_a,
+                            )
+                            cursor_x += fm.horizontalAdvance(part_a) + (
+                                8 if part_b else 0
+                            )
+                        if part_b:
+                            # Web parity: last 4 digits larger; dup → black rectangle.
+                            partb_font = painter.font()
+                            partb_font.setBold(True)
+                            partb_font.setPointSize(12)
+                            painter.setFont(partb_font)
+                            pfm = QFontMetrics(partb_font)
+                            tw = pfm.horizontalAdvance(part_b)
+                            th = pfm.height()
+                            if is_dup:
+                                pad_x, pad_y = 6, 2
+                                box = QRect(
+                                    cursor_x,
+                                    y + max(0, (h - 2 - th) // 2) - pad_y,
+                                    tw + 2 * pad_x,
+                                    th + 2 * pad_y,
+                                )
+                                pen = QPen(Qt.black)
+                                pen.setWidth(2)
+                                painter.setPen(pen)
+                                painter.setBrush(Qt.NoBrush)
+                                painter.drawRect(box)
+                                painter.setPen(Qt.black)
+                                painter.drawText(box, Qt.AlignCenter, part_b)
+                            else:
+                                painter.setPen(Qt.black)
+                                painter.drawText(
+                                    cursor_x,
+                                    y,
+                                    max(40, sticker_w - (cursor_x - sticker_x)),
+                                    h - 2,
+                                    Qt.AlignLeft | Qt.AlignVCenter,
+                                    part_b,
+                                )
+                            font.setBold(False)
+                            font.setPointSize(10)
+                            painter.setFont(font)
+
                     painter.setPen(Qt.black)
-                    font.setBold(False)
-                    painter.setFont(font)
                     painter.drawRect(page_w - margin - 52, y + 6, 14, 14)
                     painter.drawLine(margin, y + h - 2, page_w - margin, y + h - 2)
                 y += h

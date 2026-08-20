@@ -705,15 +705,22 @@ def render_picking_list_html(
             for o in orders:
                 pb = str(o.get("sticker_part_b") or "").strip()
                 pa = str(o.get("sticker_part_a") or "").strip()
-                sticker = (pa + pb) if (pa or pb) else "—"
-                cls = " dup" if pb in dup else ""
+                if pa or pb:
+                    part_b_cls = "partb partb-dup" if pb in dup else "partb"
+                    sticker_html = (
+                        '<span class="sticker-group">'
+                        '<span class="parta">{}</span>'
+                        '<span class="{}">{}</span>'
+                        "</span>"
+                    ).format(_esc(pa), part_b_cls, _esc(pb))
+                else:
+                    sticker_html = "—"
                 rows.append(
-                    '<tr class="order-row{cls}"><td class="oid">{oid}</td>'
+                    '<tr class="order-row"><td class="oid">{oid}</td>'
                     '<td class="sticker">{st}</td>'
                     '<td class="check">{box}</td></tr>'.format(
-                        cls=cls,
                         oid=_esc(o.get("order_id")),
-                        st=_esc(sticker),
+                        st=sticker_html,
                         box=box,
                     )
                 )
@@ -755,7 +762,22 @@ def render_picking_list_html(
   }}
   .sku-title {{ font-weight: 700; }}
   .sku-meta, .sku-article, .sku-barcode, .sku-color, .sku-qty {{ color: #475569; }}
-  .order-row.dup .sticker {{ color: #b91c1c; font-weight: 700; }}
+  .sticker-group {{
+    display: inline-flex; align-items: center; gap: 8px; white-space: nowrap;
+  }}
+  .parta {{ color: #0f172a; }}
+  .partb {{
+    font-size: 16px; font-weight: 800; letter-spacing: 0.02em;
+    font-variant-numeric: tabular-nums; line-height: 1.2;
+  }}
+  /* Duplicate short sticker codes across the supply — force operator attention */
+  .partb-dup {{
+    border: 2.5px solid #0f172a;
+    padding: 2px 6px;
+    display: inline-block;
+    min-width: 2.5em;
+    text-align: center;
+  }}
   .check {{ width: 70px; text-align: center; }}
   @media print {{ .no-print {{ display: none; }} }}
 </style></head>

@@ -1052,6 +1052,14 @@ class FbsPage(QWidget):
         self.sync_btn.setEnabled(True)
         self.stop_btn.setEnabled(False)
         self.stop_btn.setVisible(False)
+        try:
+            from app.services import order_open_cache, supply_session
+
+            source_ids = [int(src["id"]) for src in self.sources.list_fbs_enabled()]
+            order_open_cache.clear_for_sources(self.db, source_ids)
+            supply_session.clear_all_sessions()
+        except Exception:
+            pass
         for src in self.sources.list_fbs_enabled():
             try:
                 self.sources.touch_synced(int(src["id"]))

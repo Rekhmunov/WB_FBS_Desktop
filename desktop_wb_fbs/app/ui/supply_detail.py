@@ -79,6 +79,8 @@ class _SupplyCoreLoadWorker(QThread):
         api_key: str,
         supply_pickup_allowed: bool,
         generation: int = 0,
+        *,
+        force_network: bool = False,
     ) -> None:
         super(_SupplyCoreLoadWorker, self).__init__()
         self.db = db
@@ -88,6 +90,7 @@ class _SupplyCoreLoadWorker(QThread):
         self.api_key = api_key
         self.supply_pickup_allowed = supply_pickup_allowed
         self.generation = int(generation)
+        self.force_network = bool(force_network)
 
     def run(self) -> None:
         try:
@@ -100,6 +103,7 @@ class _SupplyCoreLoadWorker(QThread):
                 supply_id=self.supply_id,
                 source_id=self.source_id,
                 generation=self.generation,
+                force_network=self.force_network,
             )
 
             def _progress(step: int, detail: str = "") -> None:
@@ -113,6 +117,7 @@ class _SupplyCoreLoadWorker(QThread):
                 self.api_key,
                 supply_pickup_allowed=self.supply_pickup_allowed,
                 progress=_progress,
+                force_network=self.force_network,
             )
             diag_write(
                 "supply.core_worker.snapshot_emit",
@@ -579,8 +584,20 @@ class SupplyDetailDialog(QDialog):
         return lab
 
     def reload(self) -> None:
+        from app.services import order_open_cache
+
         supply_detail_cache.invalidate(self.source_id, self.supply_id)
         supply_session.invalidate(self.source_id, self.supply_id)
+        try:
+            order_ids = [
+                int(r["order_id"])
+                for r in (self._all_rows or [])
+                if r.get("order_id") is not None
+            ]
+            if order_ids:
+                order_open_cache.clear_for_orders(self.db, self.source_id, order_ids)
+        except Exception:
+            pass
         self._apply_supply_header(self.orders.get_supply(self.source_id, self.supply_id))
         self._show_loading_table()
         self._set_actions_ready(False)
@@ -725,6 +742,7 @@ class SupplyDetailDialog(QDialog):
             self.api_key,
             self._supply_pickup_allowed,
             generation=gen,
+            force_network=bool(force),
         )
         worker.progress.connect(self._on_load_progress)
         worker.core_ready.connect(self._on_core_ready)

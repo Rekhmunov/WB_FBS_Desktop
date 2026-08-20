@@ -1177,13 +1177,65 @@ class FbsPage(QWidget):
         self.reload_table()
 
     def collect_mgt(self) -> None:
-        from app.ui.dialogs_extra import CollectMgtDialog
+        from app.services.collect_mgt import CollectMgtService
+        from app.ui.dialogs_extra import CollectMgtDialog, show_collect_mgt_result
+        from PyQt5.QtWidgets import QMessageBox
 
         src = self.current_source()
         if not src:
             return
-        dlg = CollectMgtDialog(self.db, self.orders, src, self)
-        if dlg.exec_():
+        if self._tab not in ("new", "assembly", "delivery"):
+            QMessageBox.information(
+                self,
+                "МГТ",
+                "Сборка МГТ доступна на вкладках «Новые», «На сборке» и «В доставке»",
+            )
+            return
+        svc = CollectMgtService(self.db, self.orders)
+        try:
+            preview = svc.preview(int(src["id"]))
+        except Exception as exc:
+            QMessageBox.critical(self, "МГТ", str(exc))
+            return
+        if not int(preview.get("mgt_count") or 0):
+            QMessageBox.information(self, "МГТ", "В «Новых» нет МГТ-заказов")
+            self.reload_table()
+            return
+
+        result = None  # type: Optional[Dict[str, Any]]
+        # Web: when every group is add_one → execute without modal.
+        if not preview.get("needs_modal"):
+            decisions = [
+                {
+                    "group_key": str(g.get("group_key") or ""),
+                    "is_b2b": bool(g.get("is_b2b")),
+                    "action": "add",
+                    "supply_id": str(g.get("default_supply_id") or ""),
+                }
+                for g in (preview.get("groups") or [])
+            ]
+            try:
+                result = svc.execute(
+                    int(src["id"]), str(src["api_key"]), decisions
+                )
+            except Exception as exc:
+                QMessageBox.critical(self, "МГТ", str(exc))
+                return
+        else:
+            dlg = CollectMgtDialog(
+                self.db, self.orders, src, self, preview=preview
+            )
+            if not dlg.exec_():
+                return
+            result = dlg.result_payload
+
+        if not isinstance(result, dict):
+            self.reload_table()
+            return
+        show_collect_mgt_result(self, result)
+        if result.get("goto_assembly"):
+            self.on_tab_change("assembly")
+        else:
             self.reload_table()
 
     def create_supply(self) -> None:

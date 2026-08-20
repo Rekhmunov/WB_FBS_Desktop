@@ -1,12 +1,13 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QPainter, QPixmap
 from PyQt5.QtPrintSupport import QPrintDialog, QPrinter
 from PyQt5.QtWidgets import (
+    QButtonGroup,
     QComboBox,
     QDialog,
     QDialogButtonBox,
@@ -14,6 +15,7 @@ from PyQt5.QtWidgets import (
     QLineEdit,
     QMessageBox,
     QPushButton,
+    QRadioButton,
     QScrollArea,
     QVBoxLayout,
     QWidget,
@@ -138,6 +140,69 @@ def show_supply_qr(
     show_png_list([png], "QR поставки {}".format(supply_id), parent)
 
 
+
+def _fmt_order_ids(ids: List[Any], limit: int = 40) -> str:
+    list_ids = [str(x) for x in (ids or [])]
+    if not list_ids:
+        return ""
+    shown = ", ".join(list_ids[:limit])
+    if len(list_ids) > limit:
+        return "{} … (+{})".format(shown, len(list_ids) - limit)
+    return shown
+
+
+def show_collect_mgt_result(parent: Optional[QWidget], data: Dict[str, Any]) -> None:
+    """Web ``_wbFbsCollectMgtShowResult`` — detailed outcome after collect."""
+    ok = bool(data.get("ok"))
+    title = "Готово" if ok else "Есть проблемы"
+    lines = [str(data.get("message") or "")]
+    for g in data.get("groups") or []:
+        if isinstance(g, dict) and g.get("message"):
+            lines.append("• {}".format(g.get("message")))
+    created = data.get("created_supplies") or []
+    if created:
+        lines.append("")
+        lines.append("Созданы поставки:")
+        for s in created:
+            if isinstance(s, dict):
+                lines.append("• {}".format(s.get("name") or s.get("supply_id") or ""))
+    errors = data.get("errors") or []
+    if errors:
+        lines.append("")
+        lines.append("Ошибки:")
+        for e in errors:
+            lines.append("• {}".format(e))
+    warnings = data.get("warnings") or []
+    if warnings:
+        lines.append("")
+        lines.append("Предупреждения:")
+        for w in warnings:
+            lines.append("• {}".format(w))
+    remaining = data.get("remaining_in_new")
+    if remaining is None:
+        remaining = data.get("not_added") or []
+    if remaining:
+        lines.append("")
+        lines.append(
+            "Остались в «Новых» ({}): {}".format(
+                len(remaining), _fmt_order_ids(remaining)
+            )
+        )
+    skipped = data.get("skipped_cancelled") or []
+    if skipped:
+        lines.append("")
+        lines.append(
+            "Пропущено — уже не new / отмена на WB ({}): {}".format(
+                len(skipped), _fmt_order_ids(skipped)
+            )
+        )
+    text_msg = "\n".join(lines).strip() or "Готово"
+    if ok:
+        QMessageBox.information(parent, title, text_msg)
+    else:
+        QMessageBox.warning(parent, title, text_msg)
+
+
 class CollectMgtDialog(QDialog):
     def __init__(
         self,
@@ -145,6 +210,8 @@ class CollectMgtDialog(QDialog):
         orders: OrdersService,
         source: Dict[str, Any],
         parent: Optional[QWidget] = None,
+        *,
+        preview: Optional[Dict[str, Any]] = None,
     ) -> None:
         super(CollectMgtDialog, self).__init__(parent)
         from app.services.collect_mgt import CollectMgtService
@@ -153,6 +220,8 @@ class CollectMgtDialog(QDialog):
         self.orders = orders
         self.source = source
         self.svc = CollectMgtService(db, orders)
+        self.preview = preview if isinstance(preview, dict) else None
+        self.result_payload = None  # type: Optional[Dict[str, Any]]
         self.setWindowTitle("Собрать все МГТ-заказы")
         prepare_modal_dialog(
             self,
@@ -170,6 +239,13 @@ class CollectMgtDialog(QDialog):
         self.lead.setObjectName("hint")
         self.lead.setWordWrap(True)
         root.addWidget(self.lead)
+
+        self.err = QLabel("")
+        self.err.setObjectName("hint")
+        self.err.setStyleSheet("color:#b91c1c; font-size: 14px;")
+        self.err.setWordWrap(True)
+        self.err.hide()
+        root.addWidget(self.err)
 
         self.scroll = QWidget()
         self.form = QVBoxLayout(self.scroll)
@@ -190,17 +266,21 @@ class CollectMgtDialog(QDialog):
         root.addWidget(buttons)
         self._ok_btn = ok
         self._group_widgets = []  # type: List[Dict[str, Any]]
+        self._existing_names = set()  # type: set
         self._load()
 
     def _load(self) -> None:
-        preview = self.svc.preview(int(self.source["id"]))
+        preview = self.preview or self.svc.preview(int(self.source["id"]))
+        self.preview = preview
         groups = list(preview.get("groups") or [])
+        self._existing_names = {
+            str(x or "").strip()
+            for x in (preview.get("existing_names") or [])
+            if str(x or "").strip()
+        }
         self.lead.setText(
-            "МГТ в «Новых»: {} · групп: {}".format(
-                preview.get("mgt_count", 0), len(groups)
-            )
+            "Новых МГТ заказов: {}.".format(preview.get("mgt_count", 0))
         )
-        # clear form
         while self.form.count():
             item = self.form.takeAt(0)
             w = item.widget()
@@ -216,94 +296,181 @@ class CollectMgtDialog(QDialog):
             box = QWidget()
             lay = QVBoxLayout(box)
             lay.setContentsMargins(0, 8, 0, 8)
-            title = QLabel(
-                "<b>{}</b> — {} зак. · режим: {}".format(
+            lay.setSpacing(8)
+            label = QLabel(
+                "<b>{}</b> — {} зак.".format(
                     g.get("label") or "",
                     g.get("order_count") or 0,
-                    {
-                        "create": "новая поставка",
-                        "add_one": "добавить в существующую",
-                        "choose": "выберите поставку",
-                    }.get(str(g.get("mode")), str(g.get("mode"))),
                 )
             )
-            title.setTextFormat(Qt.RichText)
-            lay.addWidget(title)
-            name_edit = QLineEdit(str(g.get("suggested_name") or ""))
-            combo = QComboBox()
-            combo.addItem("— создать новую —", "")
-            for s in g.get("compatible_supplies") or []:
-                combo.addItem(
-                    "{} · {} зак.{}".format(
-                        s.get("name") or s.get("supply_id"),
-                        s.get("orders_count") or 0,
-                        " (пустая)" if s.get("is_empty") else "",
-                    ),
-                    str(s.get("supply_id") or ""),
-                )
+            label.setTextFormat(Qt.RichText)
+            lay.addWidget(label)
             mode = str(g.get("mode") or "create")
+            name_edit = None  # type: Optional[QLineEdit]
+            warn = None  # type: Optional[QLabel]
+            radio_group = None  # type: Optional[QButtonGroup]
             if mode == "create":
-                lay.addWidget(QLabel("Название новой поставки"))
+                name_lab = QLabel("Название новой поставки")
+                name_lab.setObjectName("fieldLabel")
+                lay.addWidget(name_lab)
+                name_edit = QLineEdit(str(g.get("suggested_name") or ""))
                 lay.addWidget(name_edit)
-                combo.hide()
-            elif mode == "add_one":
-                name_edit.hide()
-                default = str(g.get("default_supply_id") or "")
-                idx = combo.findData(default)
-                if idx >= 0:
-                    combo.setCurrentIndex(idx)
-                lay.addWidget(QLabel("Поставка"))
-                lay.addWidget(combo)
+                warn = QLabel(
+                    "Поставка с таким названием уже есть — измените название."
+                )
+                warn.setStyleSheet("color:#b45309; font-size: 13px;")
+                warn.setWordWrap(True)
+                conflict = (
+                    str(g.get("suggested_name") or "").strip()
+                    in self._existing_names
+                )
+                warn.setVisible(conflict)
+                lay.addWidget(warn)
+
+                def _on_name(text: str, w=warn) -> None:
+                    name = str(text or "").strip()
+                    w.setVisible(bool(name and name in self._existing_names))
+
+                name_edit.textChanged.connect(_on_name)
+            elif mode == "choose":
+                choose_lab = QLabel("Выберите поставку")
+                choose_lab.setObjectName("fieldLabel")
+                lay.addWidget(choose_lab)
+                radio_group = QButtonGroup(box)
+                supplies = list(g.get("compatible_supplies") or [])
+                for si, s in enumerate(supplies):
+                    sid = str(s.get("supply_id") or "")
+                    sname = str(s.get("name") or sid)
+                    meta_parts = [
+                        "пустая" if s.get("is_empty") else "МГТ",
+                        "B2B" if s.get("is_b2b") else None,
+                        "{} заказ.".format(int(s.get("orders_count") or 0)),
+                    ]
+                    meta = " · ".join(p for p in meta_parts if p)
+                    rb = QRadioButton("{} — {}".format(sname, meta))
+                    rb.setProperty("supply_id", sid)
+                    radio_group.addButton(rb)
+                    if si == 0:
+                        rb.setChecked(True)
+                    lay.addWidget(rb)
             else:
-                lay.addWidget(QLabel("Название (если создать новую)"))
-                lay.addWidget(name_edit)
-                lay.addWidget(QLabel("Или выбрать существующую"))
-                lay.addWidget(combo)
+                sid = str(g.get("default_supply_id") or "")
+                match = next(
+                    (
+                        s
+                        for s in (g.get("compatible_supplies") or [])
+                        if str(s.get("supply_id") or "") == sid
+                    ),
+                    None,
+                )
+                sname = (
+                    str(match.get("name") or sid)
+                    if isinstance(match, dict)
+                    else sid
+                )
+                auto = QLabel("Будет добавлено в поставку «{}».".format(sname))
+                auto.setObjectName("hint")
+                auto.setWordWrap(True)
+                lay.addWidget(auto)
             self.form.addWidget(box)
             self._group_widgets.append(
-                {"group": g, "name_edit": name_edit, "combo": combo}
+                {
+                    "group": g,
+                    "name_edit": name_edit,
+                    "warn": warn,
+                    "radio_group": radio_group,
+                }
             )
         self.form.addStretch(1)
 
-    def do_collect(self) -> None:
-        decisions = []
+    def _collect_decisions(self) -> Tuple[List[Dict[str, Any]], List[str]]:
+        decisions = []  # type: List[Dict[str, Any]]
+        errors = []  # type: List[str]
+        used_names = set()  # type: set
         for item in self._group_widgets:
             g = item["group"]
-            sid = str(item["combo"].currentData() or "").strip()
-            name = item["name_edit"].text().strip()
+            is_b2b = bool(g.get("is_b2b"))
+            gkey = str(g.get("group_key") or "")
             mode = str(g.get("mode") or "create")
-            if mode == "choose":
-                mode = "add" if sid else "create"
-            elif mode == "add_one":
-                mode = "add_one"
+            label = g.get("label") or ("B2B" if is_b2b else "не B2B")
+            if mode == "create":
+                name_edit = item.get("name_edit")
+                name = ""
+                if name_edit is not None:
+                    name = name_edit.text().strip()
+                name = name or str(g.get("suggested_name") or "").strip()
+                if not name:
+                    errors.append("{}: укажите название поставки".format(label))
+                    continue
+                if name in self._existing_names or name in used_names:
+                    errors.append(
+                        "{}: поставка «{}» уже есть — измените название".format(
+                            label, name
+                        )
+                    )
+                    continue
+                used_names.add(name)
+                decisions.append(
+                    {
+                        "group_key": gkey,
+                        "is_b2b": is_b2b,
+                        "action": "create",
+                        "name": name,
+                    }
+                )
+            elif mode == "choose":
+                radio_group = item.get("radio_group")
+                supply_id = ""
+                if radio_group is not None:
+                    checked = radio_group.checkedButton()
+                    if checked is not None:
+                        supply_id = str(
+                            checked.property("supply_id") or ""
+                        ).strip()
+                if not supply_id:
+                    errors.append("{}: выберите поставку".format(label))
+                    continue
+                decisions.append(
+                    {
+                        "group_key": gkey,
+                        "is_b2b": is_b2b,
+                        "action": "choose",
+                        "supply_id": supply_id,
+                    }
+                )
             else:
-                mode = "create"
-            decisions.append(
-                {
-                    "group_key": g.get("group_key"),
-                    "mode": mode,
-                    "supply_id": sid or g.get("default_supply_id") or "",
-                    "name": name or g.get("suggested_name") or "",
-                }
-            )
+                decisions.append(
+                    {
+                        "group_key": gkey,
+                        "is_b2b": is_b2b,
+                        "action": "add",
+                        "supply_id": str(g.get("default_supply_id") or ""),
+                    }
+                )
+        return decisions, errors
+
+    def do_collect(self) -> None:
+        decisions, errors = self._collect_decisions()
+        if errors:
+            self.err.setText("\n".join(errors))
+            self.err.show()
+            return
+        self.err.hide()
+        if self._ok_btn:
+            self._ok_btn.setEnabled(False)
         try:
             result = self.svc.execute(
                 int(self.source["id"]),
                 str(self.source["api_key"]),
                 decisions,
             )
-            msg = "Создано: {}, добавлено в существующие: {}".format(
-                result.get("created", 0), result.get("added", 0)
-            )
-            errs = result.get("errors") or []
-            if errs:
-                msg += "\n\nОшибки:\n" + "\n".join(str(e) for e in errs[:5])
-                QMessageBox.warning(self, "МГТ", msg)
-            else:
-                QMessageBox.information(self, "МГТ", msg)
+            self.result_payload = result
             self.accept()
         except Exception as exc:
-            QMessageBox.critical(self, "МГТ", str(exc))
+            self.err.setText(str(exc))
+            self.err.show()
+            if self._ok_btn:
+                self._ok_btn.setEnabled(True)
 
 
 class SelectionSupplyDialog(QDialog):

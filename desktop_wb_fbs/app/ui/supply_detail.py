@@ -1356,7 +1356,6 @@ class SupplyDetailDialog(QDialog):
         if abort:
             return
 
-        QApplication.setOverrideCursor(QCursor(Qt.WaitCursor))
         try:
             print_supply_stickers(
                 self.db,
@@ -1370,9 +1369,6 @@ class SupplyDetailDialog(QDialog):
             )
         except Exception as exc:
             QMessageBox.critical(self, "Стикеры", str(exc))
-        finally:
-            while QApplication.overrideCursor() is not None:
-                QApplication.restoreOverrideCursor()
 
     def print_qr(self) -> None:
         try:

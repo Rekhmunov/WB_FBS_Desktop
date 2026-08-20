@@ -7,12 +7,13 @@ from typing import Optional
 
 from PyQt5.QtCore import QEventLoop, QTimer, QUrl, Qt
 from PyQt5.QtGui import QCursor
-from PyQt5.QtPrintSupport import QPrintPreviewDialog, QPrintPreviewWidget, QPrinter
+from PyQt5.QtPrintSupport import QPrintDialog, QPrintPreviewDialog, QPrintPreviewWidget, QPrinter
 from PyQt5.QtWidgets import (
     QApplication,
     QDialog,
     QFileDialog,
     QHBoxLayout,
+    QLabel,
     QMessageBox,
     QPushButton,
     QVBoxLayout,
@@ -54,6 +55,8 @@ class HtmlPrintPreviewDialog(QDialog):
         *,
         title: str = "",
         parent: Optional[QWidget] = None,
+        nested_print_preview: bool = True,
+        wait_images: bool = False,
     ) -> None:
         super(HtmlPrintPreviewDialog, self).__init__(parent)
         self._html_path = Path(html_path)
@@ -62,6 +65,9 @@ class HtmlPrintPreviewDialog(QDialog):
         self._load_started = False
         self._load_attempts = 0
         self._load_warned = False
+        self._nested_print_preview = bool(nested_print_preview)
+        self._wait_images = bool(wait_images)
+        self._image_polls = 0
         doc_title = str(title or self._html_path.stem)
         self.setWindowTitle(doc_title)
         # Full-screen preview at 100% zoom.
@@ -83,8 +89,7 @@ class HtmlPrintPreviewDialog(QDialog):
         self.btn_print = QPushButton("Печать…")
         self.btn_print.setObjectName("bottomPrimary")
         self.btn_print.setEnabled(False)
-        # Opens Qt print-preview (page layout as on paper), not the bare OS dialog.
-        self.btn_print.clicked.connect(self._print_preview)
+        self.btn_print.clicked.connect(self._on_print_clicked)
         self.btn_pdf = QPushButton("Сохранить PDF")
         self.btn_pdf.setObjectName("secondary")
         self.btn_pdf.setEnabled(False)
@@ -93,6 +98,10 @@ class HtmlPrintPreviewDialog(QDialog):
         toolbar.addWidget(self.btn_pdf)
         toolbar.addStretch(1)
         root.addLayout(toolbar)
+
+        self._status = QLabel("Загрузка документа…")
+        self._status.setStyleSheet("color:#64748b;font-size:12px;")
+        root.addWidget(self._status)
 
         self._view = QWebEngineView(self)
         try:
@@ -149,8 +158,12 @@ class HtmlPrintPreviewDialog(QDialog):
                 self._view.setZoomFactor(1.0)
             except Exception:
                 pass
-            for btn in (self.btn_print, self.btn_pdf):
-                btn.setEnabled(True)
+            if self._wait_images:
+                self._status.setText("Загрузка изображений стикеров…")
+                self._image_polls = 0
+                QTimer.singleShot(50, self._poll_images_ready)
+            else:
+                self._mark_ready()
             return
 
         # Ignore a late failure after a successful paint (WebEngine can emit this).
@@ -165,11 +178,37 @@ class HtmlPrintPreviewDialog(QDialog):
             btn.setEnabled(False)
         if not self._load_warned:
             self._load_warned = True
+            self._status.setText("Не удалось загрузить документ.")
             QMessageBox.warning(
                 self,
                 "Предпросмотр",
                 "Не удалось загрузить документ для печати.",
             )
+
+    def _poll_images_ready(self) -> None:
+        js = (
+            "(function(){var imgs=document.images||[];"
+            "if(!imgs.length) return true;"
+            "for(var i=0;i<imgs.length;i++){if(!imgs[i].complete) return false;}"
+            "return true;})()"
+        )
+
+        def _done(ready: object) -> None:
+            if ready or self._image_polls >= 80:
+                self._mark_ready()
+                return
+            self._image_polls += 1
+            QTimer.singleShot(100, self._poll_images_ready)
+
+        try:
+            self._view.page().runJavaScript(js, _done)
+        except Exception:
+            self._mark_ready()
+
+    def _mark_ready(self) -> None:
+        for btn in (self.btn_print, self.btn_pdf):
+            btn.setEnabled(True)
+        self._status.setText("Документ готов к печати.")
 
     def _print_to_printer(self, printer: QPrinter) -> bool:
         if not self._loaded:
@@ -184,6 +223,36 @@ class HtmlPrintPreviewDialog(QDialog):
         self._view.page().print(printer, _done)
         loop.exec_()
         return result["ok"]
+
+    def _on_print_clicked(self) -> None:
+        if self._nested_print_preview:
+            self._print_preview()
+        else:
+            self._print_now()
+
+    def _print_now(self) -> None:
+        """System print dialog — used for sticker sheets (many tiny pages)."""
+        printer = QPrinter(QPrinter.HighResolution)
+        dialog = QPrintDialog(printer, self)
+        dialog.setWindowFlags(standard_window_flags())
+        dialog.setWindowTitle("Печать")
+        if dialog.exec_() != QPrintDialog.Accepted:
+            return
+        app = QApplication.instance()
+        if app is not None:
+            app.setOverrideCursor(QCursor(Qt.WaitCursor))
+        try:
+            ok = self._print_to_printer(printer)
+        finally:
+            if app is not None:
+                while app.overrideCursor() is not None:
+                    app.restoreOverrideCursor()
+        if ok:
+            QMessageBox.information(self, "Печать", "Документ отправлен на печать.")
+        else:
+            QMessageBox.warning(
+                self, "Печать", "Не удалось отправить документ на печать."
+            )
 
     def _print_preview(self) -> None:
         """Qt print-preview dialog: shows real page layout before printing."""
@@ -257,6 +326,8 @@ def show_html_print_preview(
     *,
     title: str = "",
     parent: Optional[QWidget] = None,
+    nested_print_preview: bool = True,
+    wait_images: bool = False,
 ) -> bool:
     """
     Open modal preview.
@@ -272,6 +343,12 @@ def show_html_print_preview(
     if app is not None:
         while app.overrideCursor() is not None:
             app.restoreOverrideCursor()
-    dlg = HtmlPrintPreviewDialog(html_path, title=title, parent=parent)
+    dlg = HtmlPrintPreviewDialog(
+        html_path,
+        title=title,
+        parent=parent,
+        nested_print_preview=nested_print_preview,
+        wait_images=wait_images,
+    )
     dlg.exec_()
     return bool(getattr(dlg, "_presented", False))

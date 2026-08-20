@@ -159,9 +159,9 @@ def open_html(
     parent: Optional["QWidget"] = None,
     title: str = "",
     output_dir: Optional[Path] = None,
+    nested_print_preview: bool = True,
+    wait_images: bool = False,
 ) -> Path:
-    from PyQt5.QtWidgets import QMessageBox
-
     if output_dir is not None:
         out = Path(output_dir)
         out.mkdir(parents=True, exist_ok=True)
@@ -169,7 +169,28 @@ def open_html(
     else:
         path = Path(tempfile.gettempdir()) / "{}.html".format(basename)
     path.write_text(html_doc, encoding="utf-8")
-    preview_error = ""
+    return open_html_path(
+        path,
+        parent=parent,
+        title=title or basename,
+        nested_print_preview=nested_print_preview,
+        wait_images=wait_images,
+    )
+
+
+def open_html_path(
+    path: Path,
+    *,
+    parent: Optional["QWidget"] = None,
+    title: str = "",
+    nested_print_preview: bool = True,
+    wait_images: bool = False,
+    webengine_hint: str = "",
+) -> Path:
+    from PyQt5.QtWidgets import QMessageBox
+
+    path = Path(path)
+    preview_error = str(webengine_hint or "")
     webengine_ok = False
     try:
         from app.ui.html_print_dialog import show_html_print_preview, webengine_status
@@ -179,11 +200,17 @@ def open_html(
             # Wait-cursor must not stay while the modal print dialog is open.
             _clear_override_cursor()
             # True ⇒ in-app preview was shown (even if loadFinished was flaky).
-            if show_html_print_preview(path, title=title or basename, parent=parent):
+            if show_html_print_preview(
+                path,
+                title=title or path.stem,
+                parent=parent,
+                nested_print_preview=nested_print_preview,
+                wait_images=wait_images,
+            ):
                 return path
             preview_error = "не удалось открыть встроенное окно предпросмотра"
         else:
-            preview_error = status
+            preview_error = status or preview_error
     except Exception as exc:
         preview_error = str(exc) or exc.__class__.__name__
     _clear_override_cursor()
@@ -930,25 +957,36 @@ def print_picking_list(
     )
 
 
-def print_supply_stickers(
+def prepare_supply_stickers_html(
     db: Database,
     orders_svc: OrdersService,
     source_id: int,
     api_key: str,
     supply_id: str,
     order_ids: Optional[List[int]] = None,
-    parent: Optional["QWidget"] = None,
     preloaded_stickers: Optional[Dict[int, Dict[str, Any]]] = None,
+    progress: Optional[Callable[[int, int, str], None]] = None,
+    should_abort: Optional[Callable[[], bool]] = None,
 ) -> Path:
-    """Print product stickers. PNG is loaded on demand (web parity), not on supply open."""
+    """Fetch/cache sticker PNGs and write print HTML to disk (no UI)."""
     from app.services.sticker_file_cache import existing_sticker_paths
 
+    def _aborted() -> bool:
+        return bool(should_abort and should_abort())
+
+    def _prog(done: int, total: int, detail: str = "") -> None:
+        if progress:
+            progress(int(done), int(total), str(detail or ""))
+
+    _prog(0, 0, "Читаем заказы поставки…")
     rows = orders_svc.orders_in_supply(source_id, supply_id, api_key="")
     if not rows and api_key:
         rows = orders_svc.orders_in_supply(source_id, supply_id, api_key=api_key)
     if order_ids is not None:
         want = set(int(x) for x in order_ids)
         rows = [r for r in rows if int(r["order_id"]) in want]
+    if _aborted():
+        raise RuntimeError("Отменено")
     ids = [int(r["order_id"]) for r in rows]
     stickers = {}  # type: Dict[int, Dict[str, Any]]
     if preloaded_stickers is not None:
@@ -976,15 +1014,33 @@ def print_supply_stickers(
         if not str((stickers.get(oid) or {}).get("file_path") or "").strip()
         and not str((stickers.get(oid) or {}).get("file_b64") or "").strip()
     ]
+    total = len(ids) or 1
+    ready = total - len(missing)
+    _prog(ready, total, "На диске: {} из {}".format(ready, total))
+
     if missing and api_key:
-        # Isolated child-process fetch — same crash-safe path as preload used to use.
+        if _aborted():
+            raise RuntimeError("Отменено")
+
+        def _fetch_progress(done: int, fetch_total: int) -> None:
+            _prog(
+                ready + int(done),
+                total,
+                "Загрузка стикеров: {} из {}".format(ready + int(done), total),
+            )
+
         stickers.update(
             fetch_stickers_map(
                 api_key,
                 missing,
                 persist_supply_id=supply_id,
+                progress=_fetch_progress,
             )
         )
+    if _aborted():
+        raise RuntimeError("Отменено")
+
+    _prog(total, total, "Собираем документ для печати…")
     cards = fetch_cards(api_key, rows)
     products = ProductService(db).list_all()
     html_dir = None  # type: Optional[Path]
@@ -996,10 +1052,62 @@ def print_supply_stickers(
         rows, stickers, cards, products, sticker_html_dir=html_dir
     )
     html_doc = render_stickers_print_html(supply_id, groups)
-    return open_html(
-        html_doc,
-        "feedpilot_stickers_{}".format(supply_id),
-        parent=parent,
+    if html_dir is not None:
+        html_dir.mkdir(parents=True, exist_ok=True)
+        path = html_dir / "feedpilot_stickers_{}.html".format(supply_id)
+    else:
+        path = Path(tempfile.gettempdir()) / "feedpilot_stickers_{}.html".format(
+            supply_id
+        )
+    path.write_text(html_doc, encoding="utf-8")
+    _prog(total, total, "Готово")
+    return path
+
+
+def print_supply_stickers(
+    db: Database,
+    orders_svc: OrdersService,
+    source_id: int,
+    api_key: str,
+    supply_id: str,
+    order_ids: Optional[List[int]] = None,
+    parent: Optional["QWidget"] = None,
+    preloaded_stickers: Optional[Dict[int, Dict[str, Any]]] = None,
+) -> Path:
+    """Print product stickers. PNG is loaded on demand (web parity), not on supply open."""
+    if parent is not None:
+        from app.ui.sticker_print_flow import run_supply_sticker_print
+
+        path = run_supply_sticker_print(
+            parent,
+            db,
+            orders_svc,
+            source_id,
+            api_key,
+            supply_id,
+            order_ids=order_ids,
+            preloaded_stickers=preloaded_stickers,
+        )
+        if path is not None:
+            return path
+        # Cancelled — still return a placeholder path for callers/tests.
+        return Path(tempfile.gettempdir()) / "feedpilot_stickers_{}.html".format(
+            supply_id
+        )
+
+    path = prepare_supply_stickers_html(
+        db,
+        orders_svc,
+        source_id,
+        api_key,
+        supply_id,
+        order_ids=order_ids,
+        preloaded_stickers=preloaded_stickers,
+    )
+    return open_html_path(
+        path,
+        parent=None,
         title="Стикеры поставки",
-        output_dir=html_dir,
+        nested_print_preview=False,
+        wait_images=True,
     )

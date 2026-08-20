@@ -226,18 +226,18 @@ class PrintPickingListTests(unittest.TestCase):
 
 
 class PrintSupplyStickersOnDemandTests(unittest.TestCase):
-    @patch("app.services.print_docs.open_html")
+    @patch("app.services.print_docs.open_html_path")
     @patch("app.services.print_docs.fetch_cards", return_value={})
     @patch("app.services.print_docs.fetch_stickers_map")
     @patch("app.services.print_docs.existing_sticker_paths", create=True)
     @patch("app.services.print_docs.ProductService")
     def test_print_resumes_disk_and_fetches_only_missing(
-        self, product_svc, _existing, fetch_map, fetch_cards, open_html
+        self, product_svc, _existing, fetch_map, fetch_cards, open_html_path
     ):
         from app.services import print_docs
 
         product_svc.return_value.list_all.return_value = []
-        open_html.return_value = MagicMock(name="out.html")
+        open_html_path.return_value = MagicMock(name="out.html")
         orders_svc = MagicMock()
         orders_svc.orders_in_supply.return_value = [
             {"order_id": 1, "article": "a1", "nm_id": 10, "skus_json": "[]"},
@@ -266,6 +266,7 @@ class PrintSupplyStickersOnDemandTests(unittest.TestCase):
         args, kwargs = fetch_map.call_args
         self.assertEqual(args[1], [2])
         self.assertEqual(kwargs.get("persist_supply_id"), "WB-GI-1")
+        open_html_path.assert_called_once()
 
 
 class OpenHtmlTests(unittest.TestCase):

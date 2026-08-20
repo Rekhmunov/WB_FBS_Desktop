@@ -6,7 +6,8 @@ from pathlib import Path
 from typing import Optional
 
 from PyQt5.QtCore import QEventLoop, QUrl, Qt
-from PyQt5.QtPrintSupport import QPrintPreviewDialog, QPrinter
+from PyQt5.QtGui import QCursor
+from PyQt5.QtPrintSupport import QPrintDialog, QPrinter
 from PyQt5.QtWidgets import (
     QApplication,
     QDialog,
@@ -55,6 +56,7 @@ class HtmlPrintPreviewDialog(QDialog):
         self._loaded = False
         doc_title = str(title or self._html_path.stem)
         self.setWindowTitle(doc_title)
+        # Full-screen preview at 100% zoom (web print parity).
         prepare_modal_dialog(
             self,
             maximized=True,
@@ -71,7 +73,10 @@ class HtmlPrintPreviewDialog(QDialog):
         self.btn_print = QPushButton("Печать…")
         self.btn_print.setObjectName("bottomPrimary")
         self.btn_print.setEnabled(False)
-        self.btn_print.clicked.connect(self._print_preview)
+        # Document is already on screen — open the system print dialog directly.
+        # A nested QPrintPreviewDialog re-rasterizes every page at printer DPI
+        # and feels "stuck" on large picking lists (hundreds of orders).
+        self.btn_print.clicked.connect(self._print_now)
         self.btn_pdf = QPushButton("Сохранить PDF")
         self.btn_pdf.setObjectName("secondary")
         self.btn_pdf.setEnabled(False)
@@ -92,12 +97,25 @@ class HtmlPrintPreviewDialog(QDialog):
             )
         except Exception:
             pass
+        self._view.setZoomFactor(1.0)
         root.addWidget(self._view, 1)
         self._view.loadFinished.connect(self._on_load_finished)
         self._view.load(QUrl.fromLocalFile(str(self._html_path.resolve())))
 
+    def showEvent(self, event) -> None:  # noqa: N802
+        super(HtmlPrintPreviewDialog, self).showEvent(event)
+        self.setWindowState(self.windowState() | Qt.WindowMaximized)
+        try:
+            self._view.setZoomFactor(1.0)
+        except Exception:
+            pass
+
     def _on_load_finished(self, ok: bool) -> None:
         self._loaded = bool(ok)
+        try:
+            self._view.setZoomFactor(1.0)
+        except Exception:
+            pass
         for btn in (self.btn_print, self.btn_pdf):
             btn.setEnabled(ok)
         if not ok:
@@ -121,13 +139,27 @@ class HtmlPrintPreviewDialog(QDialog):
         loop.exec_()
         return result["ok"]
 
-    def _print_preview(self) -> None:
+    def _print_now(self) -> None:
+        """System print dialog — no second print-preview render pass."""
         printer = QPrinter(QPrinter.HighResolution)
-        preview = QPrintPreviewDialog(printer, self)
-        preview.setWindowFlags(standard_window_flags())
-        preview.setWindowTitle("Печать")
-        preview.paintRequested.connect(self._print_to_printer)
-        preview.exec_()
+        dialog = QPrintDialog(printer, self)
+        dialog.setWindowFlags(standard_window_flags())
+        dialog.setWindowTitle("Печать")
+        if dialog.exec_() != QPrintDialog.Accepted:
+            return
+        app = QApplication.instance()
+        if app is not None:
+            app.setOverrideCursor(QCursor(Qt.WaitCursor))
+        try:
+            ok = self._print_to_printer(printer)
+        finally:
+            if app is not None:
+                while app.overrideCursor() is not None:
+                    app.restoreOverrideCursor()
+        if ok:
+            QMessageBox.information(self, "Печать", "Документ отправлен на печать.")
+        else:
+            QMessageBox.warning(self, "Печать", "Не удалось отправить документ на печать.")
 
     def _save_pdf(self) -> None:
         default_name = self._html_path.with_suffix(".pdf").name
@@ -144,7 +176,16 @@ class HtmlPrintPreviewDialog(QDialog):
         printer = QPrinter(QPrinter.HighResolution)
         printer.setOutputFormat(QPrinter.PdfFormat)
         printer.setOutputFileName(path)
-        if self._print_to_printer(printer):
+        app = QApplication.instance()
+        if app is not None:
+            app.setOverrideCursor(QCursor(Qt.WaitCursor))
+        try:
+            ok = self._print_to_printer(printer)
+        finally:
+            if app is not None:
+                while app.overrideCursor() is not None:
+                    app.restoreOverrideCursor()
+        if ok:
             QMessageBox.information(self, "PDF", "Файл сохранён:\n{}".format(path))
         else:
             QMessageBox.warning(self, "PDF", "Не удалось сохранить PDF.")

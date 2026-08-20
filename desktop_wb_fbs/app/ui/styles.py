@@ -1354,12 +1354,6 @@ QLabel#kizBarcode {
     font-family: __FONT_BODY__;
     background: transparent;
 }
-QLabel#kizCodeIdx {
-    color: #8aa0b8;
-    font-size: 13px;
-    font-weight: 600;
-    background: transparent;
-}
 QLineEdit#kizCodeInput {
     min-height: 36px;
     padding: 6px 10px;

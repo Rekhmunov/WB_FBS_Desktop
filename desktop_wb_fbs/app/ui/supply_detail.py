@@ -21,6 +21,7 @@ from PyQt5.QtWidgets import (
     QMenu,
     QMessageBox,
     QPushButton,
+    QScrollArea,
     QSizePolicy,
     QSpinBox,
     QStyle,
@@ -1628,6 +1629,7 @@ class SupplyDetailDialog(QDialog):
         except Exception as exc:
             QMessageBox.critical(self, "Стикеры", str(exc))
             return
+
         dlg = QDialog(self)
         dlg.setWindowTitle("Печать по категориям · {}".format(self.supply_id))
         prepare_modal_dialog(
@@ -1638,37 +1640,169 @@ class SupplyDetailDialog(QDialog):
         )
         lay = QVBoxLayout(dlg)
         lay.setContentsMargins(24, 20, 24, 20)
+        lay.setSpacing(12)
+
         title = QLabel("Печать стикеров по категориям")
         title.setObjectName("dialogTitle")
         lay.addWidget(title)
-        table = QTableWidget(len(groups), 4)
-        table.setHorizontalHeaderLabels(["", "Категория", "Товар", "Кол-во"])
-        table.horizontalHeader().setStretchLastSection(True)
-        table.verticalHeader().setVisible(False)
-        table.verticalHeader().setDefaultSectionSize(40)
-        for i, g in enumerate(groups):
-            chk = QTableWidgetItem()
-            chk.setFlags(Qt.ItemIsUserCheckable | Qt.ItemIsEnabled)
-            chk.setCheckState(Qt.Unchecked)
-            chk.setData(Qt.UserRole, list(g.get("order_ids") or []))
-            table.setItem(i, 0, chk)
-            table.setItem(i, 1, QTableWidgetItem(str(g.get("category") or "")))
-            table.setItem(
-                i,
-                2,
-                QTableWidgetItem(
-                    "{} · {}".format(g.get("product_name") or "", g.get("article") or "")
-                ),
+
+        toolbar = QHBoxLayout()
+        toolbar.setSpacing(8)
+        btn_all = QPushButton("Выделить все")
+        btn_all.setObjectName("secondary")
+        btn_clear = QPushButton("Очистить все")
+        btn_clear.setObjectName("secondary")
+        selected_lab = QLabel("Выбрано: 0 категорий, Заказов: 0 шт.")
+        selected_lab.setStyleSheet("color:#64748b;")
+        toolbar.addWidget(btn_all)
+        toolbar.addWidget(btn_clear)
+        toolbar.addStretch(1)
+        toolbar.addWidget(selected_lab)
+        lay.addLayout(toolbar)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(0)
+        wrap = QWidget()
+        rows_lay = QVBoxLayout(wrap)
+        rows_lay.setContentsMargins(0, 0, 8, 0)
+        rows_lay.setSpacing(6)
+
+        row_widgets = []  # type: List[Dict[str, Any]]
+
+        def _cat_word(n: int) -> str:
+            abs_n = abs(int(n)) % 100
+            last = abs_n % 10
+            if 10 < abs_n < 20:
+                return "категорий"
+            if last == 1:
+                return "категория"
+            if 2 <= last <= 4:
+                return "категории"
+            return "категорий"
+
+        def _sync_ui() -> None:
+            selected_count = 0
+            orders_total = 0
+            for row in row_widgets:
+                checked = bool(row["cb"].isChecked())
+                # Keep layout stable like web (visibility:hidden, not display:none).
+                row["fill"].setEnabled(checked)
+                row["fill"].setStyleSheet(
+                    row["fill_style_on"] if checked else row["fill_style_off"]
+                )
+                row["frame"].setProperty("checkedRow", "true" if checked else "false")
+                row["frame"].style().unpolish(row["frame"])
+                row["frame"].style().polish(row["frame"])
+                if checked:
+                    selected_count += 1
+                    orders_total += int(row["qty"] or 0)
+            selected_lab.setText(
+                "Выбрано: {} {}, Заказов: {} шт.".format(
+                    selected_count, _cat_word(selected_count), orders_total
+                )
             )
-            table.setItem(i, 3, QTableWidgetItem(str(g.get("qty") or 0)))
-        lay.addWidget(table, 1)
+            print_btn.setEnabled(selected_count > 0)
+
+        def _fill_down(start_idx: int) -> None:
+            for i in range(start_idx, len(row_widgets)):
+                row_widgets[i]["cb"].blockSignals(True)
+                row_widgets[i]["cb"].setChecked(True)
+                row_widgets[i]["cb"].blockSignals(False)
+            _sync_ui()
+
+        for idx, g in enumerate(groups):
+            frame = QFrame()
+            frame.setObjectName("stickersCatRow")
+            frame.setStyleSheet(
+                """
+                QFrame#stickersCatRow {
+                    background: #ffffff;
+                    border: 1px solid #e2e8f0;
+                    border-radius: 8px;
+                }
+                QFrame#stickersCatRow[checkedRow="true"] {
+                    background: #f8fafc;
+                    border-color: #cbd5e1;
+                }
+                """
+            )
+            row = QHBoxLayout(frame)
+            row.setContentsMargins(12, 8, 8, 8)
+            row.setSpacing(10)
+
+            cb = QCheckBox()
+            name = str(g.get("product_name") or "—")
+            qty = int(g.get("qty") or 0)
+            label = QLabel("{} — {} шт.".format(name, qty))
+            label.setWordWrap(True)
+            label.setStyleSheet("border:none;background:transparent;")
+
+            fill = QToolButton()
+            fill.setObjectName("stickersCatFill")
+            fill.setText("▼")
+            fill.setToolTip("Выделить все ниже")
+            fill.setFixedSize(36, 36)
+            fill.setStyleSheet(
+                """
+                QToolButton#stickersCatFill {
+                    border: 1px solid #cbd5e1;
+                    border-radius: 8px;
+                    background: #fff;
+                    color: #0f172a;
+                    font-size: 12px;
+                }
+                QToolButton#stickersCatFill:hover {
+                    background: #f1f5f9;
+                }
+                """
+            )
+            fill.setVisible(False)
+            fill.clicked.connect(partial(_fill_down, idx))
+
+            cb.stateChanged.connect(lambda _state: _sync_ui())
+
+            row.addWidget(cb, 0, Qt.AlignVCenter)
+            row.addWidget(label, 1)
+            row.addWidget(fill, 0, Qt.AlignVCenter)
+            rows_lay.addWidget(frame)
+            row_widgets.append(
+                {
+                    "frame": frame,
+                    "cb": cb,
+                    "fill": fill,
+                    "qty": qty,
+                    "order_ids": list(g.get("order_ids") or []),
+                    "group_key": str(g.get("group_key") or ""),
+                }
+            )
+
+        rows_lay.addStretch(1)
+        scroll.setWidget(wrap)
+        lay.addWidget(scroll, 1)
+
+        def _select_all() -> None:
+            for row in row_widgets:
+                row["cb"].blockSignals(True)
+                row["cb"].setChecked(True)
+                row["cb"].blockSignals(False)
+            _sync_ui()
+
+        def _clear_all() -> None:
+            for row in row_widgets:
+                row["cb"].blockSignals(True)
+                row["cb"].setChecked(False)
+                row["cb"].blockSignals(False)
+            _sync_ui()
+
+        btn_all.clicked.connect(_select_all)
+        btn_clear.clicked.connect(_clear_all)
 
         def _print_selected() -> None:
             ids = []  # type: List[int]
-            for i in range(table.rowCount()):
-                item = table.item(i, 0)
-                if item and item.checkState() == Qt.Checked:
-                    ids.extend(int(x) for x in (item.data(Qt.UserRole) or []))
+            for row in row_widgets:
+                if row["cb"].isChecked():
+                    ids.extend(int(x) for x in (row["order_ids"] or []))
             if not ids:
                 QMessageBox.information(dlg, "Стикеры", "Выберите категории")
                 return
@@ -1690,11 +1824,15 @@ class SupplyDetailDialog(QDialog):
                 QMessageBox.critical(dlg, "Стикеры", str(exc))
 
         btns = QDialogButtonBox(QDialogButtonBox.Close)
-        print_btn = QPushButton("Печать выбранных")
+        print_btn = QPushButton("Печать")
+        print_btn.setObjectName("bottomPrimary")
+        print_btn.setEnabled(False)
         print_btn.clicked.connect(_print_selected)
         btns.addButton(print_btn, QDialogButtonBox.ActionRole)
         btns.rejected.connect(dlg.reject)
         lay.addWidget(btns)
+
+        _sync_ui()
         dlg.exec_()
 
     def _refresh_local_row_meta(self) -> None:

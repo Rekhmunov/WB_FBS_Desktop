@@ -289,6 +289,222 @@ def _sticker_missing_pixmap(order_id: object) -> QPixmap:
     return pix
 
 
+def build_picking_list_pixmaps(
+    supply_id: str,
+    supply_name: str,
+    groups: List[Dict[str, Any]],
+    variant: str = "summary",
+) -> List[QPixmap]:
+    """Paginate picking list into A4-like sheets for sheet preview / print."""
+    from collections import OrderedDict
+
+    mode = "extended" if str(variant).lower() == "extended" else "summary"
+    title = (
+        "Расширенный лист подбора" if mode == "extended" else "Лист подбора"
+    )
+    total_orders = sum(int(g.get("qty") or 0) for g in groups or [])
+    if total_orders % 10 == 1 and total_orders % 100 != 11:
+        order_word = "заказ"
+    elif 2 <= total_orders % 10 <= 4 and not (12 <= total_orders % 100 <= 14):
+        order_word = "заказа"
+    else:
+        order_word = "заказов"
+
+    blocks = []  # type: List[Tuple[str, Any, int]]
+    if mode == "summary":
+        summary_qty = OrderedDict()  # type: OrderedDict[str, int]
+        for g in groups or []:
+            name = str(g.get("product_name") or "—")
+            summary_qty[name] = summary_qty.get(name, 0) + int(g.get("qty") or 0)
+        blocks.append(("totals", "Всего {} {}".format(total_orders, order_word), 34))
+        if not summary_qty:
+            blocks.append(("summary", ("Нет заказов", 0), 32))
+        for name, qty in summary_qty.items():
+            blocks.append(("summary", (name, qty), 32))
+    else:
+        part_b_counts = {}  # type: Dict[str, int]
+        for g in groups or []:
+            for o in g.get("orders") or []:
+                pb = str(o.get("sticker_part_b") or "").strip()
+                if pb:
+                    part_b_counts[pb] = part_b_counts.get(pb, 0) + 1
+        dup = {pb for pb, n in part_b_counts.items() if n > 1}
+        blocks.append(("totals_ext", "Всего {} {}".format(total_orders, order_word), 34))
+        blocks.append(("colhead", None, 28))
+        for g in groups or []:
+            orders = list(g.get("orders") or [])
+            qty = int(g.get("qty") or len(orders))
+            meta_lines = [str(g.get("product_name") or "—")]
+            if g.get("brand"):
+                meta_lines.append(str(g.get("brand")))
+            if g.get("article"):
+                meta_lines.append(str(g.get("article")))
+            for b in g.get("barcodes") or []:
+                meta_lines.append(str(b))
+            if g.get("color"):
+                meta_lines.append("Цвет: {}".format(g.get("color")))
+            meta_lines.append("{} шт".format(qty))
+            blocks.append(("product", meta_lines, 18 + 16 * len(meta_lines)))
+            for o in orders:
+                pb = str(o.get("sticker_part_b") or "").strip()
+                pa = str(o.get("sticker_part_a") or "").strip()
+                sticker = (pa + pb) if (pa or pb) else "—"
+                blocks.append(
+                    (
+                        "order",
+                        {
+                            "oid": o.get("order_id"),
+                            "sticker": sticker,
+                            "dup": pb in dup,
+                        },
+                        28,
+                    )
+                )
+
+    page_w, page_h = 794, 1123
+    margin = 36
+    header_h = 78
+    footer_h = 28
+    content_top = margin + header_h
+    content_bottom = page_h - margin - footer_h
+    usable = content_bottom - content_top
+
+    pages_blocks = []  # type: List[List[Tuple[str, Any, int]]]
+    current = []  # type: List[Tuple[str, Any, int]]
+    used = 0
+    for block in blocks:
+        h = int(block[2])
+        if current and used + h > usable:
+            pages_blocks.append(current)
+            current = []
+            used = 0
+        current.append(block)
+        used += h
+    if current:
+        pages_blocks.append(current)
+    if not pages_blocks:
+        pages_blocks = [[("summary", ("Нет заказов", 0), 32)]]
+
+    pages = []  # type: List[QPixmap]
+    page_count = len(pages_blocks)
+    for page_idx, page_blocks in enumerate(pages_blocks, start=1):
+        pix = QPixmap(page_w, page_h)
+        pix.fill(Qt.white)
+        painter = QPainter(pix)
+        try:
+            painter.setRenderHint(QPainter.TextAntialiasing, True)
+            painter.setPen(Qt.black)
+            font = painter.font()
+            font.setFamily("Arial")
+            font.setBold(True)
+            font.setPointSize(16)
+            painter.setFont(font)
+            painter.drawText(
+                margin, margin, page_w - 2 * margin, 32,
+                Qt.AlignLeft | Qt.AlignVCenter, title,
+            )
+            font.setBold(False)
+            font.setPointSize(10)
+            painter.setFont(font)
+            painter.setPen(Qt.darkGray)
+            painter.drawText(
+                margin, margin + 34, page_w - 2 * margin, 24,
+                Qt.AlignLeft | Qt.AlignVCenter,
+                "{} · ID {}".format(supply_name or supply_id, supply_id),
+            )
+            painter.setPen(Qt.black)
+            y = content_top
+            for kind, payload, h in page_blocks:
+                if kind in ("totals", "totals_ext"):
+                    font.setBold(True)
+                    font.setPointSize(11)
+                    painter.setFont(font)
+                    painter.fillRect(margin, y, page_w - 2 * margin, h - 4, Qt.lightGray)
+                    painter.drawText(
+                        margin + 8, y, page_w - 2 * margin - 90, h - 4,
+                        Qt.AlignLeft | Qt.AlignVCenter, str(payload),
+                    )
+                    painter.drawText(
+                        page_w - margin - 80, y, 72, h - 4, Qt.AlignCenter, "Собрано",
+                    )
+                elif kind == "summary":
+                    name, qty = payload
+                    font.setBold(False)
+                    font.setPointSize(11)
+                    painter.setFont(font)
+                    text = (
+                        name if qty == 0 and name == "Нет заказов"
+                        else "{} — {} шт.".format(name, qty)
+                    )
+                    painter.drawText(
+                        margin + 8, y, page_w - 2 * margin - 90, h - 2,
+                        Qt.AlignLeft | Qt.AlignVCenter, text,
+                    )
+                    painter.drawRect(page_w - margin - 52, y + 8, 14, 14)
+                    painter.drawLine(margin, y + h - 2, page_w - margin, y + h - 2)
+                elif kind == "colhead":
+                    font.setBold(True)
+                    font.setPointSize(10)
+                    painter.setFont(font)
+                    painter.drawText(margin + 8, y, 160, h, Qt.AlignVCenter, "Заказ")
+                    painter.drawText(margin + 180, y, 280, h, Qt.AlignVCenter, "Стикер")
+                    painter.drawText(
+                        page_w - margin - 80, y, 72, h, Qt.AlignCenter, "Собрано",
+                    )
+                    painter.drawLine(margin, y + h - 2, page_w - margin, y + h - 2)
+                elif kind == "product":
+                    font.setBold(True)
+                    font.setPointSize(11)
+                    painter.setFont(font)
+                    yy = y + 4
+                    for i, line in enumerate(payload):
+                        if i == 1:
+                            font.setBold(False)
+                            font.setPointSize(10)
+                            painter.setFont(font)
+                            painter.setPen(Qt.darkGray)
+                        painter.drawText(
+                            margin + 8, yy, page_w - 2 * margin - 16, 16,
+                            Qt.AlignLeft | Qt.AlignVCenter, str(line),
+                        )
+                        yy += 16
+                    painter.setPen(Qt.black)
+                    painter.drawLine(margin, y + h - 2, page_w - margin, y + h - 2)
+                elif kind == "order":
+                    font.setBold(bool(payload.get("dup")))
+                    font.setPointSize(10)
+                    painter.setFont(font)
+                    painter.setPen(Qt.red if payload.get("dup") else Qt.black)
+                    painter.drawText(
+                        margin + 8, y, 160, h - 2,
+                        Qt.AlignLeft | Qt.AlignVCenter, str(payload.get("oid") or ""),
+                    )
+                    painter.drawText(
+                        margin + 180, y, 280, h - 2,
+                        Qt.AlignLeft | Qt.AlignVCenter, str(payload.get("sticker") or "—"),
+                    )
+                    painter.setPen(Qt.black)
+                    font.setBold(False)
+                    painter.setFont(font)
+                    painter.drawRect(page_w - margin - 52, y + 6, 14, 14)
+                    painter.drawLine(margin, y + h - 2, page_w - margin, y + h - 2)
+                y += h
+
+            font.setBold(False)
+            font.setPointSize(9)
+            painter.setFont(font)
+            painter.setPen(Qt.darkGray)
+            painter.drawText(
+                margin, page_h - margin - 18, page_w - 2 * margin, 18,
+                Qt.AlignRight | Qt.AlignVCenter,
+                "Лист {} из {}".format(page_idx, page_count),
+            )
+        finally:
+            painter.end()
+        pages.append(pix)
+    return pages
+
+
 def show_order_stickers(
     api_key: str, order_ids: List[int], parent: Optional[QWidget] = None
 ) -> None:

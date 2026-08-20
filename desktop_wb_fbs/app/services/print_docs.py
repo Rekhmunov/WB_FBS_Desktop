@@ -939,16 +939,32 @@ def print_picking_list(
         stickers = {}
         cards = {}
     groups = build_groups(rows, stickers, cards, products)
-    html_doc = render_picking_list_html(
-        supply_id,
-        str(supply.get("name") or ""),
-        groups,
-        variant=variant,
-    )
     title = (
         "Расширенный лист подбора"
         if str(variant).lower() == "extended"
         else "Лист подбора"
+    )
+    supply_name = str(supply.get("name") or "")
+    if parent is not None:
+        from app.ui.dialogs_extra import (
+            build_picking_list_pixmaps,
+            show_pixmap_print_preview,
+        )
+
+        _clear_override_cursor()
+        pixmaps = build_picking_list_pixmaps(
+            supply_id, supply_name, groups, variant=variant
+        )
+        show_pixmap_print_preview(pixmaps, title, parent)
+        return Path(tempfile.gettempdir()) / "feedpilot_picking_{}_{}.html".format(
+            variant, supply_id
+        )
+
+    html_doc = render_picking_list_html(
+        supply_id,
+        supply_name,
+        groups,
+        variant=variant,
     )
     return open_html(
         html_doc,

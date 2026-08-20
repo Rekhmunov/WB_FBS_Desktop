@@ -7,7 +7,7 @@ from typing import Optional
 
 from PyQt5.QtCore import QEventLoop, QTimer, QUrl, Qt
 from PyQt5.QtGui import QCursor
-from PyQt5.QtPrintSupport import QPrintPreviewDialog, QPrinter
+from PyQt5.QtPrintSupport import QPrintPreviewDialog, QPrintPreviewWidget, QPrinter
 from PyQt5.QtWidgets import (
     QApplication,
     QDialog,
@@ -200,6 +200,17 @@ class HtmlPrintPreviewDialog(QDialog):
         preview.setWindowFlags(standard_window_flags())
         preview.setWindowTitle("Предпросмотр печати")
         preview.paintRequested.connect(self._print_to_printer)
+
+        def _zoom_100() -> None:
+            widget = preview.printPreviewWidget()
+            if widget is None:
+                return
+            widget.setZoomMode(QPrintPreviewWidget.CustomZoom)
+            widget.setZoomFactor(1.0)
+
+        # Default Qt mode is FitInView; force 100% after the first paint settles.
+        preview.paintRequested.connect(lambda _printer: QTimer.singleShot(0, _zoom_100))
+        _zoom_100()
         preview.exec_()
 
     def _save_pdf(self) -> None:

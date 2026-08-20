@@ -206,6 +206,7 @@ class OrdersService:
         search: str = "",
         limit: int = 50,
         offset: int = 0,
+        include_order_warehouse: bool = True,
     ) -> Tuple[List[Dict[str, Any]], int]:
         cond = ["source_id = ?", "done = ?"]
         params = [source_id, 1 if done else 0]  # type: List[Any]
@@ -272,14 +273,14 @@ class OrdersService:
                     done=False, boxes_count=it["boxes_count"]
                 )
                 it["status_kind"] = "assembly"
-            if oids:
+            if include_order_warehouse and oids:
                 try:
                     first_oids.append(int(oids[0]))
                 except (TypeError, ValueError):
                     pass
 
         wh_by_oid = {}  # type: Dict[int, Dict[str, Any]]
-        if first_oids:
+        if include_order_warehouse and first_oids:
             placeholders = ",".join("?" for _ in first_oids)
             with self.db.connect() as conn:
                 wh_rows = conn.execute(
@@ -298,7 +299,7 @@ class OrdersService:
         for it in items:
             oids = it.get("order_ids") or []
             wh_row = None
-            if oids:
+            if include_order_warehouse and oids:
                 try:
                     wh_row = wh_by_oid.get(int(oids[0]))
                 except (TypeError, ValueError):

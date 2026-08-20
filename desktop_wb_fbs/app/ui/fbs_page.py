@@ -473,7 +473,7 @@ class FbsPage(QWidget):
 
         self.btn_new_supply.setVisible(is_new)
         self.btn_add_supply.setVisible(is_new)
-        self.btn_open_supply.setVisible(bool(sid) and (is_asm or is_del))
+        self.btn_open_supply.setVisible(bool(sid) and is_asm)
         self.btn_print_stickers.setVisible(
             (is_new and has_new_sel) or (is_asm and bool(sid))
         )
@@ -484,6 +484,7 @@ class FbsPage(QWidget):
         # Web parity: bottom bar hides entirely with no selection on the
         # "new" tab; on assembly/delivery it hides until a supply row is
         # picked (pagination below stays visible regardless).
+        # Delivery: only QR of the supply — no open / order stickers.
         if is_new:
             visible = has_new_sel
         elif is_asm or is_del:
@@ -528,8 +529,10 @@ class FbsPage(QWidget):
 
         if self._tab == "new":
             self.search.setPlaceholderText("Поиск по заказу, артикулу, ШК…")
-        else:
+        elif self._tab == "assembly":
             self.search.setPlaceholderText("Поиск по поставке, заказу, складу…")
+        else:
+            self.search.setPlaceholderText("Поиск по поставке…")
 
         limit = int(self.page_size.currentData() or 50)
         offset = self._page * limit
@@ -574,8 +577,14 @@ class FbsPage(QWidget):
             self.sel_label.setText("Поставки на сборке")
             self.pager_total.setText("Поставок: {}".format(total))
         else:
+            # Delivery: supply rows only — no order decrypt / detail open.
             rows, total = self.orders.list_supplies(
-                sid, done=True, search=search, limit=limit, offset=offset
+                sid,
+                done=True,
+                search=search,
+                limit=limit,
+                offset=offset,
+                include_order_warehouse=False,
             )
             self._last_total = total
             self._fill_supplies_table(rows)
@@ -993,6 +1002,9 @@ class FbsPage(QWidget):
         self._apply_table_col_widths(layout)
 
     def _open_supply_by_id(self, sid: str) -> None:
+        # Delivery tab is a read-only supply list — do not open / decrypt orders.
+        if self._tab == "delivery":
+            return
         from app.ui.supply_detail import SupplyDetailDialog
 
         src = self.current_source()
@@ -1212,6 +1224,8 @@ class FbsPage(QWidget):
         return str(item.data(Qt.UserRole) or "").strip() or None
 
     def open_selected_supply(self) -> None:
+        if self._tab == "delivery":
+            return
         sid = self._selected_supply_id()
         if not sid:
             QMessageBox.information(self, "Поставка", "Выберите поставку")
@@ -1219,7 +1233,7 @@ class FbsPage(QWidget):
         self._open_supply_by_id(sid)
 
     def on_row_double_click(self) -> None:
-        if self._tab in ("assembly", "delivery"):
+        if self._tab == "assembly":
             self.open_selected_supply()
 
     def _print_stickers_for(self, sid: str) -> None:
@@ -1308,12 +1322,14 @@ class FbsPage(QWidget):
         src = self.current_source()
         if not src:
             return
-        if self._tab in ("assembly", "delivery"):
+        if self._tab == "assembly":
             sid = self._selected_supply_id()
             if not sid:
                 QMessageBox.information(self, "Стикеры товаров", "Выберите поставку")
                 return
             self._print_stickers_for(sid)
+            return
+        if self._tab == "delivery":
             return
         ids = sorted(self._selected_order_ids)
         if not ids:

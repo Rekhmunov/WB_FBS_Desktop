@@ -99,6 +99,9 @@ class HtmlPrintPreviewDialog(QDialog):
             settings.setAttribute(
                 QWebEngineSettings.LocalContentCanAccessFileUrls, True
             )
+            settings.setAttribute(
+                QWebEngineSettings.LocalContentCanAccessRemoteUrls, True
+            )
         except Exception:
             pass
         self._view.setZoomFactor(1.0)

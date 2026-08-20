@@ -791,8 +791,17 @@ def render_stickers_print_html(supply_id: str, groups: List[Dict[str, Any]]) -> 
         for o in g.get("orders") or []:
             page_no += 1
             src = str(o.get("sticker_src") or o.get("sticker_file") or "").strip()
-            if src and not src.startswith("data:") and not src.startswith("file:"):
-                # Legacy base64 without scheme.
+            # Relative filenames (same folder as HTML), file:// and data: must stay as-is.
+            # Only wrap bare legacy base64 (no scheme / no path / no image extension).
+            if src and not (
+                src.startswith("data:")
+                or src.startswith("file:")
+                or "/" in src
+                or "\\" in src
+                or src.lower().endswith(
+                    (".png", ".jpg", ".jpeg", ".webp", ".gif", ".svg")
+                )
+            ):
                 src = "data:image/png;base64,{}".format(src)
             if not src:
                 pages.append(

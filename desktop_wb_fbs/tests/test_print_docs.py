@@ -300,5 +300,68 @@ class OpenHtmlTests(unittest.TestCase):
         desktop.openUrl.assert_called_once()
 
 
+class RenderStickersHtmlTests(unittest.TestCase):
+    def test_relative_png_filename_not_wrapped_as_base64(self):
+        from app.services.print_docs import render_stickers_print_html
+
+        html = render_stickers_print_html(
+            "WB-GI-1",
+            [
+                {
+                    "qty": 1,
+                    "product_name": "Товар",
+                    "article": "A1",
+                    "barcodes": [],
+                    "orders": [
+                        {"order_id": 42, "sticker_src": "42.png"},
+                    ],
+                }
+            ],
+        )
+        self.assertIn('src="42.png"', html)
+        self.assertNotIn("data:image/png;base64,42.png", html)
+
+    def test_file_uri_preserved(self):
+        from app.services.print_docs import render_stickers_print_html
+
+        html = render_stickers_print_html(
+            "WB-GI-1",
+            [
+                {
+                    "qty": 1,
+                    "product_name": "Товар",
+                    "article": "A1",
+                    "barcodes": [],
+                    "orders": [
+                        {
+                            "order_id": 7,
+                            "sticker_src": "file:///tmp/cache/7.png",
+                        },
+                    ],
+                }
+            ],
+        )
+        self.assertIn('src="file:///tmp/cache/7.png"', html)
+
+    def test_bare_base64_still_gets_data_scheme(self):
+        from app.services.print_docs import render_stickers_print_html
+
+        html = render_stickers_print_html(
+            "WB-GI-1",
+            [
+                {
+                    "qty": 1,
+                    "product_name": "Товар",
+                    "article": "A1",
+                    "barcodes": [],
+                    "orders": [
+                        {"order_id": 1, "sticker_src": "iVBORw0KGgo"},
+                    ],
+                }
+            ],
+        )
+        self.assertIn('src="data:image/png;base64,iVBORw0KGgo"', html)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -62,7 +62,10 @@ def _print_pixmaps(parent: QWidget, pixmaps: List[QPixmap]) -> None:
 
 
 def show_png_list(
-    pngs: List[bytes], title: str, parent: Optional[QWidget] = None
+    pngs: List[bytes],
+    title: str,
+    parent: Optional[QWidget] = None,
+    sheet_labels: Optional[List[str]] = None,
 ) -> None:
     pixmaps = []  # type: List[QPixmap]
     for raw in pngs:
@@ -70,13 +73,16 @@ def show_png_list(
         if raw:
             pix.loadFromData(raw)
         pixmaps.append(pix)
-    show_pixmap_print_preview(pixmaps, title, parent)
+    show_pixmap_print_preview(
+        pixmaps, title, parent, sheet_labels=sheet_labels
+    )
 
 
 def show_pixmap_print_preview(
     pixmaps: List[QPixmap],
     title: str,
     parent: Optional[QWidget] = None,
+    sheet_labels: Optional[List[str]] = None,
 ) -> None:
     """Scroll preview with one visual sheet per printed page."""
     valid = [p for p in pixmaps if p is not None and not p.isNull()]
@@ -89,6 +95,7 @@ def show_pixmap_print_preview(
         return
 
     total = len(valid)
+    labels = list(sheet_labels or [])
     dlg = QDialog(parent)
     dlg.setWindowTitle(title)
     prepare_modal_dialog(
@@ -139,11 +146,15 @@ def show_pixmap_print_preview(
         sheet_lay.setContentsMargins(14, 12, 14, 14)
         sheet_lay.setSpacing(8)
 
-        meta = QLabel("Лист {} из {}".format(index, total))
+        extra = ""
+        if index - 1 < len(labels) and str(labels[index - 1] or "").strip():
+            extra = " · {}".format(str(labels[index - 1]).strip())
+        meta = QLabel("Лист {} из {}{}".format(index, total, extra))
         meta.setStyleSheet(
             "color:#64748b;font-size:12px;font-weight:600;"
             "border:none;background:transparent;"
         )
+        meta.setWordWrap(True)
         sheet_lay.addWidget(meta)
 
         rule = QFrame()

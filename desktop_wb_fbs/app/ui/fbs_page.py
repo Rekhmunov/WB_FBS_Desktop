@@ -1358,7 +1358,16 @@ class FbsPage(QWidget):
             return
         try:
             pngs = trbx.stickers_png(str(src["api_key"]), sid, ids)
-            show_png_list(pngs, "Стикеры коробов · {}".format(sid), self)
+            labels = [
+                "Грузоместо {}".format(ids[i] if i < len(ids) else i + 1)
+                for i in range(len(pngs))
+            ]
+            show_png_list(
+                pngs,
+                "Стикеры коробов · {}".format(sid),
+                self,
+                sheet_labels=labels,
+            )
         except Exception as exc:
             QMessageBox.critical(self, "Стикеры коробов", str(exc))
 

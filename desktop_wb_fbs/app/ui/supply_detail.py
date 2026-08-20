@@ -2136,7 +2136,12 @@ class TrbxDialog(QDialog):
             pngs = self.trbx.stickers_png(self.api_key, self.supply_id, [box_id])
             if not pngs:
                 raise RuntimeError("WB не вернул QR для грузоместа {}".format(box_id))
-            show_png_list(pngs, "QR грузоместа {}".format(box_id), self)
+            show_png_list(
+                pngs,
+                "QR грузоместа {}".format(box_id),
+                self,
+                sheet_labels=["Грузоместо {}".format(box_id)],
+            )
         except Exception as exc:
             QMessageBox.critical(self, "Грузоместа", str(exc))
 
@@ -2147,7 +2152,16 @@ class TrbxDialog(QDialog):
             return
         try:
             pngs = self.trbx.stickers_png(self.api_key, self.supply_id, ids)
-            show_png_list(pngs, "QR-коды грузовых мест", self)
+            labels = [
+                "Грузоместо {}".format(ids[i] if i < len(ids) else i + 1)
+                for i in range(len(pngs))
+            ]
+            show_png_list(
+                pngs,
+                "QR-коды грузовых мест",
+                self,
+                sheet_labels=labels,
+            )
         except Exception as exc:
             QMessageBox.critical(self, "Грузоместа", str(exc))
 

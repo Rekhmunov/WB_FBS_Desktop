@@ -780,6 +780,7 @@ class SupplyDetailDialog(QDialog):
         self._add_chip("QR поставки {}".format(self.supply_id), qr=True)
 
     def _show_loading_table(self) -> None:
+        self._clear_loading_table()
         self.table.blockSignals(True)
         self.table.setRowCount(1)
         loading = QLabel("Идёт загрузка данных поставки…")
@@ -794,6 +795,31 @@ class SupplyDetailDialog(QDialog):
         self._load_detail = ""
         self._render_load_status()
 
+    def _clear_loading_table(self) -> None:
+        """Remove the loading overlay so it cannot linger over rendered rows.
+
+        Qt can leave a spanned cell-widget painted on the viewport after
+        ``clearSpans`` / ``setRowCount`` if we only replace widgets later —
+        especially when ``processEvents`` runs mid-render on re-open.
+        """
+        self._loading_table_label = None
+        if not hasattr(self, "table") or self.table is None:
+            return
+        self.table.blockSignals(True)
+        try:
+            cols = max(1, int(self.table.columnCount()))
+            for col in range(cols):
+                w = self.table.cellWidget(0, col)
+                if w is None:
+                    continue
+                self.table.removeCellWidget(0, col)
+                w.hide()
+                w.setParent(None)
+                w.deleteLater()
+            self.table.clearSpans()
+        finally:
+            self.table.blockSignals(False)
+
     def _set_load_status(self, text: str = "") -> None:
         """Legacy single-line status (cache / wait messages)."""
         msg = str(text or "").strip()
@@ -806,6 +832,9 @@ class SupplyDetailDialog(QDialog):
         self.load_status.show()
 
     def _render_load_status(self) -> None:
+        if not self._loading and int(self._load_step or 0) <= 0:
+            # Initial placeholder before worker starts — still show header checklist.
+            pass
         step = int(self._load_step or 0)
         total = len(_LOAD_STEPS)
         if step <= 0:
@@ -817,6 +846,9 @@ class SupplyDetailDialog(QDialog):
                 )
             )
             self.load_status.show()
+            return
+        if not self._loading:
+            # Stale progress after data is already on screen — ignore.
             return
         lines = [
             "<b>Загрузка данных поставки · шаг {} из {}</b>".format(
@@ -845,7 +877,7 @@ class SupplyDetailDialog(QDialog):
         self.load_status.setText("<br>".join(lines))
         self.load_status.show()
         lab = getattr(self, "_loading_table_label", None)
-        if lab is not None and step > 0:
+        if lab is not None and self._loading and step > 0:
             current = _LOAD_STEPS[min(step, total) - 1] if step else "данные"
             lab.setText(
                 "Идёт загрузка: {}…{}".format(
@@ -861,6 +893,8 @@ class SupplyDetailDialog(QDialog):
         if not force:
             session = supply_session.get_session(self.source_id, self.supply_id)
             if session and session.core_ready:
+                self._loading = False
+                self._clear_loading_table()
                 self._apply_loaded_payload(supply_session.snapshot_for_ui(session))
                 self._set_load_status("")
                 self._set_actions_ready(True)
@@ -889,6 +923,13 @@ class SupplyDetailDialog(QDialog):
         worker.start()
 
     def _on_load_progress(self, step: int, total: int, detail: str) -> None:
+        worker = self._load_worker
+        if (
+            not self._loading
+            or worker is None
+            or int(getattr(worker, "generation", -1)) != self._load_gen
+        ):
+            return
         self._load_step = int(step or 0)
         self._load_detail = str(detail or "").strip()
         self._render_load_status()
@@ -912,12 +953,15 @@ class SupplyDetailDialog(QDialog):
             rows=order_count,
         )
         supply_detail_cache.put(self.source_id, self.supply_id, data)
-        self._apply_loaded_payload(data)
+        # Drop loading overlay before paint; processEvents mid-render must not
+        # revive the «Идёт загрузка…» label.
         self._loading = False
         self._load_worker = None
         self._load_step = 0
         self._load_detail = ""
+        self._clear_loading_table()
         self._set_load_status("")
+        self._apply_loaded_payload(data)
         self._set_actions_ready(True)
         diag_write(
             "supply.ui.actions_ready",
@@ -927,15 +971,16 @@ class SupplyDetailDialog(QDialog):
             rows=order_count,
             png_deferred=True,
         )
+
     def _on_load_failed(self, message: str) -> None:
         self._loading = False
         self._load_worker = None
         self._load_step = 0
         self._load_detail = ""
         self._set_load_status("")
+        self._clear_loading_table()
         self.table.blockSignals(True)
         self.table.setRowCount(1)
-        self.table.clearSpans()
         err = QLabel(str(message or "Ошибка загрузки"))
         err.setObjectName("hint")
         err.setWordWrap(True)
@@ -1005,8 +1050,8 @@ class SupplyDetailDialog(QDialog):
         self._sync_select_all()
 
     def _render_table(self) -> None:
+        self._clear_loading_table()
         rows = list(self._all_rows)
-        self.table.clearSpans()
         self.table.blockSignals(True)
         self.table.setRowCount(len(rows))
         self._row_order_ids = []

@@ -57,6 +57,7 @@ from app.ui.format_helpers import (
     make_photo_label,
 )
 from app.ui.layout_utils import FlowLayout
+from app.ui.table_col_widths import PersistentColumnWidths
 from app.wb import cargo_type_label, parse_json_list
 
 _RENDER_BATCH = 50
@@ -420,17 +421,20 @@ class SupplyDetailDialog(QDialog):
         self.table.setObjectName("sdTable")
         self.table.setAlternatingRowColors(False)
         self.table.setHorizontalHeaderLabels(["", "Заказ", "Товар", ""])
-        self.table.setColumnWidth(0, 40)
-        self.table.setColumnWidth(1, 200)
-        self.table.setColumnWidth(3, 52)
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
-        self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
-        self.table.horizontalHeader().setStretchLastSection(False)
         self.table.verticalHeader().setVisible(False)
         self.table.verticalHeader().setDefaultSectionSize(148)
         self.table.setShowGrid(False)
         self.table.setFocusPolicy(Qt.NoFocus)
+        self._col_widths = PersistentColumnWidths(
+            self.db,
+            self.table,
+            "supply_detail_table_cols",
+            [40, 200, 420, 52],
+            parent=self,
+        )
+        self._col_widths.apply()
 
         # Select-all checkbox overlaid on header column 0 (web thead parity).
         self.select_all_cb = QCheckBox()

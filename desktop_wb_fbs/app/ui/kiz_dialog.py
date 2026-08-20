@@ -11,7 +11,6 @@ from PyQt5.QtWidgets import (
     QDialog,
     QFrame,
     QHBoxLayout,
-    QHeaderView,
     QLabel,
     QLineEdit,
     QMenu,
@@ -47,6 +46,7 @@ from app.ui.format_helpers import (
     build_order_cell_widget,
     build_product_cell_widget,
 )
+from app.ui.table_col_widths import PersistentColumnWidths
 from app.wb import cancel_reason_label, is_cancelled_status
 
 
@@ -359,17 +359,16 @@ class KizDialog(QDialog):
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.table.setShowGrid(False)
-        hdr = self.table.horizontalHeader()
-        hdr.setStretchLastSection(False)
-        hdr.setSectionResizeMode(0, QHeaderView.Fixed)
-        hdr.setSectionResizeMode(1, QHeaderView.Stretch)
-        hdr.setSectionResizeMode(2, QHeaderView.Fixed)
-        hdr.setSectionResizeMode(3, QHeaderView.Fixed)
-        self.table.setColumnWidth(0, 200)
-        self.table.setColumnWidth(2, 340)
-        self.table.setColumnWidth(3, 52)
         self.table.verticalHeader().setVisible(False)
         self.table.verticalHeader().setDefaultSectionSize(148)
+        self._col_widths = PersistentColumnWidths(
+            self.kiz.db,
+            self.table,
+            "kiz_modal_table_cols",
+            [200, 420, 340, 52],
+            parent=self,
+        )
+        self._col_widths.apply()
         root.addWidget(self.table, 1)
 
         self._set_filters_ready(False)

@@ -594,6 +594,9 @@ class PickDialog(QDialog):
             lab.setProperty("state", "ok")
         else:
             return None
+        lab.setWordWrap(True)
+        lab.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        lab.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         lab.style().unpolish(lab)
         lab.style().polish(lab)
         return lab
@@ -619,12 +622,16 @@ class PickDialog(QDialog):
         clear_btn.setText("×")
         clear_btn.setToolTip("Сбросить проверку")
         clear_btn.clicked.connect(partial(self._clear_sku, oid))
-        line.addWidget(inp, 1)
-        line.addWidget(clear_btn)
-        lay.addLayout(line)
+        mid = QVBoxLayout()
+        mid.setSpacing(4)
+        mid.setContentsMargins(0, 0, 0, 0)
+        mid.addWidget(inp)
         chip = self._sku_status_label(row, err)
         if chip:
-            lay.addWidget(chip)
+            mid.addWidget(chip)
+        line.addLayout(mid, 1)
+        line.addWidget(clear_btn, 0, Qt.AlignTop)
+        lay.addLayout(line)
         lay.addStretch(1)
         self._sku_inputs[oid] = inp
         return wrap

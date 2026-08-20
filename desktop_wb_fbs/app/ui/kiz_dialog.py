@@ -764,6 +764,9 @@ class KizDialog(QDialog):
             return None
         lab = QLabel()
         lab.setObjectName("kizCodeStatus")
+        lab.setWordWrap(True)
+        lab.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        lab.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         if status == "ok":
             lab.setText("Проверка пройдена")
             lab.setProperty("state", "ok")
@@ -788,8 +791,6 @@ class KizDialog(QDialog):
         inputs = []  # type: List[QLineEdit]
         can_remove = len(codes) > 1
         for idx, code in enumerate(codes):
-            block = QVBoxLayout()
-            block.setSpacing(4)
             line = QHBoxLayout()
             line.setSpacing(8)
             idx_lab = QLabel(str(idx + 1))
@@ -809,14 +810,18 @@ class KizDialog(QDialog):
                 "Удалить строку КИЗ" if can_remove else "Очистить маркировку"
             )
             clear_btn.clicked.connect(partial(self._clear_code, oid, idx))
-            line.addWidget(idx_lab)
-            line.addWidget(inp, 1)
-            line.addWidget(clear_btn)
-            block.addLayout(line)
+            # Status under the input only — same width when column is resized.
+            mid = QVBoxLayout()
+            mid.setSpacing(4)
+            mid.setContentsMargins(0, 0, 0, 0)
+            mid.addWidget(inp)
             chip = self._code_status_label(row, code, err)
             if chip:
-                block.addWidget(chip)
-            lay.addLayout(block)
+                mid.addWidget(chip)
+            line.addWidget(idx_lab, 0, Qt.AlignTop)
+            line.addLayout(mid, 1)
+            line.addWidget(clear_btn, 0, Qt.AlignTop)
+            lay.addLayout(line)
             inputs.append(inp)
         add_btn = QPushButton("+ Добавить КИЗ")
         add_btn.setObjectName("kizAddBtn")

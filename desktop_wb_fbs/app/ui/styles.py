@@ -1335,11 +1335,12 @@ QToolButton#kizCodeRemove:hover {
     background: #fef2f2;
 }
 QLabel#kizCodeStatus {
-    padding: 2px 8px;
-    border-radius: 6px;
+    padding: 6px 10px;
+    border-radius: 8px;
     font-size: 12px;
     font-weight: 600;
     background: transparent;
+    min-height: 28px;
 }
 QLabel#kizCodeStatus[state="pending"] {
     color: #92400e;

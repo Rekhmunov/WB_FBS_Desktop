@@ -345,7 +345,10 @@ class CollectMgtService:
             if group.get("mode") != "skip":
                 groups.append(group)
 
-        needs_modal = any(g.get("mode") in ("create", "choose") for g in groups)
+        # add_one: one active compatible supply — confirm before adding (Да / Нет / Новая).
+        needs_modal = any(
+            g.get("mode") in ("create", "choose", "add_one") for g in groups
+        )
         return {
             "ok": True,
             "mgt_count": len(orders),

@@ -102,6 +102,63 @@ class PlanGroupTests(unittest.TestCase):
         self.assertEqual(group["default_supply_id"], "WB-E-1")
         self.assertEqual(empties, [])
 
+    def test_preview_add_one_needs_modal(self) -> None:
+        db = MagicMock()
+        orders = MagicMock()
+        orders.new_mgt_orders.return_value = [
+            {
+                "order_id": 10,
+                "is_b2b": 0,
+                "warehouse_id": 1,
+                "raw_json": "{}",
+                "supplier_status": "new",
+                "wb_status": "waiting",
+            }
+        ]
+        orders.list_supplies.return_value = (
+            [
+                {
+                    "supply_id": "WB-S-1",
+                    "name": "Active MGT",
+                    "cargo_type": 1,
+                    "is_b2b": 0,
+                    "order_ids_json": "[1]",
+                    "order_ids": [1],
+                    "raw_json": "{}",
+                }
+            ],
+            1,
+        )
+        conn = MagicMock()
+        conn.__enter__ = MagicMock(return_value=conn)
+        conn.__exit__ = MagicMock(return_value=False)
+        conn.execute.return_value.fetchall.return_value = [{"warehouse_id": 1}]
+        db.connect.return_value = conn
+        preview = CollectMgtService(db, orders).preview(1)
+        self.assertEqual(preview["groups"][0]["mode"], "add_one")
+        self.assertTrue(preview["needs_modal"])
+
+
+class PreviewForceCreateTests(unittest.TestCase):
+    def test_force_create_rewrites_add_one(self) -> None:
+        from app.ui.dialogs_extra import preview_force_create
+
+        preview = {
+            "groups": [
+                {
+                    "mode": "add_one",
+                    "default_supply_id": "WB-1",
+                    "suggested_name": "Поставка от 01.01.2026",
+                },
+                {"mode": "create", "default_supply_id": ""},
+            ]
+        }
+        out = preview_force_create(preview)
+        self.assertEqual(out["groups"][0]["mode"], "create")
+        self.assertEqual(out["groups"][0]["default_supply_id"], "")
+        self.assertEqual(out["groups"][1]["mode"], "create")
+        self.assertTrue(out["needs_modal"])
+
 
 class PreviewTests(unittest.TestCase):
     def test_preview_existing_names_exclude_suggested(self) -> None:

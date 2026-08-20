@@ -1135,8 +1135,61 @@ class FbsPage(QWidget):
             return
 
         result = None  # type: Optional[Dict[str, Any]]
-        # Web: when every group is add_one → execute without modal.
-        if not preview.get("needs_modal"):
+        groups = [
+            g
+            for g in (preview.get("groups") or [])
+            if isinstance(g, dict) and str(g.get("mode") or "") != "skip"
+        ]
+        only_add_one = bool(groups) and all(
+            str(g.get("mode") or "") == "add_one" for g in groups
+        )
+
+        if only_add_one:
+            from app.ui.dialogs_extra import (
+                CollectMgtAddConfirmDialog,
+                preview_force_create,
+            )
+
+            confirm = CollectMgtAddConfirmDialog(preview, self)
+            if not confirm.exec_():
+                return
+            if confirm.choice == "add":
+                decisions = [
+                    {
+                        "group_key": str(g.get("group_key") or ""),
+                        "is_b2b": bool(g.get("is_b2b")),
+                        "action": "add",
+                        "supply_id": str(g.get("default_supply_id") or ""),
+                    }
+                    for g in groups
+                ]
+                try:
+                    result = svc.execute(
+                        int(src["id"]), str(src["api_key"]), decisions
+                    )
+                except Exception as exc:
+                    QMessageBox.critical(self, "МГТ", str(exc))
+                    return
+            else:
+                dlg = CollectMgtDialog(
+                    self.db,
+                    self.orders,
+                    src,
+                    self,
+                    preview=preview_force_create(preview),
+                )
+                if not dlg.exec_():
+                    return
+                result = dlg.result_payload
+        elif preview.get("needs_modal"):
+            dlg = CollectMgtDialog(
+                self.db, self.orders, src, self, preview=preview
+            )
+            if not dlg.exec_():
+                return
+            result = dlg.result_payload
+        else:
+            # No open supply / no name input needed (should be rare).
             decisions = [
                 {
                     "group_key": str(g.get("group_key") or ""),
@@ -1144,7 +1197,7 @@ class FbsPage(QWidget):
                     "action": "add",
                     "supply_id": str(g.get("default_supply_id") or ""),
                 }
-                for g in (preview.get("groups") or [])
+                for g in groups
             ]
             try:
                 result = svc.execute(
@@ -1153,13 +1206,6 @@ class FbsPage(QWidget):
             except Exception as exc:
                 QMessageBox.critical(self, "МГТ", str(exc))
                 return
-        else:
-            dlg = CollectMgtDialog(
-                self.db, self.orders, src, self, preview=preview
-            )
-            if not dlg.exec_():
-                return
-            result = dlg.result_payload
 
         if not isinstance(result, dict):
             self.reload_table()

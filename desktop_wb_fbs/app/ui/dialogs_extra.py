@@ -12,6 +12,7 @@ from PyQt5.QtWidgets import (
     QDialog,
     QDialogButtonBox,
     QFrame,
+    QHBoxLayout,
     QLabel,
     QLineEdit,
     QMessageBox,
@@ -656,6 +657,113 @@ def show_collect_mgt_result(parent: Optional[QWidget], data: Dict[str, Any]) -> 
         QMessageBox.warning(parent, title, text_msg)
 
 
+def _add_one_supply_label(group: Dict[str, Any]) -> str:
+    sid = str(group.get("default_supply_id") or "")
+    match = next(
+        (
+            s
+            for s in (group.get("compatible_supplies") or [])
+            if str(s.get("supply_id") or "") == sid
+        ),
+        None,
+    )
+    if isinstance(match, dict):
+        return str(match.get("name") or sid)
+    return sid
+
+
+def preview_force_create(preview: Dict[str, Any]) -> Dict[str, Any]:
+    """Turn add_one groups into create (user chose «Новая поставка»)."""
+    out = dict(preview or {})
+    groups = []  # type: List[Dict[str, Any]]
+    for g in out.get("groups") or []:
+        if not isinstance(g, dict):
+            continue
+        item = dict(g)
+        if str(item.get("mode") or "") == "add_one":
+            item["mode"] = "create"
+            item["default_supply_id"] = ""
+        groups.append(item)
+    out["groups"] = groups
+    out["needs_modal"] = True
+    return out
+
+
+class CollectMgtAddConfirmDialog(QDialog):
+    """Confirm adding MGT into the single active compatible supply.
+
+    Buttons: Да / Новая поставка / Нет.
+    ``choice`` is ``"add"`` or ``"create"`` after accept.
+    """
+
+    def __init__(
+        self,
+        preview: Dict[str, Any],
+        parent: Optional[QWidget] = None,
+    ) -> None:
+        super(CollectMgtAddConfirmDialog, self).__init__(parent)
+        self.choice = ""  # type: str
+        self.setWindowTitle("Собрать все МГТ-заказы")
+        prepare_modal_dialog(
+            self,
+            maximized=False,
+            default_size=(520, 280),
+            minimum_size=(420, 220),
+        )
+        root = QVBoxLayout(self)
+        root.setContentsMargins(24, 24, 24, 24)
+        root.setSpacing(16)
+        title = QLabel("Собрать все МГТ-заказы")
+        title.setObjectName("dialogTitle")
+        root.addWidget(title)
+
+        groups = [
+            g
+            for g in (preview.get("groups") or [])
+            if isinstance(g, dict) and str(g.get("mode") or "") == "add_one"
+        ]
+        lines = []  # type: List[str]
+        for g in groups:
+            sname = _add_one_supply_label(g)
+            count = int(g.get("order_count") or len(g.get("order_ids") or []) or 0)
+            label = str(g.get("label") or "").strip()
+            prefix = "{}: ".format(label) if label else ""
+            lines.append(
+                "{}Вы точно хотите добавить {} заказ(ов) в поставку «{}»?".format(
+                    prefix, count, sname
+                )
+            )
+        ask = QLabel("\n\n".join(lines) if lines else "Добавить заказы в существующую поставку?")
+        ask.setWordWrap(True)
+        root.addWidget(ask)
+        root.addStretch(1)
+
+        row = QHBoxLayout()
+        row.setSpacing(8)
+        yes_btn = QPushButton("Да")
+        yes_btn.setObjectName("mgtBtn")
+        new_btn = QPushButton("Новая поставка")
+        new_btn.setObjectName("secondary")
+        no_btn = QPushButton("Нет")
+        no_btn.setObjectName("secondary")
+        yes_btn.clicked.connect(self._on_yes)
+        new_btn.clicked.connect(self._on_new)
+        no_btn.clicked.connect(self.reject)
+        row.addWidget(yes_btn)
+        row.addWidget(new_btn)
+        row.addStretch(1)
+        row.addWidget(no_btn)
+        root.addLayout(row)
+
+    def _on_yes(self) -> None:
+        self.choice = "add"
+        self.accept()
+
+    def _on_new(self) -> None:
+        self.choice = "create"
+        self.accept()
+
+
 class CollectMgtDialog(QDialog):
     def __init__(
         self,
@@ -807,6 +915,7 @@ class CollectMgtDialog(QDialog):
                         rb.setChecked(True)
                     lay.addWidget(rb)
             else:
+                # add_one: confirm existing supply vs create new
                 sid = str(g.get("default_supply_id") or "")
                 match = next(
                     (
@@ -821,10 +930,69 @@ class CollectMgtDialog(QDialog):
                     if isinstance(match, dict)
                     else sid
                 )
-                auto = QLabel("Будет добавлено в поставку «{}».".format(sname))
-                auto.setObjectName("hint")
-                auto.setWordWrap(True)
-                lay.addWidget(auto)
+                ask = QLabel(
+                    "Вы точно хотите добавить заказы в поставку «{}»?".format(
+                        sname
+                    )
+                )
+                ask.setWordWrap(True)
+                lay.addWidget(ask)
+                radio_group = QButtonGroup(box)
+                rb_add = QRadioButton(
+                    "Да — добавить в «{}»".format(sname)
+                )
+                rb_add.setProperty("supply_id", sid)
+                rb_add.setProperty("add_choice", "add")
+                rb_new = QRadioButton("Новая поставка")
+                rb_new.setProperty("add_choice", "create")
+                radio_group.addButton(rb_add)
+                radio_group.addButton(rb_new)
+                rb_add.setChecked(True)
+                lay.addWidget(rb_add)
+                lay.addWidget(rb_new)
+                name_lab = QLabel("Название новой поставки")
+                name_lab.setObjectName("fieldLabel")
+                name_lab.hide()
+                lay.addWidget(name_lab)
+                name_edit = QLineEdit(str(g.get("suggested_name") or ""))
+                name_edit.hide()
+                lay.addWidget(name_edit)
+                warn = QLabel(
+                    "Поставка с таким названием уже есть — измените название."
+                )
+                warn.setStyleSheet("color:#b45309; font-size: 13px;")
+                warn.setWordWrap(True)
+                warn.hide()
+                lay.addWidget(warn)
+
+                def _on_name(text: str, w=warn) -> None:
+                    name = str(text or "").strip()
+                    w.setVisible(bool(name and name in self._existing_names))
+
+                def _on_choice(
+                    _btn=None,
+                    lab=name_lab,
+                    edit=name_edit,
+                    w=warn,
+                    rg=radio_group,
+                ) -> None:
+                    checked = rg.checkedButton()
+                    is_new = bool(
+                        checked is not None
+                        and str(checked.property("add_choice") or "") == "create"
+                    )
+                    lab.setVisible(is_new)
+                    edit.setVisible(is_new)
+                    if is_new:
+                        name = edit.text().strip()
+                        w.setVisible(
+                            bool(name and name in self._existing_names)
+                        )
+                    else:
+                        w.hide()
+
+                name_edit.textChanged.connect(_on_name)
+                radio_group.buttonClicked.connect(_on_choice)
             self.form.addWidget(box)
             self._group_widgets.append(
                 {
@@ -892,14 +1060,59 @@ class CollectMgtDialog(QDialog):
                     }
                 )
             else:
-                decisions.append(
-                    {
-                        "group_key": gkey,
-                        "is_b2b": is_b2b,
-                        "action": "add",
-                        "supply_id": str(g.get("default_supply_id") or ""),
-                    }
-                )
+                # add_one: Да → add, or «Новая поставка» → create
+                radio_group = item.get("radio_group")
+                choice = "add"
+                supply_id = str(g.get("default_supply_id") or "")
+                if radio_group is not None:
+                    checked = radio_group.checkedButton()
+                    if checked is not None:
+                        choice = str(
+                            checked.property("add_choice") or "add"
+                        ).strip().lower()
+                        if choice != "create":
+                            supply_id = str(
+                                checked.property("supply_id") or supply_id
+                            ).strip()
+                if choice == "create":
+                    name_edit = item.get("name_edit")
+                    name = ""
+                    if name_edit is not None:
+                        name = name_edit.text().strip()
+                    name = name or str(g.get("suggested_name") or "").strip()
+                    if not name:
+                        errors.append(
+                            "{}: укажите название поставки".format(label)
+                        )
+                        continue
+                    if name in self._existing_names or name in used_names:
+                        errors.append(
+                            "{}: поставка «{}» уже есть — измените название".format(
+                                label, name
+                            )
+                        )
+                        continue
+                    used_names.add(name)
+                    decisions.append(
+                        {
+                            "group_key": gkey,
+                            "is_b2b": is_b2b,
+                            "action": "create",
+                            "name": name,
+                        }
+                    )
+                else:
+                    if not supply_id:
+                        errors.append("{}: не выбрана поставка".format(label))
+                        continue
+                    decisions.append(
+                        {
+                            "group_key": gkey,
+                            "is_b2b": is_b2b,
+                            "action": "add",
+                            "supply_id": supply_id,
+                        }
+                    )
         return decisions, errors
 
     def do_collect(self) -> None:

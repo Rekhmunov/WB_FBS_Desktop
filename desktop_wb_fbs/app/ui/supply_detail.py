@@ -47,6 +47,9 @@ from app.ui.dialog_utils import (
 from app.ui.dialogs_extra import show_png_list, show_supply_qr
 from app.ui.format_helpers import (
     ago_label,
+    build_order_cell_widget,
+    build_product_cell_widget,
+    build_sticker_number_label,
     format_date_short,
     make_badge,
     make_photo_label,
@@ -294,7 +297,7 @@ class SupplyDetailDialog(QDialog):
 
         extra_action_btns = []  # type: List[QPushButton]
         for text, slot in (
-            ("Проверка ШК", self.open_pick),
+            ("Товары без маркировки", self.open_pick),
             ("Грузоместа", self.manage_trbx),
             ("Отмененные заказы", self.show_cancelled),
         ):
@@ -911,112 +914,17 @@ class SupplyDetailDialog(QDialog):
             cb.blockSignals(False)
 
     def _build_order_cell(self, row: Dict[str, Any]) -> QWidget:
-        wrap = QWidget()
-        lay = QVBoxLayout(wrap)
-        lay.setContentsMargins(8, 10, 8, 10)
-        lay.setSpacing(4)
-
-        oid = QLabel(str(row.get("order_id") or ""))
-        oid.setObjectName("sdOrderId")
-        lay.addWidget(oid)
-
-        sticker = self._build_sticker_label(row)
-        lay.addWidget(sticker)
-
-        created = str(row.get("created_date") or "").strip()
-        meta = QLabel("от {}".format(created or "—"))
-        meta.setObjectName("sdOrderMeta")
-        lay.addWidget(meta)
-
-        badges = QHBoxLayout()
-        badges.setContentsMargins(0, 0, 0, 0)
-        badges.setSpacing(4)
-        ago = str(row.get("created_ago") or "").strip()
-        if ago:
-            badges.addWidget(make_badge(ago, "time"))
-        if row.get("pickup_allowed"):
-            badges.addWidget(make_badge("Можно в ПВЗ", "pvz"))
-        badges.addStretch(1)
-        lay.addLayout(badges)
-        lay.addStretch(1)
-        return wrap
+        return build_order_cell_widget(row)
 
     @staticmethod
     def _build_sticker_label(row: Dict[str, Any]) -> QLabel:
-        part_a = str(row.get("sticker_part_a") or "").strip()
-        part_b = str(row.get("sticker_part_b") or "").strip()
-        full = str(row.get("sticker_number") or "").strip()
-        if (not part_a or not part_b) and full:
-            if len(full) > 4:
-                part_a, part_b = full[:-4], full[-4:]
-            else:
-                part_a, part_b = "", full
-        lab = QLabel()
-        lab.setObjectName("sdSticker")
-        lab.setTextFormat(Qt.RichText)
-        if not part_a and not part_b:
-            lab.setText("—")
-        elif not part_b:
-            lab.setText(part_a)
-        else:
-            lab.setText(
-                '<span style="font-size:14px;font-weight:700;color:#0f172a;">{}</span>'
-                '<span style="font-size:20px;font-weight:700;color:#0f172a;">{}</span>'.format(
-                    part_a, part_b
-                )
-            )
-        return lab
+        return build_sticker_number_label(row)
 
     def _build_product_cell(self, row: Dict[str, Any]) -> QWidget:
-        wrap = QWidget()
-        lay = QHBoxLayout(wrap)
-        lay.setContentsMargins(8, 10, 8, 10)
-        lay.setSpacing(12)
-        lay.setAlignment(Qt.AlignTop)
-
-        photo = make_photo_label(row.get("product_photo"), 120)
-        lay.addWidget(photo, 0, Qt.AlignTop)
-
-        text = QVBoxLayout()
-        text.setSpacing(4)
-        text.setContentsMargins(0, 0, 0, 0)
-
-        name = str(row.get("product_name") or row.get("article") or "—")
-        name_lab = QLabel(name)
-        name_lab.setObjectName("sdProductName")
-        name_lab.setWordWrap(True)
-        name_lab.setToolTip(name)
-        text.addWidget(name_lab)
-
-        article = str(row.get("article") or "—")
-        nm = row.get("nm_id")
-        sub = "Арт. {}".format(article)
-        if nm not in (None, ""):
-            sub += " · nmId {}".format(nm)
-        sub_lab = QLabel(sub)
-        sub_lab.setObjectName("sdProductSub")
-        sub_lab.setWordWrap(True)
-        text.addWidget(sub_lab)
-
-        skus = row.get("skus") if isinstance(row.get("skus"), list) else []
-        for sku in skus:
-            s = str(sku or "").strip()
-            if not s:
-                continue
-            bc = QLabel(s)
-            bc.setObjectName("sdBarcode")
-            text.addWidget(bc)
-
-        # Web order: cancel badge, then KIZ.
-        cancel_label = str(row.get("cancel_reason_label") or "").strip()
-        if cancel_label:
-            text.addWidget(make_badge(cancel_label, "danger"))
+        extras = []
         if row.get("kiz_required"):
-            text.addWidget(self._kiz_badge(row))
-
-        text.addStretch(1)
-        lay.addLayout(text, 1)
-        return wrap
+            extras.append(self._kiz_badge(row))
+        return build_product_cell_widget(row, extra_widgets=extras)
 
     @staticmethod
     def _kiz_badge(row: Dict[str, Any]) -> QLabel:

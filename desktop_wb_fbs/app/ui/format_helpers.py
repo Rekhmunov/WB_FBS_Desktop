@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import re
 from datetime import datetime, timezone
-from typing import Any, Optional
+from typing import Any, Dict, Optional
 
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QPixmap
-from PyQt5.QtWidgets import QHBoxLayout, QLabel, QSizePolicy, QWidget
+from PyQt5.QtWidgets import QHBoxLayout, QLabel, QSizePolicy, QVBoxLayout, QWidget
 
 _pixmap_cache = {}  # type: Dict[tuple, QPixmap]
 
@@ -118,6 +118,123 @@ def make_badge(text: str, kind: str = "") -> QLabel:
     lab.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Fixed)
     lab.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
     return lab
+
+
+def build_sticker_number_label(row: Dict[str, Any]) -> QLabel:
+    """Supply-detail sticker emphasis: partA 14px + partB 20px."""
+    part_a = str(row.get("sticker_part_a") or "").strip()
+    part_b = str(row.get("sticker_part_b") or "").strip()
+    full = str(row.get("sticker_number") or "").strip()
+    if (not part_a or not part_b) and full:
+        if len(full) > 4:
+            part_a, part_b = full[:-4], full[-4:]
+        else:
+            part_a, part_b = "", full
+    lab = QLabel()
+    lab.setObjectName("sdSticker")
+    lab.setTextFormat(Qt.RichText)
+    if not part_a and not part_b:
+        lab.setText("—")
+    elif not part_b:
+        lab.setText(part_a)
+    else:
+        lab.setText(
+            '<span style="font-size:14px;font-weight:700;color:#0f172a;">{}</span>'
+            '<span style="font-size:20px;font-weight:700;color:#0f172a;">{}</span>'.format(
+                part_a, part_b
+            )
+        )
+    return lab
+
+
+def build_order_cell_widget(row: Dict[str, Any]) -> QWidget:
+    """Order/sticker cell matching supply detail table formatting."""
+    wrap = QWidget()
+    lay = QVBoxLayout(wrap)
+    lay.setContentsMargins(8, 10, 8, 10)
+    lay.setSpacing(4)
+
+    oid = QLabel(str(row.get("order_id") or ""))
+    oid.setObjectName("sdOrderId")
+    lay.addWidget(oid)
+    lay.addWidget(build_sticker_number_label(row))
+
+    created = str(row.get("created_date") or "").strip()
+    meta = QLabel("от {}".format(created or "—"))
+    meta.setObjectName("sdOrderMeta")
+    lay.addWidget(meta)
+
+    badges = QHBoxLayout()
+    badges.setContentsMargins(0, 0, 0, 0)
+    badges.setSpacing(4)
+    ago = str(row.get("created_ago") or "").strip()
+    if ago:
+        badges.addWidget(make_badge(ago, "time"))
+    if row.get("pickup_allowed"):
+        badges.addWidget(make_badge("Можно в ПВЗ", "pvz"))
+    badges.addStretch(1)
+    lay.addLayout(badges)
+    lay.addStretch(1)
+    return wrap
+
+
+def build_product_cell_widget(
+    row: Dict[str, Any],
+    *,
+    photo_size: int = 120,
+    extra_widgets: Optional[list] = None,
+) -> QWidget:
+    """Product cell matching supply detail table formatting."""
+    wrap = QWidget()
+    lay = QHBoxLayout(wrap)
+    lay.setContentsMargins(8, 10, 8, 10)
+    lay.setSpacing(12)
+    lay.setAlignment(Qt.AlignTop)
+
+    lay.addWidget(make_photo_label(row.get("product_photo"), photo_size), 0, Qt.AlignTop)
+
+    text = QVBoxLayout()
+    text.setSpacing(4)
+    text.setContentsMargins(0, 0, 0, 0)
+
+    name = str(row.get("product_name") or row.get("article") or "—")
+    name_lab = QLabel(name)
+    name_lab.setObjectName("sdProductName")
+    name_lab.setWordWrap(True)
+    name_lab.setToolTip(name)
+    text.addWidget(name_lab)
+
+    article = str(row.get("article") or "—")
+    nm = row.get("nm_id")
+    sub = "Арт. {}".format(article)
+    if nm not in (None, ""):
+        sub += " · nmId {}".format(nm)
+    sub_lab = QLabel(sub)
+    sub_lab.setObjectName("sdProductSub")
+    sub_lab.setWordWrap(True)
+    text.addWidget(sub_lab)
+
+    skus = row.get("skus") if isinstance(row.get("skus"), list) else []
+    for sku in skus:
+        s = str(sku or "").strip()
+        if not s:
+            continue
+        bc = QLabel(s)
+        bc.setObjectName("sdBarcode")
+        bc.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
+        bc.setMinimumHeight(28)
+        text.addWidget(bc)
+
+    cancel_label = str(row.get("cancel_reason_label") or "").strip()
+    if cancel_label:
+        text.addWidget(make_badge(cancel_label, "danger"))
+    for w in extra_widgets or []:
+        if w is not None:
+            text.addWidget(w)
+
+    text.addStretch(1)
+    lay.addLayout(text, 1)
+    return wrap
 
 
 def _badge_qss(kind: str) -> str:

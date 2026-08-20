@@ -136,6 +136,12 @@ def _format_created(iso: object) -> str:
         return raw[:10]
 
 
+def _created_ago(iso: object) -> str:
+    from app.ui.format_helpers import ago_label
+
+    return ago_label(iso)
+
+
 def _sticker_number(part_a: str, part_b: str) -> str:
     return "{}{}".format(str(part_a or "").strip(), str(part_b or "").strip())
 
@@ -227,6 +233,7 @@ class KizService:
                     "product_photo": product_photo,
                     "brand": "",
                     "created_date": _format_created(r.get("created_at_wb")) or "—",
+                    "created_ago": _created_ago(r.get("created_at_wb")),
                     "sticker_part_a": "",
                     "sticker_part_b": "",
                     "sticker_number": "",
@@ -410,6 +417,7 @@ class PickVerifyService:
                     "product_photo": str(local.get("photo_path") or "").strip(),
                     "brand": "",
                     "created_date": _format_created(r.get("created_at_wb")) or "—",
+                    "created_ago": _created_ago(r.get("created_at_wb")),
                     "sticker_part_a": "",
                     "sticker_part_b": "",
                     "sticker_number": "",

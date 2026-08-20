@@ -203,6 +203,8 @@ class SupplySession:
                         ).strip(),
                         "brand": "",
                         "created_date": r.get("created_date") or "—",
+                        "created_ago": r.get("created_ago") or "",
+                        "pickup_allowed": bool(r.get("pickup_allowed")),
                         "sticker_barcode": str(r.get("sticker_barcode") or ""),
                         "sticker_part_a": part_a,
                         "sticker_part_b": part_b,
@@ -245,6 +247,8 @@ class SupplySession:
                         ).strip(),
                         "brand": "",
                         "created_date": r.get("created_date") or "—",
+                        "created_ago": r.get("created_ago") or "",
+                        "pickup_allowed": bool(r.get("pickup_allowed")),
                         "skus": list(
                             r.get("skus") or parse_json_list(r.get("skus_json"))
                         ),

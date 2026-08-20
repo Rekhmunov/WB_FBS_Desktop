@@ -44,8 +44,8 @@ from app.ui.dialog_utils import (
 )
 from app.ui.dialogs_extra import show_png_list
 from app.ui.format_helpers import (
-    make_badge,
-    make_photo_label,
+    build_order_cell_widget,
+    build_product_cell_widget,
 )
 from app.wb import cancel_reason_label, is_cancelled_status
 
@@ -348,9 +348,9 @@ class KizDialog(QDialog):
         # Table
         self.table = QTableWidget(0, 4)
         self.table.setObjectName("kizTable")
-        self.table.setAlternatingRowColors(True)
+        self.table.setAlternatingRowColors(False)
         self.table.setHorizontalHeaderLabels(
-            ["Заказ/стикер", "Товар", "КИЗ", ""]
+            ["Заказ", "Товар", "КИЗ", ""]
         )
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
@@ -361,11 +361,11 @@ class KizDialog(QDialog):
         hdr.setSectionResizeMode(1, QHeaderView.Stretch)
         hdr.setSectionResizeMode(2, QHeaderView.Fixed)
         hdr.setSectionResizeMode(3, QHeaderView.Fixed)
-        self.table.setColumnWidth(0, 170)
+        self.table.setColumnWidth(0, 200)
         self.table.setColumnWidth(2, 340)
         self.table.setColumnWidth(3, 52)
         self.table.verticalHeader().setVisible(False)
-        self.table.verticalHeader().setDefaultSectionSize(96)
+        self.table.verticalHeader().setDefaultSectionSize(148)
         root.addWidget(self.table, 1)
 
         self._set_filters_ready(False)
@@ -746,82 +746,10 @@ class KizDialog(QDialog):
         return frame
 
     def _build_sticker_widget(self, row: Dict[str, Any]) -> QWidget:
-        wrap = QWidget()
-        lay = QVBoxLayout(wrap)
-        lay.setContentsMargins(12, 10, 8, 10)
-        lay.setSpacing(4)
-        oid_lab = QLabel(str(row.get("order_id") or ""))
-        oid_lab.setObjectName("kizOrderId")
-        lay.addWidget(oid_lab)
-        sticker_row = QHBoxLayout()
-        sticker_row.setSpacing(2)
-        part_a = str(row.get("sticker_part_a") or "").strip()
-        part_b = str(row.get("sticker_part_b") or "").strip()
-        full = str(row.get("sticker_number") or "").strip()
-        if not part_a and not part_b and full:
-            if len(full) > 4:
-                part_a, part_b = full[:-4], full[-4:]
-            else:
-                part_b = full
-        if part_a or part_b:
-            if part_a:
-                head = QLabel(part_a)
-                head.setObjectName("kizStickerHead")
-                sticker_row.addWidget(head)
-            if part_b:
-                tail = QLabel(part_b)
-                tail.setObjectName("kizStickerTail")
-                sticker_row.addWidget(tail)
-            sticker_row.addStretch(1)
-            lay.addLayout(sticker_row)
-        else:
-            dash = QLabel("—")
-            dash.setObjectName("kizOrderDate")
-            lay.addWidget(dash)
-        date = QLabel("от {}".format(row.get("created_date") or "—"))
-        date.setObjectName("kizOrderDate")
-        lay.addWidget(date)
-        lay.addStretch(1)
-        return wrap
+        return build_order_cell_widget(row)
 
     def _build_product_widget(self, row: Dict[str, Any]) -> QWidget:
-        wrap = QWidget()
-        outer = QHBoxLayout(wrap)
-        outer.setContentsMargins(12, 10, 12, 10)
-        outer.setSpacing(12)
-        outer.setAlignment(Qt.AlignTop)
-        outer.addWidget(make_photo_label(row.get("product_photo"), 56))
-        text_col = QVBoxLayout()
-        text_col.setSpacing(4)
-        name = str(row.get("product_name") or row.get("article") or "—")
-        name_lab = QLabel(name)
-        name_lab.setObjectName("kizProductName")
-        name_lab.setWordWrap(True)
-        text_col.addWidget(name_lab)
-        sub_parts = []
-        if row.get("brand"):
-            sub_parts.append(str(row.get("brand")))
-        if row.get("article"):
-            sub_parts.append("Арт. {}".format(row.get("article")))
-        sub = QLabel(" · ".join(sub_parts) if sub_parts else "—")
-        sub.setObjectName("kizProductSub")
-        sub.setWordWrap(True)
-        text_col.addWidget(sub)
-        for sku in (row.get("skus") or [])[:4]:
-            bc = QLabel(str(sku))
-            bc.setObjectName("kizBarcode")
-            text_col.addWidget(bc)
-        cancel = str(row.get("cancel_reason_label") or "").strip()
-        if cancel:
-            badge = make_badge(cancel, "")
-            badge.setStyleSheet(
-                badge.styleSheet()
-                + " QLabel { background:#fee2e2; color:#b91c1c; }"
-            )
-            text_col.addWidget(badge)
-        text_col.addStretch(1)
-        outer.addLayout(text_col, 1)
-        return wrap
+        return build_product_cell_widget(row)
 
     def _code_status_label(self, row: Dict[str, Any], code: str, err: str) -> Optional[QLabel]:
         if not str(code or "").strip():
@@ -1017,7 +945,7 @@ class KizDialog(QDialog):
 
     def _resize_table_row(self, table_idx: int) -> None:
         self.table.resizeRowToContents(table_idx)
-        self.table.setRowHeight(table_idx, max(self.table.rowHeight(table_idx), 96))
+        self.table.setRowHeight(table_idx, max(self.table.rowHeight(table_idx), 148))
 
     def _refresh_row(self, order_id: int) -> None:
         idx = self._row_index_by_oid.get(int(order_id))
@@ -1045,7 +973,7 @@ class KizDialog(QDialog):
                 self._row_index_by_oid[oid] = i
                 self._set_row_widgets(i, r)
                 if fast:
-                    self.table.setRowHeight(i, 96)
+                    self.table.setRowHeight(i, 148)
                 elif i and i % _RENDER_BATCH == 0:
                     QApplication.processEvents()
         finally:

@@ -788,10 +788,6 @@ class KizDialog(QDialog):
         for idx, code in enumerate(codes):
             line = QHBoxLayout()
             line.setSpacing(8)
-            idx_lab = QLabel(str(idx + 1))
-            idx_lab.setObjectName("kizCodeIdx")
-            idx_lab.setFixedWidth(20)
-            idx_lab.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
             inp = GsAwareLineEdit(str(code or ""))
             inp.setObjectName("kizCodeInput")
             if err and str(code or "").strip():
@@ -813,7 +809,6 @@ class KizDialog(QDialog):
             chip = self._code_status_label(row, code, err)
             if chip:
                 mid.addWidget(chip)
-            line.addWidget(idx_lab, 0, Qt.AlignTop)
             line.addLayout(mid, 1)
             line.addWidget(clear_btn, 0, Qt.AlignTop)
             lay.addLayout(line)

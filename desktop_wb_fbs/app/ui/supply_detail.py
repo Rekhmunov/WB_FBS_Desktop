@@ -1743,21 +1743,19 @@ class SupplyDetailDialog(QDialog):
             fill.setText("▼")
             fill.setToolTip("Выделить все ниже")
             fill.setFixedSize(36, 36)
-            fill.setStyleSheet(
-                """
-                QToolButton#stickersCatFill {
-                    border: 1px solid #cbd5e1;
-                    border-radius: 8px;
-                    background: #fff;
-                    color: #0f172a;
-                    font-size: 12px;
-                }
-                QToolButton#stickersCatFill:hover {
-                    background: #f1f5f9;
-                }
-                """
+            fill_style_on = (
+                "QToolButton#stickersCatFill {"
+                "border: 1px solid #cbd5e1; border-radius: 8px;"
+                "background: #fff; color: #0f172a; font-size: 12px; }"
+                "QToolButton#stickersCatFill:hover { background: #f1f5f9; }"
             )
-            fill.setVisible(False)
+            fill_style_off = (
+                "QToolButton#stickersCatFill {"
+                "border: 1px solid transparent; border-radius: 8px;"
+                "background: transparent; color: transparent; font-size: 12px; }"
+            )
+            fill.setStyleSheet(fill_style_off)
+            fill.setEnabled(False)
             fill.clicked.connect(partial(_fill_down, idx))
 
             cb.stateChanged.connect(lambda _state: _sync_ui())
@@ -1771,6 +1769,8 @@ class SupplyDetailDialog(QDialog):
                     "frame": frame,
                     "cb": cb,
                     "fill": fill,
+                    "fill_style_on": fill_style_on,
+                    "fill_style_off": fill_style_off,
                     "qty": qty,
                     "order_ids": list(g.get("order_ids") or []),
                     "group_key": str(g.get("group_key") or ""),

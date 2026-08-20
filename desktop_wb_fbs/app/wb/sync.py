@@ -407,12 +407,13 @@ def sync_source(
                     stopped = True
                     break
                 sid = str(supply.get("id") or "")
-                # Skip done supplies («В доставке») — not synced / not shown.
-                if bool(supply.get("done")):
-                    continue
                 order_ids = []  # type: List[int]
                 boxes = []  # type: List[Dict[str, Any]]
-                if sid:
+                is_done = bool(supply.get("done"))
+                # WB: after PATCH /deliver supply.done=true («В доставке»).
+                # Still upsert so local done flips and the supply leaves «На сборке».
+                # Open supplies: refresh order ids + boxes; done: boxes only (web parity).
+                if sid and not is_done:
                     try:
                         order_ids = client.get_supply_order_ids(sid)
                         time.sleep(0.21)
@@ -420,6 +421,12 @@ def sync_source(
                         time.sleep(0.21)
                     except Exception as exc:
                         errors.append(friendly_sync_error("supply {}".format(sid), exc))
+                elif sid and is_done:
+                    try:
+                        boxes = client.get_supply_boxes(sid)
+                        time.sleep(0.21)
+                    except Exception:
+                        pass
                 upsert_supply(
                     db, source_id, supply, order_ids=order_ids, boxes=boxes
                 )

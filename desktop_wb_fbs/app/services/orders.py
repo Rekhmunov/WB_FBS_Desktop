@@ -333,32 +333,122 @@ class OrdersService:
         d["is_b2b"] = bool(int(d.get("is_b2b") or 0))
         return d
 
+    def _local_order_ids_for_supply(
+        self, source_id: int, supply_id: str
+    ) -> List[int]:
+        """Web ``_local_order_ids_for_supply``: json sequence, else linked orders."""
+        sid = str(supply_id or "").strip()
+        supply = self.get_supply(source_id, sid) or {}
+        ids = []  # type: List[int]
+        for raw in supply.get("order_ids") or []:
+            try:
+                ids.append(int(raw))
+            except (TypeError, ValueError):
+                continue
+        if ids:
+            return ids
+        with self.db.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT order_id FROM wb_fbs_orders
+                WHERE source_id = ? AND supply_id = ?
+                ORDER BY order_id ASC
+                """,
+                (source_id, sid),
+            ).fetchall()
+        for row in rows:
+            try:
+                ids.append(int(row["order_id"]))
+            except (TypeError, ValueError):
+                continue
+        return ids
+
+    def refresh_supply_flags_from_wb(
+        self, source_id: int, api_key: str, supply_id: str
+    ) -> Optional[Dict[str, Any]]:
+        """Live GET /supplies/{id} → upsert done/closedAt/scanDt (web detail parity).
+
+        After PATCH /deliver WB sets done=true («В доставке»). Sync used to skip
+        those rows, so opening must still flip local done or the card stays on
+        «На сборке» and looks empty/stuck.
+        """
+        sid = str(supply_id or "").strip()
+        if not sid or not api_key:
+            return None
+        client = WbFbsClient(api_key)
+        live = client.get_supply(sid)
+        if not isinstance(live, dict) or not live:
+            return None
+        if not str(live.get("id") or "").strip():
+            live = dict(live)
+            live["id"] = sid
+        # Keep known order ids / boxes; only flags + raw from live matter here.
+        local = self.get_supply(source_id, sid) or {}
+        upsert_supply(
+            self.db,
+            source_id,
+            live,
+            order_ids=list(local.get("order_ids") or []),
+            boxes=list(local.get("boxes") or []),
+        )
+        return self.get_supply(source_id, sid)
+
     def ensure_supply_order_ids(
         self, source_id: int, api_key: str, supply_id: str
     ) -> List[int]:
-        """Refresh order ids from WB when local list is empty (done supplies)."""
-        supply = self.get_supply(source_id, supply_id)
-        oids = list((supply or {}).get("order_ids") or [])
+        """Resolve supply order ids without blocking open on WB when local data exists.
+
+        Order (web archive parity):
+        1. ``order_ids_json`` / linked ``wb_fbs_orders.supply_id``
+        2. only then GET order-ids (+ boxes) from Marketplace
+        """
+        sid = str(supply_id or "").strip()
+        oids = self._local_order_ids_for_supply(source_id, sid)
         if oids:
-            return [int(x) for x in oids]
+            # Persist sequence into supply row when only order links existed.
+            supply = self.get_supply(source_id, sid) or {}
+            if not (supply.get("order_ids") or []):
+                now = utc_now()
+                with self.db.connect() as conn:
+                    conn.execute(
+                        """
+                        UPDATE wb_fbs_supplies
+                        SET order_ids_json = ?, synced_at = ?
+                        WHERE source_id = ? AND supply_id = ?
+                        """,
+                        (json.dumps(oids, ensure_ascii=False), now, source_id, sid),
+                    )
+                    conn.commit()
+            return oids
+        if not api_key:
+            return []
         client = WbFbsClient(api_key)
-        oids = [int(x) for x in client.get_supply_order_ids(supply_id)]
-        time.sleep(0.21)
-        boxes = client.get_supply_boxes(supply_id)
+        try:
+            oids = [int(x) for x in client.get_supply_order_ids(sid)]
+        except Exception:
+            oids = []
+        boxes = []  # type: List[Dict[str, Any]]
+        try:
+            time.sleep(0.21)
+            boxes = client.get_supply_boxes(sid)
+        except Exception:
+            boxes = []
         now = utc_now()
         with self.db.connect() as conn:
             conn.execute(
                 """
                 UPDATE wb_fbs_supplies
-                SET order_ids_json = ?, boxes_json = ?, synced_at = ?
+                SET order_ids_json = ?, boxes_json = CASE
+                    WHEN ? != '[]' THEN ? ELSE boxes_json END, synced_at = ?
                 WHERE source_id = ? AND supply_id = ?
                 """,
                 (
                     json.dumps(oids, ensure_ascii=False),
                     json.dumps(boxes, ensure_ascii=False),
+                    json.dumps(boxes, ensure_ascii=False),
                     now,
                     source_id,
-                    supply_id,
+                    sid,
                 ),
             )
             for oid in oids:
@@ -368,7 +458,7 @@ class OrdersService:
                     SET supply_id = ?, synced_at = ?
                     WHERE source_id = ? AND order_id = ?
                     """,
-                    (supply_id, now, source_id, int(oid)),
+                    (sid, now, source_id, int(oid)),
                 )
             conn.commit()
         return oids
@@ -378,6 +468,10 @@ class OrdersService:
     ) -> List[Dict[str, Any]]:
         """Orders in supply detail table — WB ``order_ids`` sequence (web parity)."""
         if api_key:
+            try:
+                self.refresh_supply_flags_from_wb(source_id, api_key, supply_id)
+            except Exception:
+                pass
             try:
                 self.ensure_supply_order_ids(source_id, api_key, supply_id)
             except Exception:
@@ -389,6 +483,8 @@ class OrdersService:
                 preferred.append(int(raw))
             except (TypeError, ValueError):
                 continue
+        if not preferred:
+            preferred = self._local_order_ids_for_supply(source_id, supply_id)
         with self.db.connect() as conn:
             rows = conn.execute(
                 """

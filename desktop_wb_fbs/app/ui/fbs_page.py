@@ -1246,16 +1246,23 @@ class FbsPage(QWidget):
         src = self.current_source()
         if not src or not sid:
             return
+        supply = self.orders.get_supply(int(src["id"]), sid) or {}
+        order_ids = supply.get("order_ids") or []
+        city = str(
+            supply.get("warehouse_label")
+            or supply.get("warehouse_name")
+            or ""
+        ).strip()
         try:
-            show_supply_qr(str(src["api_key"]), sid, self)
-        except Exception as exc:
-            QMessageBox.critical(
+            show_supply_qr(
+                str(src["api_key"]),
+                sid,
                 self,
-                "Стикер поставки",
-                "{}\n\nQR доступен после передачи поставки в доставку на портале WB.".format(
-                    exc
-                ),
+                order_count=len(order_ids) if isinstance(order_ids, list) else 0,
+                city=city,
             )
+        except Exception as exc:
+            QMessageBox.critical(self, "Стикер поставки", str(exc))
 
     def _box_stickers_for(self, sid: str) -> None:
         """Box (TRBX) stickers for one supply, used by row menu and bottom bar."""

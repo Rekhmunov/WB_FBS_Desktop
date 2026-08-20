@@ -129,6 +129,8 @@ def _badge_qss(kind: str) -> str:
     if kind == "pvz":
         # Web `.wb-fbs-badge.pvz` — slate, not amber.
         return base + " QLabel { background:#f1f5f9; color:#334155; }"
+    if kind == "danger":
+        return base + " QLabel { background:#fee2e2; color:#991b1b; }"
     return base + " QLabel { background:#f1f5f9; color:#475569; }"
 
 

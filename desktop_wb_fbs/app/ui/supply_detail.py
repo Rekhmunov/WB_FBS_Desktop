@@ -987,6 +987,9 @@ class SupplyDetailDialog(QDialog):
 
         if row.get("kiz_required"):
             text.addWidget(self._kiz_badge(row))
+        cancel_label = str(row.get("cancel_reason_label") or "").strip()
+        if cancel_label:
+            text.addWidget(make_badge(cancel_label, "danger"))
 
         text.addStretch(1)
         lay.addLayout(text, 1)
@@ -1141,7 +1144,16 @@ class SupplyDetailDialog(QDialog):
 
     def print_qr(self) -> None:
         try:
-            show_supply_qr(self.api_key, self.supply_id, self)
+            city = self.warehouse.text().replace("📍", "").strip()
+            if city == "—":
+                city = ""
+            show_supply_qr(
+                self.api_key,
+                self.supply_id,
+                self,
+                order_count=len(self._all_rows),
+                city=city,
+            )
         except Exception as exc:
             QMessageBox.critical(self, "QR", str(exc))
 
@@ -1165,13 +1177,14 @@ class SupplyDetailDialog(QDialog):
             QMessageBox.critical(self, "Отменённые", str(exc))
             return
         rows = data.get("rows") or []
+        self._merge_cancelled_into_detail(rows)
         dlg = QDialog(self)
         dlg.setWindowTitle("Отменённые заказы · {}".format(self.supply_id))
         prepare_modal_dialog(
             dlg,
             maximized=True,
-            default_size=(720, 520),
-            minimum_size=(560, 400),
+            default_size=(860, 600),
+            minimum_size=(640, 440),
         )
         lay = QVBoxLayout(dlg)
         lay.setContentsMargins(24, 20, 24, 20)
@@ -1179,6 +1192,13 @@ class SupplyDetailDialog(QDialog):
         title = QLabel("Отменённые заказы")
         title.setObjectName("dialogTitle")
         lay.addWidget(title)
+        subtitle = QLabel(
+            "Заказы отменены, но всё ещё находятся в этой поставке. "
+            "Проверка статусов идёт через Wildberries."
+        )
+        subtitle.setObjectName("hint")
+        subtitle.setWordWrap(True)
+        lay.addWidget(subtitle)
         head_row = QHBoxLayout()
         head_row.setSpacing(12)
         lead = QLabel("Найдено отменённых в поставке: {}".format(len(rows)))
@@ -1188,24 +1208,40 @@ class SupplyDetailDialog(QDialog):
         rerun_btn.setObjectName("secondary")
         head_row.addWidget(rerun_btn, 0)
         lay.addLayout(head_row)
-        table = QTableWidget(len(rows), 3)
+        table = QTableWidget(0, 2)
+        table.setObjectName("kizTable")
         table.setAlternatingRowColors(True)
-        table.setHorizontalHeaderLabels(["Заказ", "Артикул", "Причина"])
-        table.horizontalHeader().setStretchLastSection(True)
+        table.setHorizontalHeaderLabels(["Заказ / стикер", "Товар"])
+        table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        table.setShowGrid(False)
+        hdr = table.horizontalHeader()
+        hdr.setStretchLastSection(True)
+        hdr.setSectionResizeMode(0, QHeaderView.Fixed)
+        table.setColumnWidth(0, 200)
         table.verticalHeader().setVisible(False)
-        table.verticalHeader().setDefaultSectionSize(40)
+        table.verticalHeader().setDefaultSectionSize(110)
 
         def _fill(items: List[Dict[str, Any]]) -> None:
             table.setRowCount(len(items))
             for i, r in enumerate(items):
-                table.setItem(i, 0, QTableWidgetItem(str(r.get("order_id"))))
-                table.setItem(i, 1, QTableWidgetItem(str(r.get("article") or "")))
-                table.setItem(i, 2, QTableWidgetItem(str(r.get("cancel_reason") or "")))
+                table.setCellWidget(i, 0, self._build_cancelled_order_cell(r))
+                table.setCellWidget(i, 1, self._build_cancelled_product_cell(r))
             lead.setText("Найдено отменённых в поставке: {}".format(len(items)))
+            if not items:
+                table.setRowCount(1)
+                table.setSpan(0, 0, 1, 2)
+                empty = QTableWidgetItem("Отменённых заказов в поставке нет")
+                empty.setTextAlignment(Qt.AlignCenter)
+                empty.setFlags(Qt.ItemIsEnabled)
+                table.setItem(0, 0, empty)
 
         _fill(rows)
 
         def _rerun() -> None:
+            rerun_btn.setEnabled(False)
+            lead.setText("Проверяем статусы…")
+            QApplication.processEvents()
             try:
                 data2 = list_cancelled_in_supply(
                     self.db,
@@ -1213,9 +1249,14 @@ class SupplyDetailDialog(QDialog):
                     self.api_key,
                     self.supply_id,
                 )
-                _fill(data2.get("rows") or [])
+                items = data2.get("rows") or []
+                self._merge_cancelled_into_detail(items)
+                table.clearSpans()
+                _fill(items)
             except Exception as exc:
                 QMessageBox.critical(dlg, "Отменённые", str(exc))
+            finally:
+                rerun_btn.setEnabled(True)
 
         rerun_btn.clicked.connect(_rerun)
         lay.addWidget(table, 1)
@@ -1223,6 +1264,83 @@ class SupplyDetailDialog(QDialog):
         close.rejected.connect(dlg.reject)
         lay.addWidget(close)
         dlg.exec_()
+
+    def _merge_cancelled_into_detail(self, cancelled_rows: List[Dict[str, Any]]) -> None:
+        """Sync cancel badges into supply detail rows (web `_wbFbsCancelledMergeIntoDetail`)."""
+        by_oid = {
+            int(r["order_id"]): str(r.get("cancel_reason_label") or r.get("cancel_reason") or "")
+            for r in cancelled_rows
+            if r.get("order_id") is not None
+        }
+        if not by_oid and not self._all_rows:
+            return
+        changed = False
+        for row in self._all_rows:
+            oid = int(row.get("order_id") or 0)
+            label = by_oid.get(oid) or ""
+            prev = str(row.get("cancel_reason_label") or "")
+            if label and label != prev:
+                row["cancel_reason_label"] = label
+                changed = True
+            elif not label and prev:
+                row.pop("cancel_reason_label", None)
+                changed = True
+        if changed:
+            self._render_table()
+
+    def _build_cancelled_order_cell(self, row: Dict[str, Any]) -> QWidget:
+        wrap = QWidget()
+        lay = QVBoxLayout(wrap)
+        lay.setContentsMargins(12, 10, 8, 10)
+        lay.setSpacing(4)
+        oid = QLabel(str(row.get("order_id") or ""))
+        oid.setObjectName("sdOrderId")
+        lay.addWidget(oid)
+        lay.addWidget(self._build_sticker_label(row))
+        created = str(row.get("created_date") or "").strip()
+        meta = QLabel("от {}".format(created or "—"))
+        meta.setObjectName("sdOrderMeta")
+        lay.addWidget(meta)
+        lay.addStretch(1)
+        return wrap
+
+    def _build_cancelled_product_cell(self, row: Dict[str, Any]) -> QWidget:
+        wrap = QWidget()
+        lay = QHBoxLayout(wrap)
+        lay.setContentsMargins(8, 10, 12, 10)
+        lay.setSpacing(12)
+        photo = make_photo_label(row.get("product_photo"), size=56)
+        lay.addWidget(photo, 0, Qt.AlignTop)
+        text = QVBoxLayout()
+        text.setSpacing(4)
+        name = str(row.get("product_name") or row.get("article") or "—")
+        name_lab = QLabel(name)
+        name_lab.setObjectName("sdProductName")
+        name_lab.setWordWrap(True)
+        text.addWidget(name_lab)
+        article = str(row.get("article") or "—")
+        brand = str(row.get("brand") or "").strip()
+        sub = "Арт. {}".format(article)
+        if brand:
+            sub = "{} · {}".format(brand, sub)
+        sub_lab = QLabel(sub)
+        sub_lab.setObjectName("sdProductSub")
+        sub_lab.setWordWrap(True)
+        text.addWidget(sub_lab)
+        skus = row.get("skus") if isinstance(row.get("skus"), list) else []
+        for sku in skus[:3]:
+            s = str(sku or "").strip()
+            if s:
+                bc = QLabel(s)
+                bc.setObjectName("sdBarcode")
+                text.addWidget(bc)
+        reason = str(
+            row.get("cancel_reason_label") or row.get("cancel_reason") or "Отменен"
+        )
+        text.addWidget(make_badge(reason, "danger"))
+        text.addStretch(1)
+        lay.addLayout(text, 1)
+        return wrap
 
     def stickers_by_category(self) -> None:
         if not self._require_actions_ready():
@@ -1373,12 +1491,17 @@ class SupplyDetailDialog(QDialog):
     def manage_trbx(self) -> None:
         if not self._require_actions_ready():
             return
+        supply = self.orders.get_supply(self.source_id, self.supply_id) or {}
         dlg = TrbxDialog(
             self.trbx,
             self.source_id,
             self.api_key,
             self.supply_id,
             order_count=len(self._all_rows),
+            supply_done=bool(supply.get("done")),
+            warehouse=str(
+                self.warehouse.text().replace("📍", "").strip()
+            ).replace("—", ""),
             parent=self,
         )
         dlg.exec_()
@@ -1454,6 +1577,8 @@ class TrbxDialog(QDialog):
         api_key: str,
         supply_id: str,
         order_count: int = 0,
+        supply_done: bool = False,
+        warehouse: str = "",
         parent: Optional[QWidget] = None,
     ) -> None:
         super(TrbxDialog, self).__init__(parent)
@@ -1462,6 +1587,8 @@ class TrbxDialog(QDialog):
         self.api_key = api_key
         self.supply_id = supply_id
         self.order_count = int(order_count or 0)
+        self.supply_done = bool(supply_done)
+        self.warehouse = str(warehouse or "").strip()
         self.boxes = []  # type: List[Dict[str, Any]]
 
         self.setWindowTitle("Грузоместа для поставки в ПВЗ")
@@ -1490,25 +1617,25 @@ class TrbxDialog(QDialog):
 
         stepper_row = QHBoxLayout()
         stepper_row.setSpacing(8)
-        minus_btn = QPushButton("−")
-        minus_btn.setObjectName("secondary")
-        minus_btn.setFixedWidth(44)
-        minus_btn.clicked.connect(partial(self._step_amount, -1))
+        self.minus_btn = QPushButton("−")
+        self.minus_btn.setObjectName("secondary")
+        self.minus_btn.setFixedWidth(44)
+        self.minus_btn.clicked.connect(partial(self._step_amount, -1))
         self.amount = QSpinBox()
         self.amount.setRange(1, 1000)
         self.amount.setValue(1)
         self.amount.setMinimumWidth(88)
-        plus_btn = QPushButton("+")
-        plus_btn.setObjectName("secondary")
-        plus_btn.setFixedWidth(44)
-        plus_btn.clicked.connect(partial(self._step_amount, 1))
-        create_btn = QPushButton("Создать")
-        create_btn.clicked.connect(self.create_boxes)
-        stepper_row.addWidget(minus_btn)
+        self.plus_btn = QPushButton("+")
+        self.plus_btn.setObjectName("secondary")
+        self.plus_btn.setFixedWidth(44)
+        self.plus_btn.clicked.connect(partial(self._step_amount, 1))
+        self.create_btn = QPushButton("Создать")
+        self.create_btn.clicked.connect(self.create_boxes)
+        stepper_row.addWidget(self.minus_btn)
         stepper_row.addWidget(self.amount)
-        stepper_row.addWidget(plus_btn)
+        stepper_row.addWidget(self.plus_btn)
         stepper_row.addSpacing(8)
-        stepper_row.addWidget(create_btn)
+        stepper_row.addWidget(self.create_btn)
         stepper_row.addStretch(1)
         root.addLayout(stepper_row)
 
@@ -1548,6 +1675,20 @@ class TrbxDialog(QDialog):
         close.rejected.connect(self.reject)
         root.addWidget(close)
         self.reload()
+        self._apply_done_state()
+
+    def _apply_done_state(self) -> None:
+        if not self.supply_done:
+            return
+        self.create_btn.setEnabled(False)
+        self.minus_btn.setEnabled(False)
+        self.plus_btn.setEnabled(False)
+        self.amount.setEnabled(False)
+        self.delete_all_btn.setEnabled(False)
+        self.info.setText(
+            "Поставка уже закрыта — создать грузоместа нельзя. "
+            "Можно распечатать QR существующих."
+        )
 
     def _remaining(self) -> Optional[int]:
         if self.order_count <= 0:
@@ -1558,18 +1699,23 @@ class TrbxDialog(QDialog):
         self.amount.setValue(self.amount.value() + delta)
 
     def _sync_amount_range(self) -> None:
+        if self.supply_done:
+            return
         remaining = self._remaining()
         if remaining is None:
             self.amount.setMaximum(1000)
+            self.create_btn.setEnabled(True)
             return
         self.amount.setMaximum(max(1, remaining))
         if remaining < 1:
+            self.create_btn.setEnabled(False)
             self.info.setText(
                 "Лимит грузомест достигнут (макс. {} = заказы + 1)".format(
                     self.order_count + 1
                 )
             )
         else:
+            self.create_btn.setEnabled(True)
             self.info.setText("Можно добавить ещё: {}".format(remaining))
 
     @staticmethod
@@ -1586,6 +1732,7 @@ class TrbxDialog(QDialog):
         self.boxes = [b for b in boxes if self._box_id(b)]
         self._render_boxes()
         self._sync_amount_range()
+        self._apply_done_state()
 
     def _render_boxes(self) -> None:
         self.table.setRowCount(len(self.boxes))
@@ -1595,7 +1742,7 @@ class TrbxDialog(QDialog):
             self.table.setCellWidget(i, 1, self._build_box_actions(bid))
         has_boxes = bool(self.boxes)
         self.print_all_btn.setEnabled(has_boxes)
-        self.delete_all_btn.setEnabled(has_boxes)
+        self.delete_all_btn.setEnabled(has_boxes and not self.supply_done)
 
     def _build_box_actions(self, box_id: str) -> QWidget:
         wrap = QWidget()
@@ -1607,26 +1754,40 @@ class TrbxDialog(QDialog):
         print_btn.setText("QR")
         print_btn.setToolTip("Печать QR грузоместа {}".format(box_id))
         print_btn.clicked.connect(partial(self.print_one_box, box_id))
-        delete_btn = QToolButton()
-        delete_btn.setObjectName("dangerToolBtn")
-        delete_btn.setText("✕")
-        delete_btn.setToolTip("Удалить грузоместо {}".format(box_id))
-        delete_btn.clicked.connect(partial(self.delete_one_box, box_id))
         lay.addWidget(print_btn)
-        lay.addWidget(delete_btn)
+        if not self.supply_done:
+            delete_btn = QToolButton()
+            delete_btn.setObjectName("dangerToolBtn")
+            delete_btn.setText("✕")
+            delete_btn.setToolTip("Удалить грузоместо {}".format(box_id))
+            delete_btn.clicked.connect(partial(self.delete_one_box, box_id))
+            lay.addWidget(delete_btn)
         lay.addStretch(1)
         return wrap
 
     def create_boxes(self) -> None:
+        if self.supply_done:
+            QMessageBox.information(
+                self,
+                "Грузоместа",
+                "Поставка уже закрыта — создать грузоместа нельзя.",
+            )
+            return
         try:
             self.trbx.create(
-                self.source_id, self.api_key, self.supply_id, int(self.amount.value())
+                self.source_id,
+                self.api_key,
+                self.supply_id,
+                int(self.amount.value()),
+                order_count=self.order_count,
             )
             self.reload()
         except Exception as exc:
             QMessageBox.critical(self, "Грузоместа", str(exc))
 
     def delete_one_box(self, box_id: str) -> None:
+        if self.supply_done:
+            return
         if (
             QMessageBox.question(
                 self, "Грузоместа", "Удалить грузоместо {}?".format(box_id)
@@ -1641,7 +1802,7 @@ class TrbxDialog(QDialog):
             QMessageBox.critical(self, "Грузоместа", str(exc))
 
     def delete_all(self) -> None:
-        if not self.boxes:
+        if self.supply_done or not self.boxes:
             return
         if (
             QMessageBox.question(self, "Грузоместа", "Удалить все грузоместа?")
@@ -1676,6 +1837,12 @@ class TrbxDialog(QDialog):
 
     def print_supply_qr(self) -> None:
         try:
-            show_supply_qr(self.api_key, self.supply_id, self)
+            show_supply_qr(
+                self.api_key,
+                self.supply_id,
+                self,
+                order_count=self.order_count,
+                city=self.warehouse,
+            )
         except Exception as exc:
             QMessageBox.critical(self, "QR поставки", str(exc))

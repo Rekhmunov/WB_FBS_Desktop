@@ -81,6 +81,13 @@ def list_cancelled_in_supply(
                 time.sleep(0.21)
         if not status_by_id:
             raise RuntimeError("Wildberries не вернул статусы заказов")
+        missing = [oid for oid in order_ids if oid not in status_by_id]
+        if missing:
+            raise RuntimeError(
+                "Wildberries не вернул статусы для {} из {} заказов".format(
+                    len(missing), len(order_ids)
+                )
+            )
 
     if persist:
         now = utc_now()
@@ -114,17 +121,46 @@ def list_cancelled_in_supply(
         for r in rows:
             local_by_id[int(r["order_id"])] = dict(r)
 
+    # Sticker numbers for cancelled rows (web enriches with svg stickers map).
+    stickers = {}  # type: Dict[int, Dict[str, Any]]
+    if cancelled_ids and api_key:
+        try:
+            from app.services.print_docs import _fetch_picking_stickers
+
+            stickers = _fetch_picking_stickers(api_key, cancelled_ids)
+        except Exception:
+            stickers = {}
+
     out_rows = []  # type: List[Dict[str, Any]]
     for oid in cancelled_ids:
         local = local_by_id.get(oid) or {}
+        st = stickers.get(oid) or {}
+        part_a = str(st.get("partA") or local.get("sticker_part_a") or "").strip()
+        part_b = str(st.get("partB") or local.get("sticker_part_b") or "").strip()
+        barcode = str(st.get("barcode") or local.get("sticker_barcode") or "").strip()
+        skus = local.get("skus") if isinstance(local.get("skus"), list) else parse_json_list(
+            local.get("skus_json")
+        )
         out_rows.append(
             {
                 "order_id": oid,
                 "article": local.get("article") or "",
+                "nm_id": local.get("nm_id"),
+                "product_name": local.get("product_name") or "",
+                "product_photo": local.get("product_photo") or "",
+                "brand": local.get("brand") or "",
+                "created_date": local.get("created_date")
+                or local.get("created_at_wb")
+                or "",
+                "skus": skus,
+                "sticker_part_a": part_a,
+                "sticker_part_b": part_b,
+                "sticker_barcode": barcode,
+                "sticker_number": "{}{}".format(part_a, part_b),
                 "cancel_reason": cancel_labels.get(oid) or "Отменен",
+                "cancel_reason_label": cancel_labels.get(oid) or "Отменен",
                 "supplier_status": (status_by_id.get(oid) or ("", ""))[0],
                 "wb_status": (status_by_id.get(oid) or ("", ""))[1],
-                "skus": parse_json_list(local.get("skus_json")),
             }
         )
     return {"rows": out_rows, "cancelled_count": len(out_rows)}

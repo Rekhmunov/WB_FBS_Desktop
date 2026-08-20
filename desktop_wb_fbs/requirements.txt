@@ -7,3 +7,6 @@ backports.zoneinfo>=0.2.1; python_version < "3.9"
 tzdata>=2024.1
 # HTTPS CA bundle — required on many Windows Python installs
 certifi>=2024.2.2
+# Local supply QR sticker (web parity; no WB /barcode API)
+qrcode>=7.4,<9
+Pillow>=9.0.0

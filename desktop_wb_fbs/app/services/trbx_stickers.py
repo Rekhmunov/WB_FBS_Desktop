@@ -48,14 +48,52 @@ class TrbxService:
         return boxes
 
     def create(
-        self, source_id: int, api_key: str, supply_id: str, amount: int
+        self,
+        source_id: int,
+        api_key: str,
+        supply_id: str,
+        amount: int,
+        *,
+        order_count: Optional[int] = None,
     ) -> List[str]:
+        from app.services.orders import OrdersService
+
+        supply = OrdersService(self.db).get_supply(source_id, supply_id) or {}
+        if bool(supply.get("done")):
+            raise ValueError(
+                "Поставка уже закрыта — грузоместа добавить нельзя"
+            )
+        n = int(amount or 0)
+        if n < 1:
+            raise ValueError("Укажите количество грузомест")
+        boxes = self.list_boxes(source_id, supply_id)
+        qty = int(order_count if order_count is not None else 0)
+        if qty <= 0:
+            # Prefer live order ids count when UI did not pass it.
+            oids = supply.get("order_ids") or []
+            if isinstance(oids, list) and oids:
+                qty = len(oids)
+        if qty > 0:
+            max_total = qty + 1
+            remaining = max(0, max_total - len(boxes))
+            if n > remaining:
+                raise ValueError(
+                    "Можно добавить не больше {} грузомест "
+                    "(лимит = заказы + 1)".format(remaining)
+                )
         client = WbFbsClient(api_key)
-        ids = client.create_supply_boxes(supply_id, amount)
+        ids = client.create_supply_boxes(supply_id, n)
         self.refresh(source_id, api_key, supply_id)
         return ids
 
     def delete_all(self, source_id: int, api_key: str, supply_id: str) -> None:
+        from app.services.orders import OrdersService
+
+        supply = OrdersService(self.db).get_supply(source_id, supply_id) or {}
+        if bool(supply.get("done")):
+            raise ValueError(
+                "Поставка уже закрыта — грузоместа удалить нельзя"
+            )
         boxes = self.list_boxes(source_id, supply_id)
         ids = []
         for b in boxes:
@@ -74,6 +112,13 @@ class TrbxService:
     def delete_one(
         self, source_id: int, api_key: str, supply_id: str, box_id: str
     ) -> None:
+        from app.services.orders import OrdersService
+
+        supply = OrdersService(self.db).get_supply(source_id, supply_id) or {}
+        if bool(supply.get("done")):
+            raise ValueError(
+                "Поставка уже закрыта — грузоместа удалить нельзя"
+            )
         bid = str(box_id or "").strip()
         if not bid:
             raise ValueError("Укажите ID грузоместа")

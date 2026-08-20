@@ -551,10 +551,11 @@ QLabel#dialogTitle {
     color: #0f1f33;
 }
 QLabel#sdTitle {
-    font-size: 24px;
+    font-size: 20px;
     font-weight: 700;
     color: #0f1f33;
-    line-height: 1.25;
+    line-height: 1.2;
+    padding-right: 4px;
 }
 QLabel#sdMeta {
     color: #5f7691;
@@ -562,8 +563,8 @@ QLabel#sdMeta {
 }
 QLabel#sdWarehouse {
     color: #5f7691;
-    font-size: 14px;
-    padding-left: 2px;
+    font-size: 13px;
+    padding: 0 2px;
 }
 QLabel#sdLoadStatus {
     color: #2495ee;
@@ -577,21 +578,21 @@ QLabel#sdLoadStatus {
 QLabel#sdChip {
     background: #f2f8ff;
     border: 1px solid #d9e8f7;
-    border-radius: 10px;
-    padding: 4px 10px;
-    font-size: 13px;
+    border-radius: 8px;
+    padding: 2px 8px;
+    font-size: 12px;
     font-weight: 600;
     color: #5f7691;
-    min-height: 28px;
+    min-height: 24px;
 }
 QFrame#sdChipQr {
     background: #f2f8ff;
     border: 1px solid #d9e8f7;
-    border-radius: 10px;
-    min-height: 28px;
+    border-radius: 8px;
+    min-height: 24px;
 }
 QLabel#sdChipQrText {
-    font-size: 13px;
+    font-size: 12px;
     font-weight: 600;
     color: #5f7691;
 }
@@ -618,10 +619,10 @@ QFrame#sdBody {
     background: #ffffff;
 }
 QLineEdit#sdSearch {
-    min-height: 36px;
-    max-width: 280px;
-    border-radius: 10px;
-    padding: 0 12px;
+    min-height: 32px;
+    max-width: 260px;
+    border-radius: 8px;
+    padding: 0 10px;
     background: #f2f8ff;
     border: 1px solid #d9e8f7;
 }

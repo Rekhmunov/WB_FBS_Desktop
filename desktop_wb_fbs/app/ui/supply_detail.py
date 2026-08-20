@@ -327,36 +327,42 @@ class SupplyDetailDialog(QDialog):
         header = QFrame()
         header.setObjectName("sdHeader")
         hv = QVBoxLayout(header)
-        hv.setContentsMargins(24, 20, 24, 16)
-        hv.setSpacing(12)
+        hv.setContentsMargins(24, 12, 24, 10)
+        hv.setSpacing(8)
 
+        # One compact top row: title · warehouse · chips · search
         title_row = QHBoxLayout()
-        title_row.setSpacing(8)
+        title_row.setSpacing(12)
+        title_row.setAlignment(Qt.AlignVCenter)
         self.header = QLabel("Поставка")
         self.header.setObjectName("sdTitle")
-        self.header.setWordWrap(True)
-        title_row.addWidget(self.header, 1)
-        hv.addLayout(title_row)
+        self.header.setWordWrap(False)
+        self.header.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Preferred)
+        self.header.setMaximumWidth(380)
+        title_row.addWidget(self.header, 0, Qt.AlignVCenter)
 
         self.warehouse = QLabel("📍 —")
         self.warehouse.setObjectName("sdWarehouse")
-        hv.addWidget(self.warehouse)
+        self.warehouse.setWordWrap(False)
+        self.warehouse.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Preferred)
+        self.warehouse.setMaximumWidth(220)
+        title_row.addWidget(self.warehouse, 0, Qt.AlignVCenter)
 
-        meta_row = QHBoxLayout()
-        meta_row.setSpacing(12)
         chips_wrap = QWidget()
-        self.meta_chips = FlowLayout(chips_wrap, h_spacing=8, v_spacing=8)
-        meta_row.addWidget(chips_wrap, 1)
+        chips_wrap.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        self.meta_chips = FlowLayout(chips_wrap, h_spacing=8, v_spacing=4)
+        title_row.addWidget(chips_wrap, 1, Qt.AlignVCenter)
+
         self.search_input = QLineEdit()
         self.search_input.setObjectName("sdSearch")
         self.search_input.setPlaceholderText("🔍 Поиск…")
         self.search_input.setClearButtonEnabled(True)
-        self.search_input.setMinimumWidth(200)
-        self.search_input.setMaximumWidth(280)
+        self.search_input.setMinimumWidth(180)
+        self.search_input.setMaximumWidth(260)
         self.search_input.setToolTip("Поиск по заказу, стикеру, названию товара и ШК")
         self.search_input.textChanged.connect(lambda _t: self._update_search_visibility())
-        meta_row.addWidget(self.search_input, 0, Qt.AlignTop)
-        hv.addLayout(meta_row)
+        title_row.addWidget(self.search_input, 0, Qt.AlignVCenter)
+        hv.addLayout(title_row)
 
         self.meta = QLabel("")
         self.meta.setObjectName("sdMeta")
@@ -961,6 +967,7 @@ class SupplyDetailDialog(QDialog):
     def _apply_supply_header(self, supply: Optional[Dict[str, Any]]) -> None:
         if not supply:
             self.header.setText("Поставка {}".format(self.supply_id))
+            self.header.setToolTip(self.header.text())
             self.setWindowTitle("Поставка {}".format(self.supply_id))
             return
 
@@ -973,6 +980,7 @@ class SupplyDetailDialog(QDialog):
                 else "Поставка {}".format(self.supply_id)
             )
         self.header.setText(name)
+        self.header.setToolTip(name)
         self.setWindowTitle(name)
 
         raw = {}
@@ -1221,12 +1229,13 @@ class SupplyDetailDialog(QDialog):
         warehouse = str(payload.get("warehouse") or "").strip()
         if warehouse:
             self.warehouse.setText("📍 {}".format(warehouse))
+            self.warehouse.setToolTip(warehouse)
         elif not rows:
             supply = self.orders.get_supply(self.source_id, self.supply_id) or {}
             dest = supply.get("destination_office_id")
-            self.warehouse.setText(
-                "📍 {}".format(dest) if dest else "📍 —"
-            )
+            text = "📍 {}".format(dest) if dest else "📍 —"
+            self.warehouse.setText(text)
+            self.warehouse.setToolTip(str(dest or ""))
 
         valid_ids = set(self._row_by_oid.keys())
         self._selected = {oid for oid in self._selected if oid in valid_ids}

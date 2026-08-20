@@ -128,9 +128,8 @@ def run() -> int:
     app = QApplication(sys.argv)
     app.setApplicationName(APP_NAME)
     app.setStyle("Fusion")
-    load_app_fonts()
-    app.setFont(body_font(14))
-    # Keep menus/tooltips light even when the OS theme is dark (Fusion).
+    # Apply light chrome immediately — before fonts/DB — so the first frame is
+    # never a dark/black Fusion flash on Windows dark-mode hosts.
     pal = QPalette()
     pal.setColor(QPalette.Window, QColor("#ffffff"))
     pal.setColor(QPalette.WindowText, QColor("#0f1f33"))
@@ -146,6 +145,8 @@ def run() -> int:
     pal.setColor(QPalette.PlaceholderText, QColor("#8aa0b8"))
     app.setPalette(pal)
     app.setStyleSheet(get_app_qss())
+    load_app_fonts()
+    app.setFont(body_font(14))
     install_text_copy_support(app)
 
     db = Database()
@@ -153,5 +154,9 @@ def run() -> int:
 
     win = MainWindow(db)
     walk_copyable_labels(win)
-    win.showMaximized()
+    win.setAutoFillBackground(True)
+    win.setPalette(pal)
+    # Maximize before show so Windows does not paint an intermediate dark frame.
+    win.setWindowState(win.windowState() | Qt.WindowMaximized)
+    win.show()
     return app.exec_()

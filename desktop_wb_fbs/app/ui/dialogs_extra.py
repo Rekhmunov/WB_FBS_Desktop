@@ -11,6 +11,7 @@ from PyQt5.QtWidgets import (
     QComboBox,
     QDialog,
     QDialogButtonBox,
+    QFrame,
     QLabel,
     QLineEdit,
     QMessageBox,

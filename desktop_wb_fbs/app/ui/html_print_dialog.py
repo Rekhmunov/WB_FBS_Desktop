@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Optional
 
-from PyQt5.QtCore import QEventLoop, QTimer, QUrl, Qt
+from PyQt5.QtCore import QEventLoop, QTimer, QUrl, Qt, pyqtSignal
 from PyQt5.QtGui import QCursor
 from PyQt5.QtPrintSupport import QPrintDialog, QPrintPreviewDialog, QPrintPreviewWidget, QPrinter
 from PyQt5.QtWidgets import (
@@ -49,6 +49,8 @@ def webengine_status() -> tuple:
 class HtmlPrintPreviewDialog(QDialog):
     """Render saved HTML locally, then print or export PDF without a browser."""
 
+    document_ready = pyqtSignal()
+
     def __init__(
         self,
         html_path: Path,
@@ -65,6 +67,7 @@ class HtmlPrintPreviewDialog(QDialog):
         self._load_started = False
         self._load_attempts = 0
         self._load_warned = False
+        self._ready_emitted = False
         self._nested_print_preview = bool(nested_print_preview)
         self._wait_images = bool(wait_images)
         self._image_polls = 0
@@ -184,6 +187,9 @@ class HtmlPrintPreviewDialog(QDialog):
                 "Предпросмотр",
                 "Не удалось загрузить документ для печати.",
             )
+            if not self._ready_emitted:
+                self._ready_emitted = True
+                self.document_ready.emit()
 
     def _poll_images_ready(self) -> None:
         js = (
@@ -209,6 +215,9 @@ class HtmlPrintPreviewDialog(QDialog):
         for btn in (self.btn_print, self.btn_pdf):
             btn.setEnabled(True)
         self._status.setText("Документ готов к печати.")
+        if not self._ready_emitted:
+            self._ready_emitted = True
+            self.document_ready.emit()
 
     def _print_to_printer(self, printer: QPrinter) -> bool:
         if not self._loaded:

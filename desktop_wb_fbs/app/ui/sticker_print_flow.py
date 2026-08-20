@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Sequence
 
-from PyQt5.QtCore import Qt, QThread, QTimer, pyqtSignal
+from PyQt5.QtCore import QEventLoop, Qt, QThread, QTimer, pyqtSignal
 from PyQt5.QtWidgets import (
     QDialog,
     QHBoxLayout,
@@ -89,6 +89,7 @@ class StickerLoadDialog(QDialog):
             minimum_size=(420, 200),
         )
         self.setModal(True)
+        self.setWindowModality(Qt.ApplicationModal)
         self._cancelled = False
         self._pulse = 0
 
@@ -106,7 +107,7 @@ class StickerLoadDialog(QDialog):
         root.addWidget(self.detail)
 
         self.bar = QProgressBar()
-        self.bar.setRange(0, 0)  # indeterminate until first total is known
+        self.bar.setRange(0, 0)
         self.bar.setTextVisible(True)
         self.bar.setMinimumHeight(22)
         root.addWidget(self.bar)
@@ -152,9 +153,99 @@ class StickerLoadDialog(QDialog):
         if detail:
             self.detail.setText(detail)
 
+    def lock_for_preview_open(self) -> None:
+        self.btn_cancel.setEnabled(False)
+        self._anim.stop()
+        cur = max(self.bar.value(), 1)
+        total = max(self.bar.maximum(), cur, 1)
+        self.set_progress(total, total, "Открываем превью…")
+
     @property
     def cancelled(self) -> bool:
         return self._cancelled
+
+
+def _resolve_order_ids(
+    orders_svc: OrdersService,
+    source_id: int,
+    api_key: str,
+    supply_id: str,
+    order_ids: Optional[Sequence[int]],
+) -> List[int]:
+    if order_ids is not None:
+        return [int(x) for x in order_ids]
+    rows = orders_svc.orders_in_supply(source_id, supply_id, api_key="")
+    if not rows and api_key:
+        rows = orders_svc.orders_in_supply(source_id, supply_id, api_key=api_key)
+    return [int(r["order_id"]) for r in rows if r.get("order_id") is not None]
+
+
+def _open_ready_preview(
+    path: Path,
+    *,
+    parent: Optional[QWidget],
+    progress: StickerLoadDialog,
+) -> Optional[Path]:
+    """Warm WebEngine under the progress dialog, then open print-ready preview."""
+    from app.services.print_docs import open_html_path
+    from app.ui.html_print_dialog import HtmlPrintPreviewDialog, webengine_status
+
+    progress.lock_for_preview_open()
+    webengine_ok, status = webengine_status()
+    if not webengine_ok:
+        progress.accept()
+        return open_html_path(
+            path,
+            parent=parent,
+            title="Стикеры поставки",
+            nested_print_preview=False,
+            wait_images=True,
+            webengine_hint=status,
+        )
+
+    dlg = HtmlPrintPreviewDialog(
+        path,
+        title="Стикеры поставки",
+        parent=parent,
+        nested_print_preview=False,
+        wait_images=True,
+    )
+    # Preview loads behind the progress dialog; Print is enabled before we reveal it.
+    dlg.setWindowModality(Qt.NonModal)
+    loop = QEventLoop()
+    ready = {"ok": False}
+
+    def _on_ready() -> None:
+        ready["ok"] = True
+        if loop.isRunning():
+            loop.quit()
+
+    dlg.document_ready.connect(_on_ready)
+    dlg.showMaximized()
+    progress.raise_()
+    progress.activateWindow()
+    QTimer.singleShot(60000, loop.quit)
+    if not ready["ok"]:
+        loop.exec_()
+
+    progress.accept()
+
+    if not ready["ok"] and not bool(getattr(dlg, "_loaded", False)):
+        dlg.close()
+        return open_html_path(
+            path,
+            parent=parent,
+            title="Стикеры поставки",
+            nested_print_preview=False,
+            wait_images=False,
+            webengine_hint="таймаут загрузки превью",
+        )
+
+    dlg.setWindowModality(Qt.ApplicationModal)
+    dlg.raise_()
+    dlg.activateWindow()
+    dlg.exec_()
+    return path
 
 
 def run_supply_sticker_print(
@@ -169,11 +260,21 @@ def run_supply_sticker_print(
     preloaded_stickers: Optional[Dict[int, Dict[str, Any]]] = None,
 ) -> Optional[Path]:
     """
-    Show progress while stickers download to disk, then open print preview.
-
-    Returns the HTML path when preview was opened, else None.
+    Download stickers with progress, warm the HTML preview, then open it already
+    ready for «Печать…». Disk-cached supplies skip the network phase.
     """
-    from app.services.print_docs import open_html_path
+    from app.services.print_docs import sticker_print_html_path
+    from app.services.sticker_file_cache import existing_sticker_paths
+
+    ids = _resolve_order_ids(orders_svc, source_id, api_key, supply_id, order_ids)
+    cached_path = sticker_print_html_path(api_key, supply_id, ids)
+    if cached_path is not None and ids and cached_path.is_file():
+        on_disk = existing_sticker_paths(api_key, supply_id, ids)
+        if len(on_disk) >= len(ids):
+            progress = StickerLoadDialog(parent, title="Стикеры · {}".format(supply_id))
+            progress.set_progress(len(ids), len(ids), "Файлы уже на диске — открываем…")
+            progress.show()
+            return _open_ready_preview(cached_path, parent=parent, progress=progress)
 
     progress = StickerLoadDialog(parent, title="Стикеры · {}".format(supply_id))
     worker = _StickerPrepareWorker(
@@ -184,20 +285,32 @@ def run_supply_sticker_print(
         supply_id,
         order_ids=order_ids,
         preloaded_stickers=preloaded_stickers,
-        parent=progress,
+        parent=None,
     )
-    result = {"path": None, "error": None}  # type: Dict[str, Any]
+    result = {"path": None, "error": None, "opened": False}  # type: Dict[str, Any]
 
     def _on_progress(done: int, total: int, detail: str) -> None:
         progress.set_progress(done, total, detail)
 
-    def _on_ok(path: object) -> None:
-        result["path"] = Path(str(path))
-        progress.accept()
-
     def _on_fail(message: str) -> None:
         result["error"] = str(message or "Ошибка подготовки стикеров")
         progress.reject()
+
+    def _on_ok(path: object) -> None:
+        result["path"] = Path(str(path))
+
+        def _warm() -> None:
+            if progress.cancelled:
+                return
+            opened = _open_ready_preview(
+                Path(result["path"]), parent=parent, progress=progress
+            )
+            result["opened"] = opened is not None
+            # If preview path returned early without accepting, force-close progress.
+            if progress.isVisible():
+                progress.accept()
+
+        QTimer.singleShot(0, _warm)
 
     worker.progress.connect(_on_progress)
     worker.finished_ok.connect(_on_ok)
@@ -205,21 +318,17 @@ def run_supply_sticker_print(
     worker.start()
     progress.exec_()
 
-    if progress.cancelled or result["path"] is None:
+    if progress.cancelled and not result["opened"]:
         worker.requestInterruption()
         if not worker.wait(8000):
             worker.terminate()
             worker.wait(2000)
-        if result["error"] and not progress.cancelled:
-            QMessageBox.critical(parent, "Стикеры", result["error"])
+        return None
+
+    if result["error"] and not result["opened"]:
+        worker.wait(1000)
+        QMessageBox.critical(parent, "Стикеры", result["error"])
         return None
 
     worker.wait(2000)
-    path = Path(result["path"])
-    return open_html_path(
-        path,
-        parent=parent,
-        title="Стикеры поставки",
-        nested_print_preview=False,
-        wait_images=True,
-    )
+    return Path(result["path"]) if result.get("path") else None

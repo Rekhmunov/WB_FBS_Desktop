@@ -1041,7 +1041,9 @@ def prepare_supply_stickers_html(
         raise RuntimeError("Отменено")
 
     _prog(total, total, "Собираем документ для печати…")
-    cards = fetch_cards(api_key, rows)
+    # Local catalog is enough for separator titles; skip Content API when PNGs
+    # were already on disk (keeps cached re-open fast).
+    cards = fetch_cards(api_key, rows, network=bool(missing))
     products = ProductService(db).list_all()
     html_dir = None  # type: Optional[Path]
     if api_key and supply_id:
@@ -1052,16 +1054,39 @@ def prepare_supply_stickers_html(
         rows, stickers, cards, products, sticker_html_dir=html_dir
     )
     html_doc = render_stickers_print_html(supply_id, groups)
-    if html_dir is not None:
-        html_dir.mkdir(parents=True, exist_ok=True)
-        path = html_dir / "feedpilot_stickers_{}.html".format(supply_id)
-    else:
+    path = sticker_print_html_path(api_key, supply_id, ids, create_dir=True)
+    if path is None:
         path = Path(tempfile.gettempdir()) / "feedpilot_stickers_{}.html".format(
             supply_id
         )
+    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(html_doc, encoding="utf-8")
     _prog(total, total, "Готово")
     return path
+
+
+def sticker_print_html_path(
+    api_key: str,
+    supply_id: str,
+    order_ids: Optional[List[int]] = None,
+    *,
+    create_dir: bool = False,
+) -> Optional[Path]:
+    """Stable on-disk HTML path for a supply (and optional order-id subset)."""
+    if not api_key or not supply_id:
+        return None
+    from app.services.sticker_file_cache import supply_sticker_dir
+
+    html_dir = supply_sticker_dir(api_key, supply_id)
+    if create_dir:
+        html_dir.mkdir(parents=True, exist_ok=True)
+    ids = [int(x) for x in (order_ids or []) if x is not None]
+    if ids:
+        digest = hashlib.md5(
+            ",".join(str(i) for i in sorted(set(ids))).encode("utf-8")
+        ).hexdigest()[:10]
+        return html_dir / "feedpilot_stickers_{}_{}.html".format(supply_id, digest)
+    return html_dir / "feedpilot_stickers_{}.html".format(supply_id)
 
 
 def print_supply_stickers(

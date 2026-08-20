@@ -2105,9 +2105,24 @@ class SupplyDetailDialog(QDialog):
         self._render_table()
         # Tone after render — same order as web (render must not wipe color).
         self._set_kiz_split_tone(str(payload.get("status") or ""))
-        self._last_status_note = "Статусы КИЗ обновлены"
+        filled, total = self._kiz_scan_counts()
+        self._last_status_note = (
+            "Статусы КИЗ обновлены, просканировано {} из {}".format(filled, total)
+        )
         self.meta.setText(self._last_status_note)
         self.meta.show()
+
+    def _kiz_scan_counts(self) -> Tuple[int, int]:
+        """Same N/M as «Товары с маркировкой» counter (КИЗ slots filled / total)."""
+        session = supply_session.get_session(self.source_id, self.supply_id)
+        rows = list(session.kiz_rows) if session else []
+        filled = 0
+        total = 0
+        for r in rows:
+            codes = list(r.get("kiz_codes") or [""]) or [""]
+            total += len(codes)
+            filled += sum(1 for c in codes if str(c or "").strip())
+        return filled, total
 
     def refresh_pick_status(self) -> None:
         if not self._require_actions_ready():
@@ -2133,17 +2148,27 @@ class SupplyDetailDialog(QDialog):
             data = payload if isinstance(payload, dict) else {}
             self._set_pick_split_tone(str(data.get("status") or ""))
             self._set_pick_refresh_busy(False)
-            counts = data.get("counts") if isinstance(data.get("counts"), dict) else {}
-            ok_n = int(counts.get("ok") or 0)
-            total = int(counts.get("checked") or 0)
-            if str(data.get("status") or "") == "ok":
-                note = "ШК проверены: все {} заказ(ов) заполнены".format(total)
-            elif total:
-                note = "ШК: заполнено {} из {}".format(ok_n, total)
-            else:
-                note = "Нет заказов без маркировки для проверки"
-            self._last_status_note = note
-            self.meta.setText(note)
+            orders = [
+                o
+                for o in (data.get("orders") or [])
+                if isinstance(o, dict) and not o.get("cancelled")
+            ]
+            filled = sum(
+                1
+                for o in orders
+                if o.get("barcode_ok")
+                or (
+                    bool(o.get("pick_verified"))
+                    and bool(str(o.get("pick_barcode") or "").strip())
+                )
+            )
+            total = len(orders)
+            self._last_status_note = (
+                "Статусы ШК обновлены, просканировано {} из {}".format(
+                    filled, total
+                )
+            )
+            self.meta.setText(self._last_status_note)
             self.meta.show()
 
         def _on_failed(message: str, g: int = gen) -> None:

@@ -2,3 +2,5 @@ __pycache__/
 *.py[cod]
 *.db
 .cursor/rules/server-access.mdc
+# Unpacked web reference copy (source remains AI-reviews-main.zip)
+AI-reviews-main/

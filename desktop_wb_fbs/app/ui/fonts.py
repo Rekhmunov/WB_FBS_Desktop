@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Load bundled Inter / Manrope fonts (web archive parity)."""
+"""Load bundled Inter / Inter Display fonts (web archive parity)."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -36,9 +36,6 @@ def load_app_fonts() -> List[str]:
         "Inter-Bold.ttf",
         "InterDisplay-SemiBold.ttf",
         "InterDisplay-Bold.ttf",
-        "Manrope-Regular.ttf",
-        "Manrope-SemiBold.ttf",
-        "Manrope-Bold.ttf",
     ):
         fam = _register(_FONTS_DIR / name)
         if not fam:
@@ -48,11 +45,8 @@ def load_app_fonts() -> List[str]:
         compact = fam.lower().replace(" ", "")
         if compact == "inter":
             _FAMILY_BODY = fam
-        elif compact == "manrope":
-            _FAMILY_DISPLAY = fam
         elif "interdisplay" in compact:
-            if "manrope" not in _FAMILY_DISPLAY.lower():
-                _FAMILY_DISPLAY = fam
+            _FAMILY_DISPLAY = fam
     if not loaded:
         _FAMILY_BODY = "Segoe UI"
         _FAMILY_DISPLAY = "Segoe UI"

@@ -853,13 +853,16 @@ QLabel#sdBarcode {
     margin: 0;
 }
 QLabel#sdKizBadge {
-    padding: 2px 8px;
-    border-radius: 6px;
-    font-size: 11px;
+    padding: 5px 12px;
+    border-radius: 8px;
+    font-size: 13px;
     font-weight: 700;
+    letter-spacing: 0.04em;
     background: #f2f8ff;
     color: #5f7691;
-    max-width: 96px;
+    max-width: 64px;
+    min-height: 24px;
+    qproperty-alignment: AlignCenter;
 }
 QLabel#sdKizBadge[kizState="pending"] {
     background: #fef3c7;

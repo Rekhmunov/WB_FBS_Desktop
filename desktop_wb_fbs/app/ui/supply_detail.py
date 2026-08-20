@@ -1330,8 +1330,13 @@ class SupplyDetailDialog(QDialog):
         status = str(row.get("kiz_status") or "empty")
         lab = QLabel("КИЗ")
         lab.setObjectName("sdKizBadge")
+        lab.setAlignment(Qt.AlignCenter)
+        from PyQt5.QtWidgets import QSizePolicy
+
+        lab.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        # Keep label text short («КИЗ») so the colored pill does not stick out;
+        # status is conveyed by color + tooltip.
         if status == "pending":
-            lab.setText("На проверке")
             lab.setProperty("kizState", "pending")
             lab.setToolTip("КИЗ отправлен, ожидается проверка Wildberries")
         elif status == "ok":

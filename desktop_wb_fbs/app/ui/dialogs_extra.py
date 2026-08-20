@@ -63,6 +63,30 @@ def _print_pixmaps(parent: QWidget, pixmaps: List[QPixmap]) -> None:
 def show_png_list(
     pngs: List[bytes], title: str, parent: Optional[QWidget] = None
 ) -> None:
+    pixmaps = []  # type: List[QPixmap]
+    for raw in pngs:
+        pix = QPixmap()
+        if raw:
+            pix.loadFromData(raw)
+        pixmaps.append(pix)
+    show_pixmap_print_preview(pixmaps, title, parent)
+
+
+def show_pixmap_print_preview(
+    pixmaps: List[QPixmap],
+    title: str,
+    parent: Optional[QWidget] = None,
+) -> None:
+    """Scroll preview of raster pages (same UX as supply QR / box stickers)."""
+    valid = [p for p in pixmaps if p is not None and not p.isNull()]
+    if not valid:
+        QMessageBox.warning(
+            parent,
+            title or "Печать",
+            "Нет изображений для предпросмотра.",
+        )
+        return
+
     dlg = QDialog(parent)
     dlg.setWindowTitle(title)
     prepare_modal_dialog(
@@ -78,6 +102,10 @@ def show_png_list(
     heading.setObjectName("dialogTitle")
     heading.setWordWrap(True)
     root.addWidget(heading)
+    tip = QLabel("Предпросмотр · {} лист(ов). Печать отправляет картинки на принтер.".format(len(valid)))
+    tip.setStyleSheet("color:#64748b;")
+    tip.setWordWrap(True)
+    root.addWidget(tip)
     scroll = QScrollArea()
     scroll.setWidgetResizable(True)
     scroll.setFrameShape(0)  # QFrame.NoFrame
@@ -85,13 +113,9 @@ def show_png_list(
     lay = QVBoxLayout(wrap)
     lay.setContentsMargins(0, 0, 8, 0)
     lay.setSpacing(16)
-    pixmaps = []  # type: List[QPixmap]
-    for raw in pngs:
+    for pix in valid:
         lab = QLabel()
         lab.setAlignment(Qt.AlignCenter)
-        pix = QPixmap()
-        pix.loadFromData(raw)
-        pixmaps.append(pix)
         lab.setPixmap(pix.scaledToWidth(420, Qt.SmoothTransformation))
         lay.addWidget(lab)
     lay.addStretch(1)
@@ -100,13 +124,114 @@ def show_png_list(
     buttons = QDialogButtonBox()
     print_btn = buttons.addButton("Печать…", QDialogButtonBox.ActionRole)
     print_btn.setObjectName("bottomPrimary")
-    print_btn.clicked.connect(lambda: _print_pixmaps(dlg, pixmaps))
+    print_btn.clicked.connect(lambda: _print_pixmaps(dlg, valid))
     close_btn = buttons.addButton(QDialogButtonBox.Close)
     close_btn.setObjectName("secondary")
     buttons.rejected.connect(dlg.reject)
     close_btn.clicked.connect(dlg.reject)
     root.addWidget(buttons)
     dlg.exec_()
+
+
+def build_sticker_print_pixmaps(groups: List[Dict[str, Any]]) -> List[QPixmap]:
+    """Build print pages: product separator sheet, then each order sticker PNG."""
+    pages = []  # type: List[QPixmap]
+    for g in groups or []:
+        sep = _sticker_separator_pixmap(g)
+        if sep is not None and not sep.isNull():
+            pages.append(sep)
+        for order in g.get("orders") or []:
+            path = str(order.get("sticker_file_path") or "").strip()
+            pix = QPixmap()
+            if path:
+                pix = QPixmap(path)
+            if pix.isNull():
+                # Placeholder so the sheet order stays aligned with the print job.
+                pix = _sticker_missing_pixmap(order.get("order_id"))
+            pages.append(pix)
+    return pages
+
+
+def _sticker_separator_pixmap(group: Dict[str, Any]) -> QPixmap:
+    """58×40 mm style separator card (артикул для подбора)."""
+    w, h = 580, 400
+    pix = QPixmap(w, h)
+    pix.fill(Qt.white)
+    painter = QPainter(pix)
+    try:
+        painter.setRenderHint(QPainter.TextAntialiasing, True)
+        painter.setPen(Qt.black)
+        y = 28
+        qty = int(group.get("qty") or 0)
+        font = painter.font()
+        font.setBold(True)
+        font.setPointSize(22)
+        painter.setFont(font)
+        painter.drawText(24, y, 532, 40, Qt.AlignLeft | Qt.AlignVCenter, "{} шт.".format(qty))
+        y += 48
+        font.setPointSize(16)
+        painter.setFont(font)
+        name = str(group.get("product_name") or "—")
+        painter.drawText(24, y, 532, 72, Qt.AlignLeft | Qt.TextWordWrap, name)
+        y += 80
+        font.setBold(False)
+        font.setPointSize(11)
+        painter.setFont(font)
+        lines = []
+        brand = str(group.get("brand") or "").strip()
+        if brand:
+            lines.append("Бренд: {}".format(brand))
+        color = str(group.get("color") or "").strip()
+        if color:
+            lines.append("Цвет: {}".format(color))
+        nm = group.get("nm_id")
+        if nm not in (None, ""):
+            lines.append("Артикул WB: {}".format(nm))
+        barcodes = group.get("barcodes") or []
+        if barcodes:
+            lines.append("Баркод: {}".format(barcodes[0]))
+        article = str(group.get("article") or "").strip()
+        if article:
+            lines.append("Артикул: {}".format(article))
+        for line in lines:
+            painter.drawText(24, y, 532, 28, Qt.AlignLeft | Qt.AlignVCenter, line)
+            y += 26
+        font.setPointSize(10)
+        font.setBold(True)
+        painter.setFont(font)
+        painter.setPen(Qt.darkGray)
+        painter.drawText(
+            24,
+            h - 40,
+            532,
+            24,
+            Qt.AlignLeft | Qt.AlignVCenter,
+            "Артикул для подбора · Не нужно клеить",
+        )
+    finally:
+        painter.end()
+    return pix
+
+
+def _sticker_missing_pixmap(order_id: object) -> QPixmap:
+    w, h = 580, 400
+    pix = QPixmap(w, h)
+    pix.fill(Qt.white)
+    painter = QPainter(pix)
+    try:
+        painter.setPen(Qt.red)
+        font = painter.font()
+        font.setPointSize(14)
+        font.setBold(True)
+        painter.setFont(font)
+        painter.drawText(
+            pix.rect(),
+            Qt.AlignCenter,
+            "Нет стикера\nЗаказ {}".format(order_id),
+        )
+    finally:
+        painter.end()
+    return pix
 
 
 def show_order_stickers(

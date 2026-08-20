@@ -326,6 +326,7 @@ def build_groups(
                 "sticker_part_a": st.get("partA") or "",
                 "sticker_part_b": st.get("partB") or "",
                 "sticker_src": sticker_img_src(st, relative_to=sticker_html_dir),
+                "sticker_file_path": str(st.get("file_path") or "").strip(),
                 "article": article,
             }
         )
@@ -957,7 +958,7 @@ def print_picking_list(
     )
 
 
-def prepare_supply_stickers_html(
+def prepare_supply_stickers(
     db: Database,
     orders_svc: OrdersService,
     source_id: int,
@@ -967,8 +968,8 @@ def prepare_supply_stickers_html(
     preloaded_stickers: Optional[Dict[int, Dict[str, Any]]] = None,
     progress: Optional[Callable[[int, int, str], None]] = None,
     should_abort: Optional[Callable[[], bool]] = None,
-) -> Path:
-    """Fetch/cache sticker PNGs and write print HTML to disk (no UI)."""
+) -> Dict[str, Any]:
+    """Fetch/cache sticker PNGs and build print groups (no UI)."""
     from app.services.sticker_file_cache import existing_sticker_paths
 
     def _aborted() -> bool:
@@ -995,7 +996,6 @@ def prepare_supply_stickers_html(
             for oid, meta in preloaded_stickers.items()
             if oid is not None
         }
-    # Resume PNGs already on disk from earlier prints (fast path).
     if ids and api_key and supply_id:
         on_disk = existing_sticker_paths(api_key, supply_id, ids)
         for oid, path in on_disk.items():
@@ -1041,8 +1041,6 @@ def prepare_supply_stickers_html(
         raise RuntimeError("Отменено")
 
     _prog(total, total, "Собираем документ для печати…")
-    # Local catalog is enough for separator titles; skip Content API when PNGs
-    # were already on disk (keeps cached re-open fast).
     cards = fetch_cards(api_key, rows, network=bool(missing))
     products = ProductService(db).list_all()
     html_dir = None  # type: Optional[Path]
@@ -1053,6 +1051,45 @@ def prepare_supply_stickers_html(
     groups = build_groups(
         rows, stickers, cards, products, sticker_html_dir=html_dir
     )
+    _prog(total, total, "Готово")
+    return {
+        "groups": groups,
+        "ids": ids,
+        "stickers": stickers,
+        "supply_id": str(supply_id),
+    }
+
+
+def prepare_supply_stickers_html(
+    db: Database,
+    orders_svc: OrdersService,
+    source_id: int,
+    api_key: str,
+    supply_id: str,
+    order_ids: Optional[List[int]] = None,
+    preloaded_stickers: Optional[Dict[int, Dict[str, Any]]] = None,
+    progress: Optional[Callable[[int, int, str], None]] = None,
+    should_abort: Optional[Callable[[], bool]] = None,
+) -> Path:
+    """Fetch/cache sticker PNGs and write print HTML to disk (no UI)."""
+    payload = prepare_supply_stickers(
+        db,
+        orders_svc,
+        source_id,
+        api_key,
+        supply_id,
+        order_ids=order_ids,
+        preloaded_stickers=preloaded_stickers,
+        progress=progress,
+        should_abort=should_abort,
+    )
+    groups = list(payload.get("groups") or [])
+    ids = list(payload.get("ids") or [])
+    html_dir = None  # type: Optional[Path]
+    if api_key and supply_id:
+        from app.services.sticker_file_cache import supply_sticker_dir
+
+        html_dir = supply_sticker_dir(api_key, supply_id)
     html_doc = render_stickers_print_html(supply_id, groups)
     path = sticker_print_html_path(api_key, supply_id, ids, create_dir=True)
     if path is None:
@@ -1061,7 +1098,6 @@ def prepare_supply_stickers_html(
         )
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(html_doc, encoding="utf-8")
-    _prog(total, total, "Готово")
     return path
 
 
@@ -1115,12 +1151,11 @@ def print_supply_stickers(
         )
         if path is not None:
             return path
-        # Cancelled — still return a placeholder path for callers/tests.
         return Path(tempfile.gettempdir()) / "feedpilot_stickers_{}.html".format(
             supply_id
         )
 
-    path = prepare_supply_stickers_html(
+    payload = prepare_supply_stickers(
         db,
         orders_svc,
         source_id,
@@ -1129,10 +1164,10 @@ def print_supply_stickers(
         order_ids=order_ids,
         preloaded_stickers=preloaded_stickers,
     )
-    return open_html_path(
-        path,
-        parent=None,
-        title="Стикеры поставки",
-        nested_print_preview=False,
-        wait_images=True,
-    )
+    ids = list(payload.get("ids") or [])
+    path = sticker_print_html_path(api_key, supply_id, ids, create_dir=True)
+    if path is None:
+        path = Path(tempfile.gettempdir()) / "feedpilot_stickers_{}.html".format(
+            supply_id
+        )
+    return path

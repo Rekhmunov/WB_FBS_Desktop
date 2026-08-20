@@ -662,12 +662,20 @@ QFrame#sdHeader QToolButton#splitCaret:hover {
     border-color: #60a5fa;
     color: #1e3a8a;
 }
+QFrame#sdHeader QToolButton#secondary:hover,
+QFrame#sdHeader QToolButton#splitCaret:hover {
+    border-left: none;
+}
 QFrame#sdHeader QPushButton#secondary:pressed,
 QFrame#sdHeader QToolButton#secondary:pressed,
 QFrame#sdHeader QToolButton#splitCaret:pressed {
     background: #dbeafe;
     border-color: #3b82f6;
     color: #1e3a8a;
+}
+QFrame#sdHeader QToolButton#secondary:pressed,
+QFrame#sdHeader QToolButton#splitCaret:pressed {
+    border-left: none;
 }
 QFrame#sdHeader QPushButton#iconBtn:hover {
     background: #eff6ff;
@@ -714,11 +722,13 @@ QToolButton#splitCaret {
 QToolButton#splitCaret:hover {
     background: #eff6ff;
     border-color: #60a5fa;
+    border-left: none;
     color: #1e3a8a;
 }
 QToolButton#splitCaret:pressed {
     background: #dbeafe;
     border-color: #3b82f6;
+    border-left: none;
 }
 QWidget#splitPair QToolButton#secondary,
 QWidget#kizSplitPair QToolButton#secondary {

@@ -147,6 +147,15 @@ class SupplySession:
         for r in self.rows:
             oid = int(r["order_id"])
             meta = self.meta_by_id.get(oid) or {}
+            # Cancel badge on detail rows (web get_supply_detail parity).
+            cancel_label = cancel_reason_label(
+                supplier_status=r.get("supplier_status"),
+                wb_status=r.get("wb_status"),
+            )
+            if cancel_label:
+                r["cancel_reason_label"] = cancel_label
+            else:
+                r.pop("cancel_reason_label", None)
             has_sgtin = _has_sgtin(meta)
             codes = parse_json_list(r.get("kiz_codes_json"))
             if not isinstance(r.get("kiz_codes"), list):

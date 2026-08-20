@@ -375,27 +375,55 @@ class OrdersService:
     def orders_in_supply(
         self, source_id: int, supply_id: str, api_key: str = ""
     ) -> List[Dict[str, Any]]:
+        """Orders in supply detail table — WB ``order_ids`` sequence (web parity)."""
         if api_key:
             try:
                 self.ensure_supply_order_ids(source_id, api_key, supply_id)
             except Exception:
                 pass
+        supply = self.get_supply(source_id, supply_id) or {}
+        preferred = []  # type: List[int]
+        for raw in supply.get("order_ids") or []:
+            try:
+                preferred.append(int(raw))
+            except (TypeError, ValueError):
+                continue
         with self.db.connect() as conn:
             rows = conn.execute(
                 """
                 SELECT * FROM wb_fbs_orders
                 WHERE source_id = ? AND supply_id = ?
-                ORDER BY article COLLATE NOCASE, order_id
                 """,
                 (source_id, supply_id),
             ).fetchall()
         by_art, by_nm, photo_by = self._product_maps()
-        items = [
-            self._enrich_order(dict(r), by_art, by_nm, photo_by) for r in rows
-        ]
-        for it in items:
+        by_id = {}  # type: Dict[int, Dict[str, Any]]
+        for r in rows:
+            it = self._enrich_order(dict(r), by_art, by_nm, photo_by)
             it["kiz_codes"] = parse_json_list(it.get("kiz_codes_json"))
             it["pick_verified"] = bool(int(it.get("pick_verified") or 0))
+            try:
+                oid = int(it.get("order_id"))
+            except (TypeError, ValueError):
+                continue
+            by_id[oid] = it
+        items = []  # type: List[Dict[str, Any]]
+        seen = set()  # type: set
+        for oid in preferred:
+            row = by_id.get(oid)
+            if row is None or oid in seen:
+                continue
+            items.append(row)
+            seen.add(oid)
+        # Orphans not listed in supply.order_ids — keep stable article/id fallback.
+        orphans = [by_id[oid] for oid in by_id.keys() if oid not in seen]
+        orphans.sort(
+            key=lambda x: (
+                str(x.get("article") or "").casefold(),
+                int(x.get("order_id") or 0),
+            )
+        )
+        items.extend(orphans)
         return items
 
     def create_supply_from_orders(

@@ -336,7 +336,7 @@ class SupplyDetailDialog(QDialog):
         self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
         self.table.horizontalHeader().setStretchLastSection(False)
         self.table.verticalHeader().setVisible(False)
-        self.table.verticalHeader().setDefaultSectionSize(120)
+        self.table.verticalHeader().setDefaultSectionSize(148)
         self.table.setShowGrid(False)
         self.table.setFocusPolicy(Qt.NoFocus)
 
@@ -823,10 +823,13 @@ class SupplyDetailDialog(QDialog):
             row.get("order_id"),
             row.get("article"),
             row.get("product_name"),
+            row.get("brand"),
             row.get("nm_id"),
             row.get("sticker_number"),
             row.get("sticker_part_a"),
             row.get("sticker_part_b"),
+            row.get("sticker_barcode"),
+            row.get("cancel_reason_label"),
         ]
         hay.extend(row.get("skus") or [])
         return any(q in str(v or "").strip().lower() for v in hay)
@@ -869,7 +872,8 @@ class SupplyDetailDialog(QDialog):
             self.table.setCellWidget(i, 1, self._build_order_cell(r))
             self.table.setCellWidget(i, 2, self._build_product_cell(r))
             self.table.setCellWidget(i, 3, self._build_row_menu(oid))
-            self.table.setRowHeight(i, 120)
+            self.table.resizeRowToContents(i)
+            self.table.setRowHeight(i, max(self.table.rowHeight(i), 148))
             if i and i % _RENDER_BATCH == 0:
                 QApplication.processEvents()
         self.table.blockSignals(False)
@@ -952,7 +956,7 @@ class SupplyDetailDialog(QDialog):
         lay.setSpacing(12)
         lay.setAlignment(Qt.AlignTop)
 
-        photo = make_photo_label(row.get("product_photo"), 72)
+        photo = make_photo_label(row.get("product_photo"), 120)
         lay.addWidget(photo, 0, Qt.AlignTop)
 
         text = QVBoxLayout()
@@ -985,11 +989,12 @@ class SupplyDetailDialog(QDialog):
             bc.setObjectName("sdBarcode")
             text.addWidget(bc)
 
-        if row.get("kiz_required"):
-            text.addWidget(self._kiz_badge(row))
+        # Web order: cancel badge, then KIZ.
         cancel_label = str(row.get("cancel_reason_label") or "").strip()
         if cancel_label:
             text.addWidget(make_badge(cancel_label, "danger"))
+        if row.get("kiz_required"):
+            text.addWidget(self._kiz_badge(row))
 
         text.addStretch(1)
         lay.addLayout(text, 1)

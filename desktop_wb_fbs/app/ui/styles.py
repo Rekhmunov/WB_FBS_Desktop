@@ -708,7 +708,7 @@ QLabel#sdProductSub {
     color: #64748b;
 }
 QLabel#sdBarcode {
-    font-size: 16px;
+    font-size: 22px;
     font-weight: 700;
     color: #0f172a;
     letter-spacing: 0.02em;
@@ -735,8 +735,8 @@ QLabel#sdKizBadge[kizState="error"] {
     color: #b91c1c;
 }
 QLabel#sdKizBadge[kizState="empty"] {
-    background: #e0f2fe;
-    color: #075985;
+    background: #f1f5f9;
+    color: #94a3b8;
 }
 QFrame#dialogBody {
     background: #f4f7fb;

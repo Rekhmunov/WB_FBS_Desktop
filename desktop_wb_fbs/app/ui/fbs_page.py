@@ -234,7 +234,6 @@ class FbsPage(QWidget):
         for key, label in (
             ("new", "Новые"),
             ("assembly", "На сборке"),
-            ("delivery", "В доставке"),
         ):
             btn = FbsTabButton(label)
             self._tab_group.addButton(btn)
@@ -445,6 +444,8 @@ class FbsPage(QWidget):
         self.reload_table()
 
     def on_tab_change(self, key: str) -> None:
+        if key not in ("new", "assembly"):
+            key = "new"
         self._tab = key
         for k, btn in self.tab_btns.items():
             btn.setChecked(k == key)
@@ -461,11 +462,10 @@ class FbsPage(QWidget):
     def update_bottom_visibility(self) -> None:
         is_new = self._tab == "new"
         is_asm = self._tab == "assembly"
-        is_del = self._tab == "delivery"
-        sid = self._selected_supply_id() if (is_asm or is_del) else None
+        sid = self._selected_supply_id() if is_asm else None
         has_new_sel = bool(self._selected_order_ids) or self._select_all_matching
 
-        # Web: MGT button stays available on all operational tabs when mgt_new > 0.
+        # Web: MGT button stays available on operational tabs when mgt_new > 0.
         # Visibility is driven by reload_table via counts; keep enabled here.
         self.btn_select_page.setVisible(is_new)
         self.btn_select_all_matching.setVisible(is_new)
@@ -479,15 +479,13 @@ class FbsPage(QWidget):
         )
         self.btn_supply_sticker.setVisible(is_asm and bool(sid))
         self.btn_box_stickers.setVisible(is_asm and bool(sid))
-        self.btn_supply_qr.setVisible(is_del and bool(sid))
+        self.btn_supply_qr.setVisible(False)
 
         # Web parity: bottom bar hides entirely with no selection on the
-        # "new" tab; on assembly/delivery it hides until a supply row is
-        # picked (pagination below stays visible regardless).
-        # Delivery: only QR of the supply — no open / order stickers.
+        # "new" tab; on assembly it hides until a supply row is picked.
         if is_new:
             visible = has_new_sel
-        elif is_asm or is_del:
+        elif is_asm:
             visible = bool(sid)
         else:
             visible = False
@@ -500,22 +498,23 @@ class FbsPage(QWidget):
             self.btn_new_supply.setEnabled(True)
             self.btn_add_supply.setEnabled(True)
 
-        if (is_asm or is_del) and sid:
+        if is_asm and sid:
             self.sel_label.setText("Поставка {}".format(sid))
 
     def _update_tab_labels(self, counts: Dict[str, int]) -> None:
         mapping = (
             ("new", counts.get("new", 0)),
             ("assembly", counts.get("assembly", 0)),
-            ("delivery", counts.get("delivery", 0)),
         )
         for key, n in mapping:
-            btn = self.tab_btns[key]
+            btn = self.tab_btns.get(key)
+            if not btn:
+                continue
             btn.set_count(int(n))
             btn.setChecked(key == self._tab)
 
         mgt_new = int(counts.get("mgt_new") or 0)
-        show_mgt = mgt_new > 0 and self._tab in ("new", "assembly", "delivery")
+        show_mgt = mgt_new > 0 and self._tab in ("new", "assembly")
         self.collect_mgt_btn.setVisible(show_mgt)
 
     def reload_table(self) -> None:
@@ -529,10 +528,8 @@ class FbsPage(QWidget):
 
         if self._tab == "new":
             self.search.setPlaceholderText("Поиск по заказу, артикулу, ШК…")
-        elif self._tab == "assembly":
-            self.search.setPlaceholderText("Поиск по поставке, заказу, складу…")
         else:
-            self.search.setPlaceholderText("Поиск по поставке…")
+            self.search.setPlaceholderText("Поиск по поставке, заказу, складу…")
 
         limit = int(self.page_size.currentData() or 50)
         offset = self._page * limit
@@ -568,27 +565,17 @@ class FbsPage(QWidget):
                 )
             )
             self.pager_total.setText("Заказов: {}".format(total))
-        elif self._tab == "assembly":
+        else:
+            # Only «На сборке» — «В доставке» removed.
+            if self._tab != "assembly":
+                self._tab = "assembly"
+                self.tab_btns["assembly"].setChecked(True)
             rows, total = self.orders.list_supplies(
                 sid, done=False, search=search, limit=limit, offset=offset
             )
             self._last_total = total
             self._fill_supplies_table(rows)
             self.sel_label.setText("Поставки на сборке")
-            self.pager_total.setText("Поставок: {}".format(total))
-        else:
-            # Delivery: supply rows only — no order decrypt / detail open.
-            rows, total = self.orders.list_supplies(
-                sid,
-                done=True,
-                search=search,
-                limit=limit,
-                offset=offset,
-                include_order_warehouse=False,
-            )
-            self._last_total = total
-            self._fill_supplies_table(rows)
-            self.sel_label.setText("Поставки в доставке")
             self.pager_total.setText("Поставок: {}".format(total))
 
         pages = max(1, (total + limit - 1) // limit)
@@ -602,9 +589,7 @@ class FbsPage(QWidget):
     def _table_layout(self) -> str:
         if self._tab == "new":
             return "new"
-        if self._tab == "assembly":
-            return "supplies_assembly"
-        return "supplies_delivery"
+        return "supplies_assembly"
 
     @staticmethod
     def _col_settings_key(layout: str) -> str:
@@ -615,8 +600,8 @@ class FbsPage(QWidget):
         defaults = {
             "new": [40, 180, 420, 200],
             "supplies_assembly": [40, 280, 180, 140, 160, 160],
+            # Legacy keys kept for older installs that still have saved widths.
             "supplies_delivery": [40, 220, 160, 140, 160, 140, 160, 48],
-            # Legacy key kept for older installs that still have saved widths.
             "supplies": [168, 280, 72, 72, 88, 160, 48, 56],
         }
         base = list(defaults.get(layout, []))
@@ -818,22 +803,17 @@ class FbsPage(QWidget):
         self.update_bottom_visibility()
 
     def _supply_row_menu(self, sid: str) -> QMenu:
-        """⋮ menu: web parity for delivery (QR) + preferred assembly actions."""
+        """⋮ menu for assembly supply rows."""
         menu = QMenu(self)
-        if self._tab == "delivery":
-            menu.addAction(
-                "Напечатать QR-код поставки", lambda s=sid: self._supply_qr_for(s)
-            )
-        elif self._tab == "assembly":
-            menu.addAction(
-                "Стикеры товаров", lambda s=sid: self._print_stickers_for(s)
-            )
-            menu.addAction(
-                "Стикер поставки", lambda s=sid: self._supply_qr_for(s)
-            )
-            menu.addAction(
-                "Стикеры коробов", lambda s=sid: self._box_stickers_for(s)
-            )
+        menu.addAction(
+            "Стикеры товаров", lambda s=sid: self._print_stickers_for(s)
+        )
+        menu.addAction(
+            "Стикер поставки", lambda s=sid: self._supply_qr_for(s)
+        )
+        menu.addAction(
+            "Стикеры коробов", lambda s=sid: self._box_stickers_for(s)
+        )
         return menu
 
     @staticmethod
@@ -845,33 +825,20 @@ class FbsPage(QWidget):
         return "{} грузомест".format(n)
 
     def _fill_supplies_table(self, rows: List[Dict[str, Any]]) -> None:
-        """Portal columns for «На сборке» / «В доставке»."""
+        """Portal columns for «На сборке»."""
         try:
             self.table.itemChanged.disconnect(self._on_check_change)
         except Exception:
             pass
-        is_assembly = self._tab == "assembly"
-        if is_assembly:
-            cols = [
-                "",
-                "Поставка",
-                "QR-код поставки",
-                "Заказы и грузоместа",
-                "Этап сборки",
-                "Склад",
-            ]
-        else:
-            cols = [
-                "",
-                "Поставка",
-                "QR-код поставки",
-                "Статус",
-                "Время сканирования QR-кода поставки",
-                "Заказы и грузоместа",
-                "Склад",
-                "",
-            ]
-        layout = "supplies_assembly" if is_assembly else "supplies_delivery"
+        cols = [
+            "",
+            "Поставка",
+            "QR-код поставки",
+            "Заказы и грузоместа",
+            "Этап сборки",
+            "Склад",
+        ]
+        layout = "supplies_assembly"
         self.table.blockSignals(True)
         self.table.clear()
         self.table.setColumnCount(len(cols))
@@ -892,13 +859,12 @@ class FbsPage(QWidget):
             name_lay.setContentsMargins(12, 8, 12, 8)
             name_lay.setSpacing(4)
             name_lab = QLabel(str(row.get("name") or ("Поставка " + sid)))
-            name_lab.setObjectName("supplyLink" if is_assembly else "whName")
+            name_lab.setObjectName("supplyLink")
             name_lab.setWordWrap(True)
-            if is_assembly:
-                name_lab.setCursor(Qt.PointingHandCursor)
-                name_lab.mousePressEvent = (  # type: ignore[method-assign]
-                    lambda _ev, s=sid: self._open_supply_by_id(s)
-                )
+            name_lab.setCursor(Qt.PointingHandCursor)
+            name_lab.mousePressEvent = (  # type: ignore[method-assign]
+                lambda _ev, s=sid: self._open_supply_by_id(s)
+            )
             name_lay.addWidget(name_lab)
             created = format_date_short(row.get("created_at_wb"))
             if created:
@@ -941,17 +907,16 @@ class FbsPage(QWidget):
             boxes_meta.setObjectName("supplyMeta")
             orders_lay.addWidget(boxes_meta)
             orders_lay.addStretch(1)
+            self.table.setCellWidget(r, 3, orders_widget)
 
-            status_text = str(
-                row.get("status_label")
-                or ("Сборка заказов" if is_assembly else "Отгрузите поставку")
-            )
-            status_kind = str(row.get("status_kind") or ("assembly" if is_assembly else "ship"))
+            status_text = str(row.get("status_label") or "Сборка заказов")
+            status_kind = str(row.get("status_kind") or "assembly")
             status_wrap = QWidget()
             status_lay = QVBoxLayout(status_wrap)
             status_lay.setContentsMargins(12, 8, 12, 8)
             status_lay.addWidget(make_status_pill(status_text, status_kind))
             status_lay.addStretch(1)
+            self.table.setCellWidget(r, 4, status_wrap)
 
             wh_widget = QWidget()
             wh_lay = QVBoxLayout(wh_widget)
@@ -962,37 +927,7 @@ class FbsPage(QWidget):
             wh_lab.setWordWrap(True)
             wh_lay.addWidget(wh_lab)
             wh_lay.addStretch(1)
-
-            if is_assembly:
-                self.table.setCellWidget(r, 3, orders_widget)
-                self.table.setCellWidget(r, 4, status_wrap)
-                self.table.setCellWidget(r, 5, wh_widget)
-            else:
-                self.table.setCellWidget(r, 3, status_wrap)
-                scan_wrap = QWidget()
-                scan_lay = QVBoxLayout(scan_wrap)
-                scan_lay.setContentsMargins(12, 8, 12, 8)
-                scan_lab = QLabel(format_date_short(row.get("scan_dt")) or "—")
-                scan_lab.setObjectName("supplyMeta")
-                scan_lay.addWidget(scan_lab)
-                scan_lay.addStretch(1)
-                self.table.setCellWidget(r, 4, scan_wrap)
-                self.table.setCellWidget(r, 5, orders_widget)
-                self.table.setCellWidget(r, 6, wh_widget)
-
-                actions_cell = QWidget()
-                actions_cell.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Minimum)
-                actions_lay = QHBoxLayout(actions_cell)
-                actions_lay.setContentsMargins(8, 6, 8, 6)
-                actions_btn = QToolButton()
-                actions_btn.setObjectName("iconBtn")
-                actions_btn.setText("⋮")
-                actions_btn.setToolTip("Действия")
-                actions_btn.setPopupMode(QToolButton.InstantPopup)
-                actions_btn.setMenu(self._supply_row_menu(sid))
-                actions_lay.addWidget(actions_btn)
-                actions_lay.addStretch(1)
-                self.table.setCellWidget(r, 7, actions_cell)
+            self.table.setCellWidget(r, 5, wh_widget)
 
             self.table.resizeRowToContents(r)
             min_h = 88 if row.get("pickup_allowed") or row.get("cargo_label") else 76
@@ -1002,9 +937,6 @@ class FbsPage(QWidget):
         self._apply_table_col_widths(layout)
 
     def _open_supply_by_id(self, sid: str) -> None:
-        # Delivery tab is a read-only supply list — do not open / decrypt orders.
-        if self._tab == "delivery":
-            return
         from app.ui.supply_detail import SupplyDetailDialog
 
         src = self.current_source()
@@ -1184,11 +1116,11 @@ class FbsPage(QWidget):
         src = self.current_source()
         if not src:
             return
-        if self._tab not in ("new", "assembly", "delivery"):
+        if self._tab not in ("new", "assembly"):
             QMessageBox.information(
                 self,
                 "МГТ",
-                "Сборка МГТ доступна на вкладках «Новые», «На сборке» и «В доставке»",
+                "Сборка МГТ доступна на вкладках «Новые» и «На сборке»",
             )
             return
         svc = CollectMgtService(self.db, self.orders)
@@ -1276,8 +1208,6 @@ class FbsPage(QWidget):
         return str(item.data(Qt.UserRole) or "").strip() or None
 
     def open_selected_supply(self) -> None:
-        if self._tab == "delivery":
-            return
         sid = self._selected_supply_id()
         if not sid:
             QMessageBox.information(self, "Поставка", "Выберите поставку")
@@ -1383,8 +1313,6 @@ class FbsPage(QWidget):
                 QMessageBox.information(self, "Стикеры товаров", "Выберите поставку")
                 return
             self._print_stickers_for(sid)
-            return
-        if self._tab == "delivery":
             return
         ids = sorted(self._selected_order_ids)
         if not ids:

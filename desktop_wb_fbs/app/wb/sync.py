@@ -342,7 +342,7 @@ def sync_source(
             """
             SELECT order_id FROM wb_fbs_orders
             WHERE source_id = ? AND is_archive = 0
-              AND tab IN ('new', 'assembly', 'delivery')
+              AND tab IN ('new', 'assembly')
             ORDER BY synced_at DESC
             LIMIT 5000
             """,
@@ -407,10 +407,12 @@ def sync_source(
                     stopped = True
                     break
                 sid = str(supply.get("id") or "")
+                # Skip done supplies («В доставке») — not synced / not shown.
+                if bool(supply.get("done")):
+                    continue
                 order_ids = []  # type: List[int]
                 boxes = []  # type: List[Dict[str, Any]]
-                is_done = bool(supply.get("done"))
-                if sid and not is_done:
+                if sid:
                     try:
                         order_ids = client.get_supply_order_ids(sid)
                         time.sleep(0.21)
@@ -418,12 +420,6 @@ def sync_source(
                         time.sleep(0.21)
                     except Exception as exc:
                         errors.append(friendly_sync_error("supply {}".format(sid), exc))
-                elif sid and is_done:
-                    try:
-                        boxes = client.get_supply_boxes(sid)
-                        time.sleep(0.21)
-                    except Exception as exc:
-                        _log.debug("boxes for done supply %s: %s", sid, exc)
                 upsert_supply(
                     db, source_id, supply, order_ids=order_ids, boxes=boxes
                 )

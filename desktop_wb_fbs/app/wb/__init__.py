@@ -75,7 +75,8 @@ def compute_tab(*, supplier_status: str, wb_status: str, is_archive: bool) -> st
     if ss == "confirm":
         return TAB_ASSEMBLY
     if ss == "complete":
-        return TAB_DELIVERY
+        # «В доставке» removed from the desktop app — leave operational tabs.
+        return TAB_FINISHED
     if ss == "new" or not ss:
         return TAB_NEW
     return TAB_ASSEMBLY if ss else TAB_NEW

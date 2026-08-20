@@ -220,3 +220,31 @@ def style_app_menu(menu: QMenu) -> QMenu:
         pal.setColor(group, QPalette.HighlightedText, QColor("#0f1f33"))
     menu.setPalette(pal)
     return menu
+
+
+class GsAwareLineEdit(QLineEdit):
+    """QLineEdit that keeps GS1 Group Separator (U+001D) from wedge scanners.
+
+    Default QLineEdit rejects Other_Control characters, so a scanner that emits
+    real GS drops it — WB then sees a КИЗ without separators. Scanners that map
+    GS to ↔ still work via later normalize (↔ → GS); this widget fixes the
+    correct-GS path. Ctrl+] is the common keyboard-wedge encoding of GS.
+    """
+
+    _GS = "\u001d"
+
+    def keyPressEvent(self, event) -> None:  # type: ignore[override]
+        text = event.text() or ""
+        if self._GS in text:
+            for ch in text:
+                self.insert(ch)
+            event.accept()
+            return
+        if event.key() in (0x1D, 29) or (
+            event.key() == Qt.Key_BracketRight
+            and bool(event.modifiers() & Qt.ControlModifier)
+        ):
+            self.insert(self._GS)
+            event.accept()
+            return
+        super(GsAwareLineEdit, self).keyPressEvent(event)

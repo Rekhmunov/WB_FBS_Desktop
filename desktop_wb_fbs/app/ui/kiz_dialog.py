@@ -34,6 +34,7 @@ from app.services.print_docs import _fetch_picking_stickers
 from app.services.sticker_lookup import find_row_by_sticker, normalize_scan
 from app.services.trbx_stickers import StickersService
 from app.ui.dialog_utils import (
+    GsAwareLineEdit,
     apply_fullscreen_on_show,
     block_ru_layout_scan,
     fullscreen_parent,
@@ -164,7 +165,7 @@ class KizMarkScanDialog(QDialog):
         lay.addWidget(meta)
         row = QHBoxLayout()
         row.setSpacing(8)
-        self.mark_input = QLineEdit()
+        self.mark_input = GsAwareLineEdit()
         self.mark_input.setObjectName("kizScanInput")
         self.mark_input.setPlaceholderText("Сканируйте КИЗ с того же изделия")
         self.mark_input.returnPressed.connect(self._accept_mark)
@@ -218,7 +219,7 @@ class KizDialog(QDialog):
         self.row_errors = {}  # type: Dict[int, str]
         self._sticker_map = {}  # type: Dict[str, Dict[str, Any]]
         self._pending_order_id = None  # type: Optional[int]
-        self._code_inputs = {}  # type: Dict[int, List[QLineEdit]]
+        self._code_inputs = {}  # type: Dict[int, List[GsAwareLineEdit]]
         self._row_index_by_oid = {}  # type: Dict[int, int]
         self._row_by_oid = {}  # type: Dict[int, Dict[str, Any]]
         self._rows_ready = False
@@ -557,7 +558,7 @@ class KizDialog(QDialog):
             filled += sum(1 for c in codes if str(c or "").strip())
         self.counter.setText("Просканировано {} из {} КИЗ".format(filled, total))
 
-    def _restore_code_input(self, order_id: int, inp: QLineEdit) -> None:
+    def _restore_code_input(self, order_id: int, inp: GsAwareLineEdit) -> None:
         row = next((r for r in self.rows if int(r["order_id"]) == order_id), None)
         if not row:
             inp.clear()
@@ -789,7 +790,7 @@ class KizDialog(QDialog):
         lay = QVBoxLayout(wrap)
         lay.setContentsMargins(8, 8, 8, 8)
         lay.setSpacing(8)
-        inputs = []  # type: List[QLineEdit]
+        inputs = []  # type: List[GsAwareLineEdit]
         can_remove = len(codes) > 1
         for idx, code in enumerate(codes):
             line = QHBoxLayout()
@@ -798,7 +799,7 @@ class KizDialog(QDialog):
             idx_lab.setObjectName("kizCodeIdx")
             idx_lab.setFixedWidth(20)
             idx_lab.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-            inp = QLineEdit(str(code or ""))
+            inp = GsAwareLineEdit(str(code or ""))
             inp.setObjectName("kizCodeInput")
             if err and str(code or "").strip():
                 inp.setProperty("state", "error")
@@ -860,7 +861,7 @@ class KizDialog(QDialog):
 
     def _on_code_edited(self, order_id: int) -> None:
         inp = self.sender()
-        if not isinstance(inp, QLineEdit):
+        if not isinstance(inp, GsAwareLineEdit):
             return
         if getattr(inp, "_kiz_commit_lock", False):
             return

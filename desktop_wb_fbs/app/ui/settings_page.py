@@ -50,9 +50,6 @@ class SettingsPage(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(24, 20, 24, 16)
         layout.setSpacing(12)
-        title = QLabel("Настройки")
-        title.setObjectName("sectionTitle")
-        layout.addWidget(title)
         hint = QLabel(
             "Нужны для работы ВБ ФБС: источники (токен Marketplace), товары "
             "(фото, короба, пропуск GTIN), категории (коробов на палете)."

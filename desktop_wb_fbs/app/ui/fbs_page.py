@@ -144,12 +144,9 @@ class FbsPage(QWidget):
         root.setContentsMargins(24, 20, 24, 16)
         root.setSpacing(12)
 
-        # Title row: section title + source select (web .wb-fbs-title-row)
+        # Title row: source select (section title lives in the top bar)
         title_row = QHBoxLayout()
         title_row.setSpacing(12)
-        title = QLabel("Поставки — ВБ ФБС")
-        title.setObjectName("sectionTitle")
-        title_row.addWidget(title)
         title_row.addStretch(1)
         self.source_combo = QComboBox()
         self.source_combo.setObjectName("sourceCombo")

@@ -65,18 +65,10 @@ class MainWindow(QMainWindow):
         top_l.setContentsMargins(24, 0, 24, 0)
         top_l.setSpacing(8)
 
-        brand_col = QVBoxLayout()
-        brand_col.setSpacing(0)
-        brand_col.setContentsMargins(0, 12, 8, 12)
-        brand = QLabel(APP_NAME)
-        brand.setObjectName("brandTitle")
-        brand.setFont(display_font(16))
-        sub = QLabel("Локально · WB API · v{}".format(__version__))
-        sub.setObjectName("brandSub")
-        sub.setFont(body_font(11))
-        brand_col.addWidget(brand)
-        brand_col.addWidget(sub)
-        top_l.addLayout(brand_col)
+        self.page_title = QLabel("Поставки — ВБ ФБС")
+        self.page_title.setObjectName("brandTitle")
+        self.page_title.setFont(display_font(16))
+        top_l.addWidget(self.page_title)
         top_l.addSpacing(12)
 
         self.btn_fbs = QPushButton("Поставки — ВБ ФБС")
@@ -116,7 +108,10 @@ class MainWindow(QMainWindow):
         self.btn_fbs.setChecked(index == 0)
         self.btn_settings.setChecked(index == 1)
         if index == 0:
+            self.page_title.setText("Поставки — ВБ ФБС")
             self.fbs_page.reload_sources()
+        else:
+            self.page_title.setText("Настройки")
 
 
 def run() -> int:

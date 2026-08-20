@@ -124,10 +124,6 @@ class HtmlPrintPreviewDialog(QDialog):
 
         self.showEvent = _show_event  # type: ignore[method-assign]
 
-    def _page_base_url(self) -> QUrl:
-        # Trailing slash matters for resolving relative sticker assets (42.png).
-        return QUrl.fromLocalFile(str(self._html_path.parent.resolve()) + "/")
-
     def _start_load(self) -> None:
         if self._load_started:
             return
@@ -141,14 +137,10 @@ class HtmlPrintPreviewDialog(QDialog):
             self._view.setZoomFactor(1.0)
         except Exception:
             pass
-        # Prefer setHtml + baseUrl so relative PNG stickers resolve next to the
-        # temp HTML file. Fall back to load(file://) if the file cannot be read.
-        try:
-            html = self._html_path.read_text(encoding="utf-8")
-        except Exception:
-            self._view.load(QUrl.fromLocalFile(str(self._html_path.resolve())))
-            return
-        self._view.setHtml(html, self._page_base_url())
+        # Always navigate by file URL. setHtml() wraps content in a data: URL and
+        # chokes / stalls on large extended picking lists (hundreds of order rows).
+        # Relative sticker PNGs still resolve against the HTML file's directory.
+        self._view.setUrl(QUrl.fromLocalFile(str(self._html_path.resolve())))
 
     def _on_load_finished(self, ok: bool) -> None:
         if ok:
@@ -195,10 +187,13 @@ class HtmlPrintPreviewDialog(QDialog):
 
     def _print_preview(self) -> None:
         """Qt print-preview dialog: shows real page layout before printing."""
-        printer = QPrinter(QPrinter.HighResolution)
+        # ScreenResolution: HighResolution re-rasterizes every A4 page at printer
+        # DPI and freezes for extended picking lists (hundreds of orders).
+        printer = QPrinter(QPrinter.ScreenResolution)
         preview = QPrintPreviewDialog(printer, self)
         preview.setWindowFlags(standard_window_flags())
         preview.setWindowTitle("Предпросмотр печати")
+        preview.resize(960, 720)
 
         zoomed = {"done": False}
 
@@ -210,7 +205,15 @@ class HtmlPrintPreviewDialog(QDialog):
             widget.setZoomFactor(1.0)
 
         def _on_paint(p) -> None:
-            self._print_to_printer(p)
+            app = QApplication.instance()
+            if app is not None:
+                app.setOverrideCursor(QCursor(Qt.WaitCursor))
+            try:
+                self._print_to_printer(p)
+            finally:
+                if app is not None:
+                    while app.overrideCursor() is not None:
+                        app.restoreOverrideCursor()
             # Default Qt mode is FitInView — force 100% once after first paint.
             if not zoomed["done"]:
                 zoomed["done"] = True

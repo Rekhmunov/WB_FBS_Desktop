@@ -1300,21 +1300,34 @@ class SupplyDetailDialog(QDialog):
 
         preloaded = None
         session = supply_session.get_session(self.source_id, self.supply_id)
-        if session and session.sticker_numbers:
-            preloaded = {
-                int(oid): dict(meta) for oid, meta in session.sticker_numbers.items()
-            }
-        elif str(variant).lower() == "extended" and self._all_rows:
+        if str(variant).lower() == "extended":
             preloaded = {}
-            for row in self._all_rows:
+            if session and session.sticker_numbers:
+                for oid, meta in session.sticker_numbers.items():
+                    if oid is None:
+                        continue
+                    preloaded[int(oid)] = dict(meta)
+            for row in self._all_rows or []:
                 oid = row.get("order_id")
                 if oid is None:
                     continue
-                preloaded[int(oid)] = {
-                    "partA": row.get("sticker_part_a") or "",
-                    "partB": row.get("sticker_part_b") or "",
-                    "file_b64": "",
+                oid = int(oid)
+                prev = preloaded.get(oid) or {}
+                part_a = str(
+                    prev.get("partA") or row.get("sticker_part_a") or ""
+                ).strip()
+                part_b = str(
+                    prev.get("partB") or row.get("sticker_part_b") or ""
+                ).strip()
+                preloaded[oid] = {
+                    "partA": part_a,
+                    "partB": part_b,
+                    "file_b64": str(prev.get("file_b64") or ""),
                 }
+        elif session and session.sticker_numbers:
+            preloaded = {
+                int(oid): dict(meta) for oid, meta in session.sticker_numbers.items()
+            }
 
         QApplication.setOverrideCursor(QCursor(Qt.WaitCursor))
         try:

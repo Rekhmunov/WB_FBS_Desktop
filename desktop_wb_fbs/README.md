@@ -36,8 +36,10 @@ python run.py
 ```
 
 На Windows можно просто дважды кликнуть:
-- **`FeedPilot FBS.vbs`** — без чёрного окна (удобно каждый день)
-- **`FeedPilot FBS.bat`** — с консолью (если нужна ошибка на экране)
+- **`FeedPilot FBS.vbs`** — без чёрной консоли (удобно каждый день)
+- **`FeedPilot FBS.bat`** — тоже без консоли через `pythonw`; если `pythonw` нет, покажет консоль с ошибкой
+
+Чтобы увидеть текст ошибки в консоли, временно запустите `python run.py` в cmd.
 
 Данные: `%APPDATA%/FeedPilotFBS/` (Windows) или `~/.local/share/FeedPilotFBS/` (Linux).
 

@@ -78,7 +78,7 @@ def show_pixmap_print_preview(
     title: str,
     parent: Optional[QWidget] = None,
 ) -> None:
-    """Scroll preview of raster pages (same UX as supply QR / box stickers)."""
+    """Scroll preview with one visual sheet per printed page."""
     valid = [p for p in pixmaps if p is not None and not p.isNull()]
     if not valid:
         QMessageBox.warning(
@@ -88,13 +88,14 @@ def show_pixmap_print_preview(
         )
         return
 
+    total = len(valid)
     dlg = QDialog(parent)
     dlg.setWindowTitle(title)
     prepare_modal_dialog(
         dlg,
         maximized=True,
-        default_size=(560, 640),
-        minimum_size=(440, 480),
+        default_size=(640, 720),
+        minimum_size=(480, 520),
     )
     root = QVBoxLayout(dlg)
     root.setContentsMargins(24, 20, 24, 20)
@@ -103,25 +104,67 @@ def show_pixmap_print_preview(
     heading.setObjectName("dialogTitle")
     heading.setWordWrap(True)
     root.addWidget(heading)
-    tip = QLabel("Предпросмотр · {} лист(ов). Печать отправляет картинки на принтер.".format(len(valid)))
+    tip = QLabel(
+        "Предпросмотр по листам · {} стр. Каждый блок = один лист на печати.".format(
+            total
+        )
+    )
     tip.setStyleSheet("color:#64748b;")
     tip.setWordWrap(True)
     root.addWidget(tip)
+
     scroll = QScrollArea()
     scroll.setWidgetResizable(True)
     scroll.setFrameShape(0)  # QFrame.NoFrame
+    scroll.setStyleSheet("QScrollArea { background: #e8eef5; border: none; }")
     wrap = QWidget()
+    wrap.setStyleSheet("background: #e8eef5;")
     lay = QVBoxLayout(wrap)
-    lay.setContentsMargins(0, 0, 8, 0)
-    lay.setSpacing(16)
-    for pix in valid:
-        lab = QLabel()
-        lab.setAlignment(Qt.AlignCenter)
-        lab.setPixmap(pix.scaledToWidth(420, Qt.SmoothTransformation))
-        lay.addWidget(lab)
+    lay.setContentsMargins(20, 16, 20, 24)
+    lay.setSpacing(20)
+
+    for index, pix in enumerate(valid, start=1):
+        sheet = QFrame()
+        sheet.setObjectName("printSheet")
+        sheet.setStyleSheet(
+            """
+            QFrame#printSheet {
+                background: #ffffff;
+                border: 1px solid #cbd5e1;
+                border-radius: 4px;
+            }
+            """
+        )
+        sheet_lay = QVBoxLayout(sheet)
+        sheet_lay.setContentsMargins(14, 12, 14, 14)
+        sheet_lay.setSpacing(8)
+
+        meta = QLabel("Лист {} из {}".format(index, total))
+        meta.setStyleSheet(
+            "color:#64748b;font-size:12px;font-weight:600;"
+            "border:none;background:transparent;"
+        )
+        sheet_lay.addWidget(meta)
+
+        rule = QFrame()
+        rule.setFixedHeight(1)
+        rule.setStyleSheet("background:#e2e8f0;border:none;")
+        sheet_lay.addWidget(rule)
+
+        img = QLabel()
+        img.setAlignment(Qt.AlignCenter)
+        img.setStyleSheet("border:none;background:transparent;")
+        preview = pix.scaledToWidth(420, Qt.SmoothTransformation)
+        img.setPixmap(preview)
+        img.setMinimumHeight(preview.height())
+        sheet_lay.addWidget(img, 0, Qt.AlignCenter)
+
+        lay.addWidget(sheet, 0, Qt.AlignHCenter)
+
     lay.addStretch(1)
     scroll.setWidget(wrap)
     root.addWidget(scroll, 1)
+
     buttons = QDialogButtonBox()
     print_btn = buttons.addButton("Печать…", QDialogButtonBox.ActionRole)
     print_btn.setObjectName("bottomPrimary")

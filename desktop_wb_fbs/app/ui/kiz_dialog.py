@@ -226,6 +226,7 @@ class KizDialog(QDialog):
         self._load_step = 0
         self._load_detail = ""
         self._loading_table_label = None  # type: Optional[QLabel]
+        self.data_changed = False
         self._saving = False
         self._save_worker = None  # type: Optional[_KizSaveWorker]
         self._alive_workers = []  # type: List[QThread]
@@ -628,11 +629,12 @@ class KizDialog(QDialog):
         lab.setTextFormat(Qt.RichText)
         lab.setText("<br>".join(lines))
 
-    def _set_load_step(self, step: int, detail: str = "") -> None:
+    def _set_load_step(self, step: int, detail: str = "", *, pump: bool = True) -> None:
         self._load_step = int(step or 0)
         self._load_detail = str(detail or "").strip()
         self._render_load_status()
-        QApplication.processEvents()
+        if pump:
+            QApplication.processEvents()
 
     def load_rows(self) -> None:
         gen = self._load_gen
@@ -640,13 +642,19 @@ class KizDialog(QDialog):
             return
         self._set_filters_ready(False)
         self.save_btn.setEnabled(False)
-        self._show_loading_row()
-        self._set_load_step(1, "из локальной базы")
+        session = supply_session.get_session(self.source_id, self.supply_id)
+        fast = bool(
+            session
+            and session.core_ready
+            and session.kiz_rows is not None
+        )
+        if not fast:
+            self._show_loading_row()
+            self._set_load_step(1, "из локальной базы")
         if self._load_aborted(gen):
             return
-        session = supply_session.get_session(self.source_id, self.supply_id)
         try:
-            if session and session.core_ready and session.kiz_rows is not None:
+            if fast:
                 self.rows = [dict(r) for r in session.kiz_rows]
             else:
                 self.rows = self.kiz.marking_rows(
@@ -657,7 +665,7 @@ class KizDialog(QDialog):
                 return
             self.rows = []
             self._set_info(str(exc))
-            self._render_table()
+            self._render_table(fast=False)
             if self._load_aborted(gen):
                 return
             self._set_filters_ready(True)
@@ -670,39 +678,50 @@ class KizDialog(QDialog):
         self._code_inputs = {}
         stickers = {}  # type: Dict[int, Dict[str, Any]]
         order_n = len(self.rows)
+        need_sticker_fill = any(
+            not str(r.get("sticker_number") or "").strip()
+            and not str(r.get("sticker_part_b") or "").strip()
+            for r in self.rows
+        )
         if session and session.sticker_numbers:
-            self._set_load_step(2, "из сессии · {} шт.".format(order_n))
+            if not fast:
+                self._set_load_step(2, "из сессии · {} шт.".format(order_n))
             stickers = session.sticker_numbers
-        else:
-            self._set_load_step(2, "0 из {}".format(order_n) if order_n else "")
+        elif need_sticker_fill:
+            if not fast:
+                self._set_load_step(2, "0 из {}".format(order_n) if order_n else "")
             try:
                 ids = [int(r["order_id"]) for r in self.rows]
                 stickers = _fetch_picking_stickers(self.api_key, ids)
             except Exception:
                 stickers = {}
-            if not self._load_aborted(gen):
+            if not fast and not self._load_aborted(gen):
                 self._set_load_step(
                     2, "{} из {}".format(len(stickers), order_n) if order_n else ""
                 )
         if self._load_aborted(gen):
             return
-        for r in self.rows:
-            oid = int(r["order_id"])
-            st = stickers.get(oid) or {}
-            part_a = str(st.get("partA") or r.get("sticker_part_a") or "").strip()
-            part_b = str(st.get("partB") or r.get("sticker_part_b") or "").strip()
-            barcode = str(
-                st.get("barcode") or r.get("sticker_barcode") or ""
-            ).strip()
-            r["sticker_part_a"] = part_a
-            r["sticker_part_b"] = part_b
-            r["sticker_barcode"] = barcode
-            full = _sticker_number(part_a, part_b)
-            r["sticker_number"] = full or str(r.get("sticker_number") or "")
-        self._set_load_step(3, "{} строк".format(order_n) if order_n else "")
+        if stickers:
+            for r in self.rows:
+                oid = int(r["order_id"])
+                st = stickers.get(oid) or {}
+                if not st:
+                    continue
+                part_a = str(st.get("partA") or r.get("sticker_part_a") or "").strip()
+                part_b = str(st.get("partB") or r.get("sticker_part_b") or "").strip()
+                barcode = str(
+                    st.get("barcode") or r.get("sticker_barcode") or ""
+                ).strip()
+                r["sticker_part_a"] = part_a
+                r["sticker_part_b"] = part_b
+                r["sticker_barcode"] = barcode
+                full = _sticker_number(part_a, part_b)
+                r["sticker_number"] = full or str(r.get("sticker_number") or "")
+        if not fast:
+            self._set_load_step(3, "{} строк".format(order_n) if order_n else "")
         if self._load_aborted(gen):
             return
-        self._render_table()
+        self._render_table(fast=fast)
         if self._load_aborted(gen):
             return
         if not self.rows:
@@ -719,11 +738,11 @@ class KizDialog(QDialog):
         frame.setObjectName("kizRowCell")
         if active:
             frame.setProperty("state", "active")
+            frame.style().unpolish(frame)
+            frame.style().polish(frame)
         lay = QVBoxLayout(frame)
         lay.setContentsMargins(0, 0, 0, 0)
         lay.addWidget(inner)
-        frame.style().unpolish(frame)
-        frame.style().polish(frame)
         return frame
 
     def _build_sticker_widget(self, row: Dict[str, Any]) -> QWidget:
@@ -1012,7 +1031,7 @@ class KizDialog(QDialog):
         for oid in order_ids:
             self._refresh_row(oid)
 
-    def _render_table(self) -> None:
+    def _render_table(self, *, fast: bool = False) -> None:
         self._sync_codes_from_inputs()
         self._update_counter()
         self._clear_table()
@@ -1025,12 +1044,15 @@ class KizDialog(QDialog):
                 oid = int(r["order_id"])
                 self._row_index_by_oid[oid] = i
                 self._set_row_widgets(i, r)
-                if i and i % _RENDER_BATCH == 0:
+                if fast:
+                    self.table.setRowHeight(i, 96)
+                elif i and i % _RENDER_BATCH == 0:
                     QApplication.processEvents()
         finally:
             self.table.setUpdatesEnabled(True)
-        for i in range(row_count):
-            self._resize_table_row(i)
+        if not fast:
+            for i in range(row_count):
+                self._resize_table_row(i)
         self._apply_filters()
 
     def _set_ambiguous_sticker_info(self, matches: List[Dict[str, Any]]) -> None:
@@ -1206,6 +1228,8 @@ class KizDialog(QDialog):
         saved = int(payload.get("saved") or 0)
         errors = list(payload.get("errors") or [])
         stopped = bool(payload.get("stopped"))
+        if saved or errors:
+            self.data_changed = True
         failed_oids = {int(e.get("order_id") or 0) for e in errors if e.get("order_id")}
         self._save_failed_oids = {oid for oid in failed_oids if oid}
         self._save_retry_mode = bool(self._save_failed_oids)

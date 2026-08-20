@@ -4,11 +4,72 @@ from __future__ import annotations
 
 import json
 import time
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from app.db import Database
 from app.wb import cancel_reason_label, compute_tab, is_cancelled_status, parse_json_list, utc_now
 from app.wb.client import WbFbsClient
+
+
+def rows_from_detail(
+    detail_rows: List[Dict[str, Any]],
+    *,
+    sticker_numbers: Optional[Dict[int, Dict[str, Any]]] = None,
+) -> List[Dict[str, Any]]:
+    """Build cancelled modal rows from already-loaded supply detail (no WB)."""
+    stickers = sticker_numbers or {}
+    out = []  # type: List[Dict[str, Any]]
+    for r in detail_rows or []:
+        label = str(r.get("cancel_reason_label") or r.get("cancel_reason") or "").strip()
+        if not label and not is_cancelled_status(
+            supplier_status=r.get("supplier_status"),
+            wb_status=r.get("wb_status"),
+        ):
+            continue
+        if not label:
+            label = "Отменен"
+        try:
+            oid = int(r.get("order_id") or 0)
+        except (TypeError, ValueError):
+            continue
+        if oid <= 0:
+            continue
+        st = stickers.get(oid) or {}
+        part_a = str(
+            st.get("partA") or r.get("sticker_part_a") or ""
+        ).strip()
+        part_b = str(
+            st.get("partB") or r.get("sticker_part_b") or ""
+        ).strip()
+        barcode = str(
+            st.get("barcode") or r.get("sticker_barcode") or ""
+        ).strip()
+        skus = r.get("skus") if isinstance(r.get("skus"), list) else parse_json_list(
+            r.get("skus_json")
+        )
+        created = str(r.get("created_date") or r.get("created_at_wb") or "").strip()
+        out.append(
+            {
+                "order_id": oid,
+                "article": r.get("article") or "",
+                "nm_id": r.get("nm_id"),
+                "product_name": r.get("product_name") or "",
+                "product_photo": r.get("product_photo") or "",
+                "brand": r.get("brand") or "",
+                "created_date": created,
+                "skus": skus,
+                "sticker_part_a": part_a,
+                "sticker_part_b": part_b,
+                "sticker_barcode": barcode,
+                "sticker_number": "{}{}".format(part_a, part_b)
+                or str(r.get("sticker_number") or ""),
+                "cancel_reason": label,
+                "cancel_reason_label": label,
+                "supplier_status": r.get("supplier_status") or "",
+                "wb_status": r.get("wb_status") or "",
+            }
+        )
+    return out
 
 
 def list_cancelled_in_supply(
@@ -16,6 +77,8 @@ def list_cancelled_in_supply(
     source_id: int,
     api_key: str,
     supply_id: str,
+    *,
+    sticker_numbers: Optional[Dict[int, Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
     sid = str(supply_id or "").strip()
     if not sid:
@@ -123,7 +186,17 @@ def list_cancelled_in_supply(
 
     # Sticker numbers for cancelled rows (web enriches with svg stickers map).
     stickers = {}  # type: Dict[int, Dict[str, Any]]
-    if cancelled_ids and api_key:
+    if cancelled_ids and sticker_numbers is not None:
+        stickers = {
+            int(oid): (st or {})
+            for oid, st in (sticker_numbers or {}).items()
+            if oid in set(cancelled_ids)
+        }
+        # Fill gaps from explicit map keys that may use int/str mix.
+        for oid in cancelled_ids:
+            if oid not in stickers and sticker_numbers.get(oid):
+                stickers[oid] = sticker_numbers.get(oid) or {}
+    elif cancelled_ids and api_key:
         try:
             from app.services.print_docs import _fetch_picking_stickers
 

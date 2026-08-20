@@ -1190,17 +1190,18 @@ class SupplyDetailDialog(QDialog):
     def show_cancelled(self) -> None:
         if not self._require_actions_ready():
             return
-        from app.services.cancelled import list_cancelled_in_supply
+        from app.services.cancelled import list_cancelled_in_supply, rows_from_detail
 
-        try:
-            data = list_cancelled_in_supply(
-                self.db, self.source_id, self.api_key, self.supply_id
-            )
-        except Exception as exc:
-            QMessageBox.critical(self, "Отменённые", str(exc))
-            return
-        rows = data.get("rows") or []
-        self._merge_cancelled_into_detail(rows)
+        session = supply_session.get_session(self.source_id, self.supply_id)
+        stickers = (session.sticker_numbers if session else None) or {}
+        if session is not None and session.cancelled_rows is not None:
+            rows = [dict(r) for r in session.cancelled_rows]
+        else:
+            rows = rows_from_detail(self._all_rows, sticker_numbers=stickers)
+            if session is not None:
+                session.cancelled_rows = [dict(r) for r in rows]
+                supply_session.put_session(session)
+
         dlg = QDialog(self)
         dlg.setWindowTitle("Отменённые заказы · {}".format(self.supply_id))
         prepare_modal_dialog(
@@ -1217,7 +1218,7 @@ class SupplyDetailDialog(QDialog):
         lay.addWidget(title)
         subtitle = QLabel(
             "Заказы отменены, но всё ещё находятся в этой поставке. "
-            "Проверка статусов идёт через Wildberries."
+            "Актуальные статусы — через «Перезапустить проверку»."
         )
         subtitle.setObjectName("hint")
         subtitle.setWordWrap(True)
@@ -1274,8 +1275,13 @@ class SupplyDetailDialog(QDialog):
                     self.source_id,
                     self.api_key,
                     self.supply_id,
+                    sticker_numbers=stickers or None,
                 )
                 items = data2.get("rows") or []
+                sess = supply_session.get_session(self.source_id, self.supply_id)
+                if sess is not None:
+                    sess.cancelled_rows = [dict(r) for r in items]
+                    supply_session.put_session(sess)
                 self._merge_cancelled_into_detail(items)
                 _fill(items)
             except Exception as exc:
@@ -1286,6 +1292,30 @@ class SupplyDetailDialog(QDialog):
         rerun_btn.clicked.connect(_rerun)
         lay.addWidget(table, 1)
         dlg.exec_()
+
+    def open_kiz(self) -> None:
+        if not self._require_actions_ready():
+            return
+        from app.ui.kiz_pick_dialogs import KizDialog
+
+        dlg = KizDialog(
+            self.kiz, self.source_id, self.api_key, self.supply_id, fullscreen=True
+        )
+        dlg.exec_()
+        if getattr(dlg, "data_changed", False):
+            self._refresh_local_row_meta()
+
+    def open_pick(self) -> None:
+        if not self._require_actions_ready():
+            return
+        from app.ui.kiz_pick_dialogs import PickDialog
+
+        dlg = PickDialog(
+            self.pick, self.source_id, self.api_key, self.supply_id, fullscreen=True
+        )
+        dlg.exec_()
+        if getattr(dlg, "data_changed", False):
+            self._refresh_local_row_meta()
 
     def _merge_cancelled_into_detail(self, cancelled_rows: List[Dict[str, Any]]) -> None:
         """Sync cancel badges into supply detail rows (web `_wbFbsCancelledMergeIntoDetail`)."""
@@ -1575,28 +1605,6 @@ class SupplyDetailDialog(QDialog):
             QMessageBox.critical(self, "КИЗ", str(exc))
         finally:
             QApplication.restoreOverrideCursor()
-
-    def open_kiz(self) -> None:
-        if not self._require_actions_ready():
-            return
-        from app.ui.kiz_pick_dialogs import KizDialog
-
-        dlg = KizDialog(
-            self.kiz, self.source_id, self.api_key, self.supply_id, fullscreen=True
-        )
-        dlg.exec_()
-        self._refresh_local_row_meta()
-
-    def open_pick(self) -> None:
-        if not self._require_actions_ready():
-            return
-        from app.ui.kiz_pick_dialogs import PickDialog
-
-        dlg = PickDialog(
-            self.pick, self.source_id, self.api_key, self.supply_id, fullscreen=True
-        )
-        dlg.exec_()
-        self._refresh_local_row_meta()
 
 
 class TrbxDialog(QDialog):

@@ -54,6 +54,13 @@ def clear_all_sessions() -> None:
         _sessions.clear()
 
 
+def clear_cancelled_cache(source_id: int, supply_id: str) -> None:
+    session = get_session(source_id, supply_id)
+    if session is None:
+        return
+    session.cancelled_rows = None
+    put_session(session)
+
 def _has_sgtin(meta: Dict[str, Any]) -> bool:
     if "sgtin" in meta:
         return True
@@ -115,6 +122,7 @@ class SupplySession:
         self.meta_by_id = {}  # type: Dict[int, Dict[str, Any]]
         self.kiz_rows = []  # type: List[Dict[str, Any]]
         self.pick_rows = []  # type: List[Dict[str, Any]]
+        self.cancelled_rows = None  # type: Optional[List[Dict[str, Any]]]
         self.core_ready = False
         self.png_ready = False
         self.error = ""

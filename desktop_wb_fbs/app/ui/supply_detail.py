@@ -676,18 +676,21 @@ class SupplyDetailDialog(QDialog):
     def accept(self) -> None:
         self._stop_kiz_status_worker()
         self._stop_load_worker()
+        self._loading = False
         self._teardown_table()
         super(SupplyDetailDialog, self).accept()
 
     def reject(self) -> None:
         self._stop_kiz_status_worker()
         self._stop_load_worker()
+        self._loading = False
         self._teardown_table()
         super(SupplyDetailDialog, self).reject()
 
     def closeEvent(self, event) -> None:
         self._stop_kiz_status_worker()
         self._stop_load_worker()
+        self._loading = False
         self._teardown_table()
         super(SupplyDetailDialog, self).closeEvent(event)
 
@@ -719,7 +722,8 @@ class SupplyDetailDialog(QDialog):
         self._load_worker = None
         if core is not None:
             self._disconnect_worker(core, "progress", "core_ready", "failed")
-        self._loading = False
+        # Do not clear ``_loading`` here — ``_begin_load`` sets it after stop;
+        # clearing it dropped every progress update (statuses stayed frozen).
 
     def _stop_kiz_status_worker(self) -> None:
         self._kiz_status_gen += 1
@@ -1017,9 +1021,12 @@ class SupplyDetailDialog(QDialog):
                 self._set_actions_ready(True)
                 return
 
-        self._loading = True
         self._set_actions_ready(False)
         self._stop_load_worker()
+        self._loading = True
+        self._load_step = 0
+        self._load_detail = ""
+        self._render_load_status()
         gen = self._load_gen
         worker = _SupplyCoreLoadWorker(
             self.db,

@@ -305,8 +305,9 @@ def preload_supply_core(
 
     session = SupplySession(source_id, supply_id, api_key)
     # May refresh live done/order-ids (web get_supply_detail); keep UI honest.
-    _prog(1, "поставка и заказы")
+    _prog(1, "обновление поставки…")
     rows = orders.orders_in_supply(source_id, supply_id, api_key=api_key)
+    _prog(1, "{} заказ.".format(len(rows)) if rows else "заказы")
     for r in rows:
         r["created_date"] = format_date_short(r.get("created_at_wb"))
         r["created_ago"] = ago_label(r.get("created_at_wb"))

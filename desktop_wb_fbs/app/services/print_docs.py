@@ -158,10 +158,16 @@ def open_html(
     *,
     parent: Optional["QWidget"] = None,
     title: str = "",
+    output_dir: Optional[Path] = None,
 ) -> Path:
-    from PyQt5.QtWidgets import QMessageBox, QWidget
+    from PyQt5.QtWidgets import QMessageBox
 
-    path = Path(tempfile.gettempdir()) / "{}.html".format(basename)
+    if output_dir is not None:
+        out = Path(output_dir)
+        out.mkdir(parents=True, exist_ok=True)
+        path = out / "{}.html".format(basename)
+    else:
+        path = Path(tempfile.gettempdir()) / "{}.html".format(basename)
     path.write_text(html_doc, encoding="utf-8")
     preview_error = ""
     webengine_ok = False
@@ -180,25 +186,22 @@ def open_html(
     except Exception as exc:
         preview_error = str(exc) or exc.__class__.__name__
     _clear_override_cursor()
-    # Always open something the user can print — WebEngine often fails on
-    # large sticker sets; browser fallback must not require an extra click.
+    # Fallback when in-app preview is unavailable or failed to load.
     QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
-    if parent is not None and webengine_ok:
-        detail = (
-            "Документ открыт в браузере для печати.\n\n"
-            "Встроенный предпросмотр не загрузил файл."
-        )
-        if preview_error:
-            detail += "\n\nПричина: {}".format(preview_error)
-        QMessageBox.information(parent, "Печать", detail)
-    elif parent is not None and not webengine_ok:
-        detail = (
-            "Документ открыт в браузере.\n\n"
-            "Встроенный предпросмотр недоступен."
-        )
-        if preview_error:
-            detail += "\n\nПричина: {}".format(preview_error)
+    if parent is not None:
+        if webengine_ok:
+            detail = (
+                "Документ открыт в браузере для печати.\n\n"
+                "Встроенный предпросмотр не загрузил файл."
+            )
         else:
+            detail = (
+                "Документ открыт в браузере.\n\n"
+                "Встроенный предпросмотр недоступен."
+            )
+        if preview_error:
+            detail += "\n\nПричина: {}".format(preview_error)
+        elif not webengine_ok:
             detail += (
                 "\n\nУстановите пакет PyQtWebEngine "
                 "(python -m pip install PyQtWebEngine) и перезапустите приложение."
@@ -249,6 +252,8 @@ def build_groups(
     stickers_by_oid: Dict[int, Dict[str, Any]],
     cards: Dict[int, Dict[str, Any]],
     products: List[Dict[str, Any]],
+    *,
+    sticker_html_dir: Optional[Path] = None,
 ) -> List[Dict[str, Any]]:
     by_article = {
         str(p.get("supplier_article") or "").strip().lower(): p for p in products
@@ -292,7 +297,7 @@ def build_groups(
                 "order_id": oid,
                 "sticker_part_a": st.get("partA") or "",
                 "sticker_part_b": st.get("partB") or "",
-                "sticker_src": sticker_img_src(st),
+                "sticker_src": sticker_img_src(st, relative_to=sticker_html_dir),
                 "article": article,
             }
         )
@@ -972,11 +977,19 @@ def print_supply_stickers(
         )
     cards = fetch_cards(api_key, rows)
     products = ProductService(db).list_all()
-    groups = build_groups(rows, stickers, cards, products)
+    html_dir = None  # type: Optional[Path]
+    if api_key and supply_id:
+        from app.services.sticker_file_cache import supply_sticker_dir
+
+        html_dir = supply_sticker_dir(api_key, supply_id)
+    groups = build_groups(
+        rows, stickers, cards, products, sticker_html_dir=html_dir
+    )
     html_doc = render_stickers_print_html(supply_id, groups)
     return open_html(
         html_doc,
         "feedpilot_stickers_{}".format(supply_id),
         parent=parent,
         title="Стикеры поставки",
+        output_dir=html_dir,
     )

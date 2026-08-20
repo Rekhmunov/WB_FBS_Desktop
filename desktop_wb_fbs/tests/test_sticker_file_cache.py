@@ -43,6 +43,16 @@ class StickerFileCacheTests(unittest.TestCase):
             self.assertTrue(src.startswith("file:"))
             self.assertIn("1.png", src)
 
+    def test_sticker_img_src_relative_when_same_dir(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            path = root / "1.png"
+            path.write_bytes(b"png")
+            src = sticker_img_src(
+                {"file_path": str(path)}, relative_to=root
+            )
+            self.assertEqual(src, "1.png")
+
     def test_sticker_img_src_falls_back_to_data_uri(self):
         src = sticker_img_src({"file_b64": "abc123"})
         self.assertEqual(src, "data:image/png;base64,abc123")

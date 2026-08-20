@@ -104,8 +104,17 @@ def read_sticker_b64(meta: Optional[Dict[str, Any]]) -> str:
         return ""
 
 
-def sticker_img_src(meta: Optional[Dict[str, Any]]) -> str:
-    """Prefer on-disk ``file://`` URI for print HTML (avoids huge base64 docs)."""
+def sticker_img_src(
+    meta: Optional[Dict[str, Any]],
+    *,
+    relative_to: Optional[Path] = None,
+) -> str:
+    """Prefer on-disk image path for print HTML (avoids huge base64 docs).
+
+    When ``relative_to`` is the directory that will hold the HTML file and the
+    PNG lives there, return just the filename so WebEngine can load it as a
+    same-folder relative URL (more reliable than cross-path ``file://``).
+    """
     if not meta:
         return ""
     file_path = str(meta.get("file_path") or "").strip()
@@ -113,7 +122,14 @@ def sticker_img_src(meta: Optional[Dict[str, Any]]) -> str:
         path = Path(file_path)
         try:
             if path.is_file() and path.stat().st_size > 0:
-                return path.resolve().as_uri()
+                resolved = path.resolve()
+                if relative_to is not None:
+                    try:
+                        if resolved.parent == Path(relative_to).resolve():
+                            return resolved.name
+                    except OSError:
+                        pass
+                return resolved.as_uri()
         except OSError:
             pass
     b64 = read_sticker_b64(meta)

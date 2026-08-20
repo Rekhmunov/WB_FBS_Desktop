@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Optional
 
-from PyQt5.QtCore import QEventLoop, QUrl, Qt
+from PyQt5.QtCore import QEventLoop, QTimer, QUrl, Qt
 from PyQt5.QtGui import QCursor
 from PyQt5.QtPrintSupport import QPrintDialog, QPrinter
 from PyQt5.QtWidgets import (
@@ -19,7 +19,11 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
-from app.ui.dialog_utils import prepare_modal_dialog, standard_window_flags
+from app.ui.dialog_utils import (
+    apply_maximized_on_show,
+    prepare_modal_dialog,
+    standard_window_flags,
+)
 
 try:
     from PyQt5.QtWebEngineWidgets import QWebEngineView
@@ -54,9 +58,12 @@ class HtmlPrintPreviewDialog(QDialog):
         super(HtmlPrintPreviewDialog, self).__init__(parent)
         self._html_path = Path(html_path)
         self._loaded = False
+        self._load_started = False
         doc_title = str(title or self._html_path.stem)
         self.setWindowTitle(doc_title)
-        # Full-screen preview at 100% zoom (web print parity).
+        # Full-screen preview at 100% zoom.
+        # Do not start WebEngine load in __init__: maximizing during an in-flight
+        # load aborts it (blank preview / false «load failed» → browser only).
         prepare_modal_dialog(
             self,
             maximized=True,
@@ -74,8 +81,6 @@ class HtmlPrintPreviewDialog(QDialog):
         self.btn_print.setObjectName("bottomPrimary")
         self.btn_print.setEnabled(False)
         # Document is already on screen — open the system print dialog directly.
-        # A nested QPrintPreviewDialog re-rasterizes every page at printer DPI
-        # and feels "stuck" on large picking lists (hundreds of orders).
         self.btn_print.clicked.connect(self._print_now)
         self.btn_pdf = QPushButton("Сохранить PDF")
         self.btn_pdf.setObjectName("secondary")
@@ -91,7 +96,6 @@ class HtmlPrintPreviewDialog(QDialog):
             from PyQt5.QtWebEngineWidgets import QWebEngineSettings
 
             settings = self._view.settings()
-            # Sticker HTML references PNG files on disk via file:// URIs.
             settings.setAttribute(
                 QWebEngineSettings.LocalContentCanAccessFileUrls, True
             )
@@ -100,15 +104,33 @@ class HtmlPrintPreviewDialog(QDialog):
         self._view.setZoomFactor(1.0)
         root.addWidget(self._view, 1)
         self._view.loadFinished.connect(self._on_load_finished)
-        self._view.load(QUrl.fromLocalFile(str(self._html_path.resolve())))
 
-    def showEvent(self, event) -> None:  # noqa: N802
-        super(HtmlPrintPreviewDialog, self).showEvent(event)
-        self.setWindowState(self.windowState() | Qt.WindowMaximized)
+        # Application-modal so preview is not hidden behind supply/fullscreen windows.
+        self.setWindowModality(Qt.ApplicationModal)
+
+        # Replace prepare_modal_dialog's showEvent so we maximize first, then load.
+        def _show_event(event) -> None:  # noqa: N802
+            QWidget.showEvent(self, event)
+            apply_maximized_on_show(self)
+            self.raise_()
+            self.activateWindow()
+            self._start_load()
+
+        self.showEvent = _show_event  # type: ignore[method-assign]
+
+    def _start_load(self) -> None:
+        if self._load_started:
+            return
+        self._load_started = True
+        # Let maximize layout settle one tick before navigating.
+        QTimer.singleShot(0, self._load_html)
+
+    def _load_html(self) -> None:
         try:
             self._view.setZoomFactor(1.0)
         except Exception:
             pass
+        self._view.load(QUrl.fromLocalFile(str(self._html_path.resolve())))
 
     def _on_load_finished(self, ok: bool) -> None:
         self._loaded = bool(ok)
@@ -159,7 +181,9 @@ class HtmlPrintPreviewDialog(QDialog):
         if ok:
             QMessageBox.information(self, "Печать", "Документ отправлен на печать.")
         else:
-            QMessageBox.warning(self, "Печать", "Не удалось отправить документ на печать.")
+            QMessageBox.warning(
+                self, "Печать", "Не удалось отправить документ на печать."
+            )
 
     def _save_pdf(self) -> None:
         default_name = self._html_path.with_suffix(".pdf").name
@@ -197,16 +221,13 @@ def show_html_print_preview(
     title: str = "",
     parent: Optional[QWidget] = None,
 ) -> bool:
-    """Open modal preview. Returns True only when document loaded successfully."""
+    """Open modal preview. Returns True when the document loaded successfully."""
     if not _HAS_WEBENGINE:
         return False
     app = QApplication.instance()
     if app is not None:
         while app.overrideCursor() is not None:
             app.restoreOverrideCursor()
-    try:
-        dlg = HtmlPrintPreviewDialog(html_path, title=title, parent=parent)
-    except Exception:
-        raise
+    dlg = HtmlPrintPreviewDialog(html_path, title=title, parent=parent)
     dlg.exec_()
     return bool(getattr(dlg, "_loaded", False))

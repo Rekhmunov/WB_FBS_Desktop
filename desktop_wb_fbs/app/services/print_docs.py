@@ -922,6 +922,9 @@ def print_supply_stickers(
     parent: Optional["QWidget"] = None,
     preloaded_stickers: Optional[Dict[int, Dict[str, Any]]] = None,
 ) -> Path:
+    """Print product stickers. PNG is loaded on demand (web parity), not on supply open."""
+    from app.services.sticker_file_cache import existing_sticker_paths
+
     rows = orders_svc.orders_in_supply(source_id, supply_id, api_key="")
     if not rows and api_key:
         rows = orders_svc.orders_in_supply(source_id, supply_id, api_key=api_key)
@@ -929,29 +932,40 @@ def print_supply_stickers(
         want = set(int(x) for x in order_ids)
         rows = [r for r in rows if int(r["order_id"]) in want]
     ids = [int(r["order_id"]) for r in rows]
+    stickers = {}  # type: Dict[int, Dict[str, Any]]
     if preloaded_stickers is not None:
         stickers = {
             int(oid): dict(meta)
             for oid, meta in preloaded_stickers.items()
             if oid is not None
         }
-        missing = [oid for oid in ids if oid not in stickers]
-        if missing and api_key:
-            stickers.update(
-                fetch_stickers_map(
-                    api_key,
-                    missing,
-                    persist_supply_id=supply_id,
-                )
-            )
-    else:
-        # Stickers print needs official PNG files — WB API is required on first run.
-        stickers = (
+    # Resume PNGs already on disk from earlier prints (fast path).
+    if ids and api_key and supply_id:
+        on_disk = existing_sticker_paths(api_key, supply_id, ids)
+        for oid, path in on_disk.items():
+            if oid in stickers and str((stickers[oid] or {}).get("file_path") or "").strip():
+                continue
+            prev = stickers.get(oid) or {}
+            stickers[oid] = {
+                "partA": str(prev.get("partA") or ""),
+                "partB": str(prev.get("partB") or ""),
+                "file_b64": "",
+                "file_path": path,
+            }
+    missing = [
+        oid
+        for oid in ids
+        if not str((stickers.get(oid) or {}).get("file_path") or "").strip()
+        and not str((stickers.get(oid) or {}).get("file_b64") or "").strip()
+    ]
+    if missing and api_key:
+        # Isolated child-process fetch — same crash-safe path as preload used to use.
+        stickers.update(
             fetch_stickers_map(
-                api_key, ids, persist_supply_id=supply_id
+                api_key,
+                missing,
+                persist_supply_id=supply_id,
             )
-            if ids
-            else {}
         )
     cards = fetch_cards(api_key, rows)
     products = ProductService(db).list_all()

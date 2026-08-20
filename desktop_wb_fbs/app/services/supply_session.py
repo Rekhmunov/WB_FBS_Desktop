@@ -316,7 +316,9 @@ def preload_supply_core(
             session.meta_by_id = {}
     session.build_kiz_and_pick_rows(db)
     session.core_ready = True
-    session.png_ready = False
+    # Like web portal: PNG stickers are fetched on print, not on supply open.
+    # png_ready=True means UI actions may proceed (not "all PNGs cached").
+    session.png_ready = True
     session.sticker_png = {}
     session.sticker_png_count = 0
     put_session(session)
@@ -327,7 +329,7 @@ def preload_sticker_pngs(
     session: SupplySession,
     progress: Optional[ProgressCb] = None,
 ) -> None:
-    """Fetch PNG stickers for print — resume from disk, tiny chunks, no base64 keep."""
+    """Optional/on-demand PNG fetch for print — resume from disk, isolated chunks."""
     import gc
 
     from app.diag_log import exception as diag_exception

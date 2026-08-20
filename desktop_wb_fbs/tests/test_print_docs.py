@@ -225,6 +225,49 @@ class PrintPickingListTests(unittest.TestCase):
         fetch_pick.assert_not_called()
 
 
+class PrintSupplyStickersOnDemandTests(unittest.TestCase):
+    @patch("app.services.print_docs.open_html")
+    @patch("app.services.print_docs.fetch_cards", return_value={})
+    @patch("app.services.print_docs.fetch_stickers_map")
+    @patch("app.services.print_docs.existing_sticker_paths", create=True)
+    @patch("app.services.print_docs.ProductService")
+    def test_print_resumes_disk_and_fetches_only_missing(
+        self, product_svc, _existing, fetch_map, fetch_cards, open_html
+    ):
+        from app.services import print_docs
+
+        product_svc.return_value.list_all.return_value = []
+        open_html.return_value = MagicMock(name="out.html")
+        orders_svc = MagicMock()
+        orders_svc.orders_in_supply.return_value = [
+            {"order_id": 1, "article": "a1", "nm_id": 10, "skus_json": "[]"},
+            {"order_id": 2, "article": "a2", "nm_id": 11, "skus_json": "[]"},
+        ]
+        with patch(
+            "app.services.sticker_file_cache.existing_sticker_paths",
+            return_value={1: "/tmp/1.png"},
+        ):
+            fetch_map.return_value = {
+                2: {
+                    "partA": "A",
+                    "partB": "B",
+                    "file_b64": "",
+                    "file_path": "/tmp/2.png",
+                }
+            }
+            print_docs.print_supply_stickers(
+                MagicMock(),
+                orders_svc,
+                1,
+                "api-key",
+                "WB-GI-1",
+            )
+        fetch_map.assert_called_once()
+        args, kwargs = fetch_map.call_args
+        self.assertEqual(args[1], [2])
+        self.assertEqual(kwargs.get("persist_supply_id"), "WB-GI-1")
+
+
 class OpenHtmlTests(unittest.TestCase):
     @patch("app.services.print_docs.QDesktopServices")
     @patch("app.ui.html_print_dialog.show_html_print_preview")

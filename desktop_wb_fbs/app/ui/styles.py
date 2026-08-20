@@ -108,12 +108,13 @@ QPushButton#secondary, QPushButton[class="secondary"] {
     background: #ffffff;
 }
 QPushButton#secondary:hover, QPushButton[class="secondary"]:hover {
-    border-color: #cbd5e1;
-    background: #f8fafc;
+    border-color: #94a3b8;
+    background: #eef2f7;
     color: #0f172a;
 }
 QPushButton#secondary:pressed, QPushButton[class="secondary"]:pressed {
-    background: #f1f5f9;
+    background: #e2e8f0;
+    border-color: #64748b;
 }
 QPushButton#secondary:disabled, QPushButton[class="secondary"]:disabled {
     color: #94a3b8;
@@ -283,13 +284,23 @@ QToolButton {
     font-weight: 600;
 }
 QToolButton:hover {
-    border-color: #cbd5e1;
-    background: #f8fafc;
+    border-color: #94a3b8;
+    background: #eef2f7;
+    color: #0f172a;
 }
 QToolButton#secondary {
     color: #334155;
     border: 1px solid #dbe3ef;
     background: #ffffff;
+}
+QToolButton#secondary:hover {
+    border-color: #94a3b8;
+    background: #eef2f7;
+    color: #0f172a;
+}
+QToolButton#secondary:pressed {
+    background: #e2e8f0;
+    border-color: #64748b;
 }
 QToolButton#dangerToolBtn {
     color: #b91c1c;
@@ -617,9 +628,13 @@ QPushButton#portalBtn {
     font-weight: 600;
 }
 QPushButton#portalBtn:hover {
-    background: #ede0ff;
-    border-color: rgba(147, 51, 234, 0.45);
+    background: #e9d5ff;
+    border-color: #a855f7;
     color: #581c87;
+}
+QPushButton#portalBtn:pressed {
+    background: #d8b4fe;
+    border-color: #9333ea;
 }
 QPushButton[waitOrders="true"],
 QToolButton[waitOrders="true"],
@@ -638,6 +653,35 @@ QFrame#sdHeader QPushButton#secondary {
     min-height: 40px;
     max-height: 40px;
     padding: 0 14px;
+}
+/* Supply-detail action row: clear hover (white header needs stronger contrast). */
+QFrame#sdHeader QPushButton#secondary:hover,
+QFrame#sdHeader QToolButton#secondary:hover,
+QFrame#sdHeader QToolButton#splitCaret:hover {
+    background: #eff6ff;
+    border-color: #60a5fa;
+    color: #1e3a8a;
+}
+QFrame#sdHeader QPushButton#secondary:pressed,
+QFrame#sdHeader QToolButton#secondary:pressed,
+QFrame#sdHeader QToolButton#splitCaret:pressed {
+    background: #dbeafe;
+    border-color: #3b82f6;
+    color: #1e3a8a;
+}
+QFrame#sdHeader QPushButton#iconBtn:hover {
+    background: #eff6ff;
+    border-color: #60a5fa;
+    color: #1e3a8a;
+}
+QFrame#sdHeader QPushButton#iconBtn:pressed {
+    background: #dbeafe;
+    border-color: #3b82f6;
+}
+QFrame#sdHeader QPushButton#portalBtn:hover {
+    background: #e9d5ff;
+    border-color: #a855f7;
+    color: #581c87;
 }
 QWidget#splitPair,
 QWidget#kizSplitPair {
@@ -666,6 +710,15 @@ QToolButton#splitCaret {
     min-height: 40px;
     max-height: 40px;
     padding: 0;
+}
+QToolButton#splitCaret:hover {
+    background: #eff6ff;
+    border-color: #60a5fa;
+    color: #1e3a8a;
+}
+QToolButton#splitCaret:pressed {
+    background: #dbeafe;
+    border-color: #3b82f6;
 }
 QWidget#splitPair QToolButton#secondary,
 QWidget#kizSplitPair QToolButton#secondary {

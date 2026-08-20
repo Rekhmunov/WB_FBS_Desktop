@@ -7,7 +7,7 @@ from typing import Optional
 
 from PyQt5.QtCore import QEventLoop, QTimer, QUrl, Qt
 from PyQt5.QtGui import QCursor
-from PyQt5.QtPrintSupport import QPrintDialog, QPrinter
+from PyQt5.QtPrintSupport import QPrintPreviewDialog, QPrinter
 from PyQt5.QtWidgets import (
     QApplication,
     QDialog,
@@ -83,8 +83,8 @@ class HtmlPrintPreviewDialog(QDialog):
         self.btn_print = QPushButton("Печать…")
         self.btn_print.setObjectName("bottomPrimary")
         self.btn_print.setEnabled(False)
-        # Document is already on screen — open the system print dialog directly.
-        self.btn_print.clicked.connect(self._print_now)
+        # Opens Qt print-preview (page layout as on paper), not the bare OS dialog.
+        self.btn_print.clicked.connect(self._print_preview)
         self.btn_pdf = QPushButton("Сохранить PDF")
         self.btn_pdf.setObjectName("secondary")
         self.btn_pdf.setEnabled(False)
@@ -193,29 +193,14 @@ class HtmlPrintPreviewDialog(QDialog):
         loop.exec_()
         return result["ok"]
 
-    def _print_now(self) -> None:
-        """System print dialog — no second print-preview render pass."""
+    def _print_preview(self) -> None:
+        """Qt print-preview dialog: shows real page layout before printing."""
         printer = QPrinter(QPrinter.HighResolution)
-        dialog = QPrintDialog(printer, self)
-        dialog.setWindowFlags(standard_window_flags())
-        dialog.setWindowTitle("Печать")
-        if dialog.exec_() != QPrintDialog.Accepted:
-            return
-        app = QApplication.instance()
-        if app is not None:
-            app.setOverrideCursor(QCursor(Qt.WaitCursor))
-        try:
-            ok = self._print_to_printer(printer)
-        finally:
-            if app is not None:
-                while app.overrideCursor() is not None:
-                    app.restoreOverrideCursor()
-        if ok:
-            QMessageBox.information(self, "Печать", "Документ отправлен на печать.")
-        else:
-            QMessageBox.warning(
-                self, "Печать", "Не удалось отправить документ на печать."
-            )
+        preview = QPrintPreviewDialog(printer, self)
+        preview.setWindowFlags(standard_window_flags())
+        preview.setWindowTitle("Предпросмотр печати")
+        preview.paintRequested.connect(self._print_to_printer)
+        preview.exec_()
 
     def _save_pdf(self) -> None:
         default_name = self._html_path.with_suffix(".pdf").name

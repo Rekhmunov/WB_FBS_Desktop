@@ -1019,15 +1019,16 @@ QCheckBox#kizFilterCheck {
 }
 QLineEdit#kizSearch {
     min-height: 36px;
-    max-width: 140px;
-    padding: 8px 12px;
-    border: 1px solid #cbd5e1;
-    border-radius: 8px;
-    background: #ffffff;
+    max-width: 280px;
+    border-radius: 10px;
+    padding: 0 12px;
+    background: #f8fafc;
+    border: 1px solid #e2e8f0;
     font-size: 14px;
 }
 QLineEdit#kizSearch:focus {
-    border-color: #60a5fa;
+    border-color: #cbd5e1;
+    background: #ffffff;
 }
 QLabel#kizScanCount {
     color: #0f172a;

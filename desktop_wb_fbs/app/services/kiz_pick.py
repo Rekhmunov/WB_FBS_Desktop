@@ -57,6 +57,7 @@ def row_matches_modal_search(row: Dict[str, Any], query: str) -> bool:
         row.get("sticker_part_b"),
         row.get("sticker_barcode"),
         row.get("pick_barcode"),
+        row.get("cancel_reason_label"),
         *list(skus),
     ]
     return any(q in str(v or "").strip().lower() for v in hay)

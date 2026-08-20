@@ -8,7 +8,7 @@ from typing import Any, Optional
 
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QPixmap
-from PyQt5.QtWidgets import QHBoxLayout, QLabel, QWidget
+from PyQt5.QtWidgets import QHBoxLayout, QLabel, QSizePolicy, QWidget
 
 _pixmap_cache = {}  # type: Dict[tuple, QPixmap]
 

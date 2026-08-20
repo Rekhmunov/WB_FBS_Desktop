@@ -712,6 +712,9 @@ QLabel#sdBarcode {
     font-weight: 700;
     color: #0f172a;
     letter-spacing: 0.02em;
+    min-height: 28px;
+    padding: 0;
+    margin: 0;
 }
 QLabel#sdKizBadge {
     padding: 2px 8px;

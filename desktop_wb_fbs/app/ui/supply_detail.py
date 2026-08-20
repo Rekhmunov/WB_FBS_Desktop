@@ -1243,13 +1243,16 @@ class SupplyDetailDialog(QDialog):
         hdr.setSectionResizeMode(0, QHeaderView.Fixed)
         table.setColumnWidth(0, 200)
         table.verticalHeader().setVisible(False)
-        table.verticalHeader().setDefaultSectionSize(110)
+        table.verticalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
 
         def _fill(items: List[Dict[str, Any]]) -> None:
+            table.clearSpans()
             table.setRowCount(len(items))
             for i, r in enumerate(items):
                 table.setCellWidget(i, 0, self._build_cancelled_order_cell(r))
                 table.setCellWidget(i, 1, self._build_cancelled_product_cell(r))
+                table.resizeRowToContents(i)
+                table.setRowHeight(i, max(int(table.rowHeight(i)), 120))
             lead.setText("Найдено отменённых в поставке: {}".format(len(items)))
             if not items:
                 table.setRowCount(1)
@@ -1274,7 +1277,6 @@ class SupplyDetailDialog(QDialog):
                 )
                 items = data2.get("rows") or []
                 self._merge_cancelled_into_detail(items)
-                table.clearSpans()
                 _fill(items)
             except Exception as exc:
                 QMessageBox.critical(dlg, "Отменённые", str(exc))
@@ -1283,9 +1285,6 @@ class SupplyDetailDialog(QDialog):
 
         rerun_btn.clicked.connect(_rerun)
         lay.addWidget(table, 1)
-        close = QDialogButtonBox(QDialogButtonBox.Close)
-        close.rejected.connect(dlg.reject)
-        lay.addWidget(close)
         dlg.exec_()
 
     def _merge_cancelled_into_detail(self, cancelled_rows: List[Dict[str, Any]]) -> None:
@@ -1332,10 +1331,12 @@ class SupplyDetailDialog(QDialog):
         lay = QHBoxLayout(wrap)
         lay.setContentsMargins(8, 10, 12, 10)
         lay.setSpacing(12)
+        lay.setAlignment(Qt.AlignTop)
         photo = make_photo_label(row.get("product_photo"), size=56)
         lay.addWidget(photo, 0, Qt.AlignTop)
         text = QVBoxLayout()
-        text.setSpacing(4)
+        text.setSpacing(6)
+        text.setContentsMargins(0, 0, 0, 0)
         name = str(row.get("product_name") or row.get("article") or "—")
         name_lab = QLabel(name)
         name_lab.setObjectName("sdProductName")
@@ -1351,20 +1352,28 @@ class SupplyDetailDialog(QDialog):
         sub_lab.setWordWrap(True)
         text.addWidget(sub_lab)
         skus = row.get("skus") if isinstance(row.get("skus"), list) else []
-        for sku in skus[:3]:
+        for sku in skus:
             s = str(sku or "").strip()
-            if s:
-                bc = QLabel(s)
-                bc.setObjectName("sdBarcode")
-                text.addWidget(bc)
+            if not s:
+                continue
+            bc = QLabel(s)
+            bc.setObjectName("sdBarcode")
+            bc.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
+            bc.setMinimumHeight(28)
+            text.addWidget(bc)
         reason = str(
             row.get("cancel_reason_label") or row.get("cancel_reason") or "Отменен"
         )
-        text.addWidget(make_badge(reason, "danger"))
+        badge_row = QHBoxLayout()
+        badge_row.setContentsMargins(0, 2, 0, 0)
+        badge_row.setSpacing(0)
+        badge_row.addWidget(make_badge(reason, "danger"), 0, Qt.AlignLeft)
+        badge_row.addStretch(1)
+        text.addLayout(badge_row)
         text.addStretch(1)
         lay.addLayout(text, 1)
+        wrap.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Minimum)
         return wrap
-
     def stickers_by_category(self) -> None:
         if not self._require_actions_ready():
             return

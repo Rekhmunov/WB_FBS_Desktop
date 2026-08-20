@@ -180,10 +180,6 @@ def show_pixmap_print_preview(
     print_btn = buttons.addButton("Печать…", QDialogButtonBox.ActionRole)
     print_btn.setObjectName("bottomPrimary")
     print_btn.clicked.connect(lambda: _print_pixmaps(dlg, valid))
-    close_btn = buttons.addButton(QDialogButtonBox.Close)
-    close_btn.setObjectName("secondary")
-    buttons.rejected.connect(dlg.reject)
-    close_btn.clicked.connect(dlg.reject)
     root.addWidget(buttons)
     dlg.exec_()
 

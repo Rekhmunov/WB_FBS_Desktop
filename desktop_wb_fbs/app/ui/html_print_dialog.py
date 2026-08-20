@@ -9,8 +9,10 @@ from PyQt5.QtCore import QEventLoop, QTimer, QUrl, Qt, pyqtSignal
 from PyQt5.QtGui import QCursor
 from PyQt5.QtPrintSupport import QPrintDialog, QPrintPreviewDialog, QPrintPreviewWidget, QPrinter
 from PyQt5.QtWidgets import (
+    QAbstractButton,
     QApplication,
     QDialog,
+    QDialogButtonBox,
     QFileDialog,
     QHBoxLayout,
     QLabel,
@@ -44,6 +46,31 @@ def webengine_status() -> tuple:
     if _WEBENGINE_ERROR:
         return False, _WEBENGINE_ERROR
     return False, "модуль PyQt5.QtWebEngineWidgets не найден"
+
+
+def _hide_print_preview_close_buttons(dialog: QDialog) -> None:
+    """Keep Print only — hide Close / Cancel on Qt print-preview chrome."""
+    for box in dialog.findChildren(QDialogButtonBox):
+        close_btn = box.button(QDialogButtonBox.Close)
+        if close_btn is not None:
+            close_btn.hide()
+        cancel_btn = box.button(QDialogButtonBox.Cancel)
+        if cancel_btn is not None:
+            cancel_btn.hide()
+        for btn in box.buttons():
+            role = box.buttonRole(btn)
+            if role not in (
+                QDialogButtonBox.RejectRole,
+                QDialogButtonBox.DestructiveRole,
+            ):
+                continue
+            text = (btn.text() or "").replace("&", "").strip().lower()
+            if text in {"close", "закрыть", "cancel", "отмена"}:
+                btn.hide()
+    for btn in dialog.findChildren(QAbstractButton):
+        text = (btn.text() or "").replace("&", "").strip().lower()
+        if text in {"close", "закрыть"}:
+            btn.hide()
 
 
 class HtmlPrintPreviewDialog(QDialog):
@@ -272,6 +299,7 @@ class HtmlPrintPreviewDialog(QDialog):
         preview.setWindowFlags(standard_window_flags())
         preview.setWindowTitle("Предпросмотр печати")
         preview.resize(960, 720)
+        _hide_print_preview_close_buttons(preview)
 
         zoomed = {"done": False}
 

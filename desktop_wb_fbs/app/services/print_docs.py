@@ -41,9 +41,6 @@ _stickers_cache = {}  # type: Dict[tuple, tuple]
 _stickers_cache_lock = threading.Lock()
 _PNG_STICKER_CHUNK = 10
 
-_PICKING_MAX_EMBEDDED_PHOTOS = 40
-_PICKING_PHOTO_MAX_BYTES = 512 * 1024
-
 
 def _api_key_fp(api_key: str) -> str:
     return hashlib.sha256((api_key or "").encode("utf-8")).hexdigest()[:16]
@@ -659,20 +656,6 @@ def render_picking_list_html(
         for g in groups:
             orders = list(g.get("orders") or [])
             qty = int(g.get("qty") or len(orders))
-            photo = str(g.get("product_photo") or "").strip()
-            photo_html = ""
-            if photo:
-                data_uri = (
-                    photo
-                    if photo.startswith("data:")
-                    else _photo_data_uri(photo)
-                )
-                if data_uri:
-                    photo_html = (
-                        '<div class="sku-photo"><img src="{}" alt=""/></div>'.format(
-                            data_uri
-                        )
-                    )
             meta = ['<div class="sku-title">{}</div>'.format(_esc(g.get("product_name")))]
             if g.get("brand"):
                 meta.append('<div class="sku-meta">{}</div>'.format(_esc(g.get("brand"))))
@@ -689,9 +672,7 @@ def render_picking_list_html(
             meta.append('<div class="sku-qty">{} шт</div>'.format(qty))
             rows.append(
                 '<tr class="product-row"><td class="main" colspan="3">'
-                '{}<div class="sku-text">{}</div></td></tr>'.format(
-                    photo_html, "".join(meta)
-                )
+                '<div class="sku-text">{}</div></td></tr>'.format("".join(meta))
             )
             for o in orders:
                 pb = str(o.get("sticker_part_b") or "").strip()
@@ -919,20 +900,6 @@ def print_picking_list(
         stickers = {}
         cards = {}
     groups = build_groups(rows, stickers, cards, products)
-    if is_extended:
-        embedded = 0
-        for g in groups:
-            if embedded >= _PICKING_MAX_EMBEDDED_PHOTOS:
-                g["product_photo"] = ""
-                continue
-            photo = str(g.get("product_photo") or "").strip()
-            if photo and not photo.startswith("data:"):
-                data_uri = _photo_data_uri(photo)
-                if data_uri:
-                    g["product_photo"] = data_uri
-                    embedded += 1
-                else:
-                    g["product_photo"] = ""
     html_doc = render_picking_list_html(
         supply_id,
         str(supply.get("name") or ""),

@@ -1437,6 +1437,11 @@ QLabel#kizPromptMeta {
     font-size: 14px;
     background: transparent;
 }
+QFrame#kizScanPrompt {
+    background: #f2f8ff;
+    border-top: 1px solid #d9e8f7;
+    border-bottom: 1px solid #d9e8f7;
+}
 
 /* ========== Грузоместа (TRBX) ========== */
 QTableWidget#trbxTable {

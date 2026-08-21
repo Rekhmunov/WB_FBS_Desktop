@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import re
 import time
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from app.db import Database
 from app.services.catalog import ProductService
@@ -19,16 +19,106 @@ from app.wb import (
 )
 from app.wb.client import WbFbsClient
 
-_GTIN_RE = re.compile(r"^01(\d{14})21")
+_GTIN_RE = re.compile(r"^01(\d{14})")
+_GTIN_GS_RE = re.compile(r"(?:^|[\u001d])01(\d{14})")
 
 
 def extract_gtin(cis: str) -> Optional[str]:
+    """GS1 AI 01 → 14-digit GTIN (web ``_wbFbsKizExtractGtin14``)."""
     text = kiz_code_clean(cis).replace("\u2194", "\u001d")
+    if not text:
+        return None
     m = _GTIN_RE.match(text)
+    if m:
+        return m.group(1)
+    m = _GTIN_GS_RE.search(text)
     return m.group(1) if m else None
 
 
+def order_sku_set(skus: List[Any]) -> Set[str]:
+    """Product ШК set with digit variants (web ``_wbFbsKizOrderSkuSet``)."""
+    out = set()  # type: Set[str]
+    for sku in skus or []:
+        raw = str(sku or "").strip()
+        if raw:
+            out.add(raw)
+        digits = "".join(ch for ch in raw if ch.isdigit())
+        if digits:
+            out.add(digits)
+    return out
+
+
+def gtin_matches_skus(gtin: str, skus: List[Any]) -> bool:
+    g = str(gtin or "").strip()
+    if not g:
+        return False
+    candidates = {g}
+    if len(g) == 14 and g.startswith("0"):
+        candidates.add(g[1:])
+    if len(g) == 13:
+        candidates.add("0" + g)
+    order = order_sku_set(skus)
+    return any(c in order for c in candidates)
+
+
+def find_existing_mark(
+    rows: List[Dict[str, Any]],
+    mark: str,
+    *,
+    exclude_order_id: Optional[int] = None,
+) -> Optional[Dict[str, Any]]:
+    """Find already-filled КИЗ in modal (web ``_wbFbsKizFindExistingMark``)."""
+    key = kiz_code_clean(mark).replace("\u2194", "\u001d").strip(" \t\r\n")
+    if not key:
+        return None
+    exclude = int(exclude_order_id) if exclude_order_id is not None else None
+    for row in rows or []:
+        oid = int(row.get("order_id") or 0)
+        if exclude is not None and oid == exclude:
+            continue
+        codes = row.get("kiz_codes") or []
+        if not isinstance(codes, (list, tuple)):
+            continue
+        for c in codes:
+            n = kiz_code_clean(c).replace("\u2194", "\u001d").strip(" \t\r\n")
+            if n and n == key:
+                return {"order_id": oid, "code": n}
+    return None
+
+
 def row_matches_modal_search(row: Dict[str, Any], query: str) -> bool:
+    """KIZ / pick modal search — same fields as supply detail search.
+
+    Matches order id, sticker parts/number/barcode, product name, article,
+    brand, nm_id, product SKUs/barcodes, pick barcode, and cancel label.
+    """
+    q = str(query or "").strip().lower()
+    if not q:
+        return True
+    skus = row.get("skus")
+    if skus is None:
+        skus = row.get("barcodes")
+    if isinstance(skus, str):
+        skus = parse_json_list(skus)
+    elif not isinstance(skus, (list, tuple)):
+        skus = []
+    hay = [
+        row.get("order_id"),
+        row.get("article"),
+        row.get("product_name"),
+        row.get("title"),
+        row.get("name"),
+        row.get("brand"),
+        row.get("nm_id"),
+        row.get("sticker_number"),
+        row.get("sticker_part_a"),
+        row.get("sticker_part_b"),
+        row.get("sticker_barcode"),
+        row.get("pick_barcode"),
+        row.get("cancel_reason_label"),
+        *list(skus),
+    ]
+    return any(q in str(v or "").strip().lower() for v in hay)
     """KIZ / pick modal search — same fields as supply detail search.
 
     Matches order id, sticker parts/number/barcode, product name, article,
@@ -666,9 +756,18 @@ class KizService:
             return False, "Пустой код"
         gtin = extract_gtin(cleaned)
         if not gtin:
-            return False, "Не удалось выделить GTIN (AI 01) из кода КИЗ"
-        if not skip_gtin and not gtin_matches_skus(gtin, skus):
-            return False, "GTIN {} не совпадает со ШК заказа".format(gtin)
+            return False, (
+                "Не удалось выделить GTIN из кода маркировки "
+                "(ожидается префикс 01 и 14 цифр)."
+            )
+        if skip_gtin:
+            return True, ""
+        order = order_sku_set(skus)
+        if not order:
+            return False, "У заказа нет штрихкодов товара — нельзя сверить GTIN маркировки."
+        if not gtin_matches_skus(gtin, skus):
+            shown = gtin[1:] if gtin.startswith("0") and len(gtin) == 14 else gtin
+            return False, "GTIN {} не совпадает со ШК заказа".format(shown)
         return True, ""
 
     def save_local(
@@ -842,18 +941,30 @@ class PickVerifyService:
         return out
 
     def validate_barcode(self, barcode: str, skus: List[Any]) -> Tuple[bool, str]:
-        code = str(barcode or "").strip()
-        if not code:
-            return False, "Пустой ШК"
-        sku_set = {str(s).strip() for s in (skus or []) if str(s).strip()}
-        if code in sku_set:
-            return True, ""
-        # 13↔14 leading zero
-        if len(code) == 13 and ("0" + code) in sku_set:
-            return True, ""
-        if len(code) == 14 and code.startswith("0") and code[1:] in sku_set:
-            return True, ""
-        return False, "ШК не совпадает с заказом"
+        raw = str(barcode or "").strip()
+        digits = "".join(ch for ch in raw if ch.isdigit())
+        if not digits:
+            return False, "Отсканируйте штрихкод товара (EAN-13)"
+        if len(digits) not in (8, 12, 13, 14):
+            return False, "Ожидается EAN/GTIN (8–14 цифр), получено {}".format(
+                len(digits)
+            )
+        order = order_sku_set(skus)
+        if not order:
+            return False, "У заказа нет штрихкодов товара — нельзя сверить ШК"
+        candidates = {digits, raw}
+        if len(digits) == 14 and digits.startswith("0"):
+            candidates.add(digits[1:])
+        if len(digits) == 13:
+            candidates.add("0" + digits)
+        if not any(c in order for c in candidates):
+            shown = (
+                digits[1:]
+                if len(digits) == 14 and digits.startswith("0")
+                else digits
+            )
+            return False, "ШК {} не совпадает с заказом".format(shown)
+        return True, ""
 
     def save(
         self,

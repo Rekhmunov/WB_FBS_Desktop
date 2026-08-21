@@ -3,4 +3,4 @@
 from __future__ import annotations
 
 from app.ui.kiz_dialog import KizDialog  # noqa: F401
-from app.ui.pick_dialog import PickDialog, PickSkuScanDialog  # noqa: F401
+from app.ui.pick_dialog import PickDialog  # noqa: F401

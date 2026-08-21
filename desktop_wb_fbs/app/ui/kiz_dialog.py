@@ -28,10 +28,20 @@ from PyQt5.QtWidgets import (
 )
 
 from app.db import Database
-from app.services.kiz_pick import KizService, pending_wb_save_jobs, row_matches_modal_search
+from app.services.kiz_pick import (
+    KizService,
+    find_existing_mark,
+    pending_wb_save_jobs,
+    row_matches_modal_search,
+)
 from app.services import supply_session
+from app.services.local_autosave import LocalAutosaveQueue
 from app.services.print_docs import _fetch_picking_stickers
-from app.services.sticker_lookup import find_row_by_sticker, normalize_scan
+from app.services.sticker_lookup import (
+    build_sticker_index,
+    find_row_by_sticker,
+    normalize_scan,
+)
 from app.services.trbx_stickers import StickersService
 from app.ui.dialog_utils import (
     GsAwareLineEdit,
@@ -39,7 +49,6 @@ from app.ui.dialog_utils import (
     block_ru_layout_scan,
     fullscreen_parent,
     init_fullscreen_dialog,
-    init_maximized_window,
     install_live_ru_layout_guard,
     make_modal_search_box,
     style_app_menu,
@@ -135,69 +144,6 @@ class _KizSaveWorker(QThread):
             self.failed.emit(str(exc))
 
 
-class KizMarkScanDialog(QDialog):
-    """Secondary prompt: scan Data Matrix after order sticker (web scan-prompt)."""
-
-    def __init__(
-        self,
-        order_id: int,
-        sticker_label: str,
-        parent: Optional[QWidget] = None,
-    ) -> None:
-        super(KizMarkScanDialog, self).__init__(parent)
-        self.order_id = int(order_id)
-        self.mark_code = ""  # type: str
-        self.setWindowTitle("Просканируйте маркировку")
-        self.setModal(True)
-        init_maximized_window(
-            self,
-            maximized=False,
-            default_size=(440, 220),
-        )
-        lay = QVBoxLayout(self)
-        lay.setContentsMargins(24, 24, 24, 24)
-        lay.setSpacing(12)
-        title = QLabel("Просканируйте маркировку")
-        title.setObjectName("kizPromptTitle")
-        lay.addWidget(title)
-        meta = QLabel("Заказ {} · стикер {}".format(order_id, sticker_label or "—"))
-        meta.setObjectName("kizPromptMeta")
-        meta.setWordWrap(True)
-        lay.addWidget(meta)
-        row = QHBoxLayout()
-        row.setSpacing(8)
-        self.mark_input = GsAwareLineEdit()
-        self.mark_input.setObjectName("kizScanInput")
-        self.mark_input.setPlaceholderText("Сканируйте КИЗ с того же изделия")
-        self.mark_input.returnPressed.connect(self._accept_mark)
-        install_live_ru_layout_guard(self.mark_input, self)
-        clear_btn = QToolButton()
-        clear_btn.setObjectName("kizScanClear")
-        clear_btn.setText("✕")
-        clear_btn.setToolTip("Очистить")
-        clear_btn.clicked.connect(self.mark_input.clear)
-        row.addWidget(self.mark_input, 1)
-        row.addWidget(clear_btn)
-        lay.addLayout(row)
-        cancel = QPushButton("Отмена")
-        cancel.setObjectName("secondary")
-        cancel.clicked.connect(self.reject)
-        actions = QHBoxLayout()
-        actions.addStretch(1)
-        actions.addWidget(cancel)
-        lay.addLayout(actions)
-
-    def showEvent(self, event) -> None:
-        super(KizMarkScanDialog, self).showEvent(event)
-        self.mark_input.setFocus()
-
-    def _accept_mark(self) -> None:
-        if block_ru_layout_scan(self, self.mark_input):
-            return
-        self.mark_code = self.mark_input.text()
-        self.accept()
-
-
 class KizDialog(QDialog):
     """КИЗ marking modal — portal layout (header, filters, scan bar, table)."""
 
@@ -218,8 +164,9 @@ class KizDialog(QDialog):
         self.supply_id = supply_id
         self.rows = []  # type: List[Dict[str, Any]]
         self.row_errors = {}  # type: Dict[int, str]
-        self._sticker_map = {}  # type: Dict[str, Dict[str, Any]]
+        self._sticker_index = build_sticker_index([])  # type: Dict[str, Any]
         self._pending_order_id = None  # type: Optional[int]
+        self._pending_row = None  # type: Optional[Dict[str, Any]]
         self._code_inputs = {}  # type: Dict[int, List[GsAwareLineEdit]]
         self._row_index_by_oid = {}  # type: Dict[int, int]
         self._row_by_oid = {}  # type: Dict[int, Dict[str, Any]]
@@ -235,6 +182,11 @@ class KizDialog(QDialog):
         self._alive_workers = []  # type: List[QThread]
         self._save_failed_oids = set()  # type: Set[int]
         self._save_retry_mode = False
+        self._autosave = LocalAutosaveQueue(self.kiz.db)
+        self._autosave_timer = QTimer(self)
+        self._autosave_timer.setSingleShot(True)
+        self._autosave_timer.setInterval(0)
+        self._autosave_timer.timeout.connect(self._flush_autosave_async)
         self._search_timer = QTimer(self)
         self._search_timer.setSingleShot(True)
         self._search_timer.setInterval(200)
@@ -332,6 +284,41 @@ class KizDialog(QDialog):
         scan_lay.addWidget(sticker_clear)
         root.addWidget(scan_bar)
 
+        # Inline mark prompt (web #wbFbsKizScanPrompt) — no nested QDialog.exec_
+        self.scan_prompt = QFrame()
+        self.scan_prompt.setObjectName("kizScanPrompt")
+        self.scan_prompt.hide()
+        prompt_lay = QVBoxLayout(self.scan_prompt)
+        prompt_lay.setContentsMargins(24, 12, 24, 12)
+        prompt_lay.setSpacing(8)
+        prompt_title = QLabel("Просканируйте маркировку")
+        prompt_title.setObjectName("kizPromptTitle")
+        prompt_lay.addWidget(prompt_title)
+        self.scan_prompt_meta = QLabel("")
+        self.scan_prompt_meta.setObjectName("kizPromptMeta")
+        self.scan_prompt_meta.setWordWrap(True)
+        prompt_lay.addWidget(self.scan_prompt_meta)
+        prompt_row = QHBoxLayout()
+        prompt_row.setSpacing(8)
+        self.mark_input = GsAwareLineEdit()
+        self.mark_input.setObjectName("kizScanInput")
+        self.mark_input.setPlaceholderText("Сканируйте КИЗ с того же изделия")
+        self.mark_input.returnPressed.connect(self._on_mark_prompt_enter)
+        install_live_ru_layout_guard(self.mark_input, self)
+        mark_clear = QToolButton()
+        mark_clear.setObjectName("kizScanClear")
+        mark_clear.setText("✕")
+        mark_clear.setToolTip("Очистить")
+        mark_clear.clicked.connect(self.mark_input.clear)
+        prompt_cancel = QPushButton("Отмена")
+        prompt_cancel.setObjectName("secondary")
+        prompt_cancel.clicked.connect(lambda: self._hide_mark_prompt())
+        prompt_row.addWidget(self.mark_input, 1)
+        prompt_row.addWidget(mark_clear)
+        prompt_row.addWidget(prompt_cancel)
+        prompt_lay.addLayout(prompt_row)
+        root.addWidget(self.scan_prompt)
+
         # Info banner
         self.info_banner = QFrame()
         self.info_banner.setObjectName("kizInfo")
@@ -389,18 +376,79 @@ class KizDialog(QDialog):
 
     def reject(self) -> None:
         self._abort_deferred_load()
+        self._hide_mark_prompt(refocus=False)
+        self._flush_autosave_sync()
         self._stop_save_worker()
         super(KizDialog, self).reject()
 
     def accept(self) -> None:
         self._abort_deferred_load()
+        self._hide_mark_prompt(refocus=False)
+        self._flush_autosave_sync()
         self._stop_save_worker()
         super(KizDialog, self).accept()
 
     def closeEvent(self, event) -> None:
         self._abort_deferred_load()
+        self._hide_mark_prompt(refocus=False)
+        self._flush_autosave_sync()
         self._stop_save_worker()
         super(KizDialog, self).closeEvent(event)
+
+    def _schedule_kiz_autosave(self, order_id: int, codes: List[str]) -> None:
+        self._autosave.schedule_kiz(self.source_id, int(order_id), codes)
+        self._autosave_timer.start()
+
+    def _flush_autosave_async(self) -> None:
+        self._autosave.flush_async()
+
+    def _flush_autosave_sync(self) -> None:
+        self._autosave_timer.stop()
+        self._autosave.flush_sync()
+
+    def _rebuild_sticker_index(self) -> None:
+        self._sticker_index = build_sticker_index(self.rows)
+
+    def _show_mark_prompt(self, row: Dict[str, Any]) -> None:
+        oid = int(row["order_id"])
+        sticker = str(row.get("sticker_number") or "—")
+        self._pending_order_id = oid
+        self._pending_row = row
+        self.scan_prompt_meta.setText(
+            "Заказ {} · стикер {}".format(oid, sticker)
+        )
+        self.mark_input.clear()
+        self.scan_prompt.show()
+        self.sticker_input.setEnabled(False)
+        QTimer.singleShot(0, self.mark_input.setFocus)
+
+    def _hide_mark_prompt(self, *, refocus: bool = True) -> None:
+        was_pending = self._pending_order_id
+        self.scan_prompt.hide()
+        self.mark_input.clear()
+        self._pending_row = None
+        self.sticker_input.setEnabled(True)
+        if was_pending is not None:
+            self._pending_order_id = None
+            self._patch_codes_cell(was_pending)
+        if refocus and self._rows_ready:
+            self.sticker_input.setFocus()
+
+    def _on_mark_prompt_enter(self) -> None:
+        if block_ru_layout_scan(self, self.mark_input):
+            return
+        row = self._pending_row
+        if not row:
+            self._hide_mark_prompt()
+            return
+        mark = self.mark_input.text()
+        self.scan_prompt.hide()
+        self.mark_input.clear()
+        self.sticker_input.setEnabled(True)
+        self._pending_row = None
+        self._pending_order_id = None
+        self._apply_mark_scan(row, mark)
+        self.sticker_input.setFocus()
 
     def _disconnect_worker(self, worker: QThread, *signal_names: str) -> None:
         for name in signal_names:
@@ -672,7 +720,7 @@ class KizDialog(QDialog):
         if self._load_aborted(gen):
             return
         self.row_errors = {}
-        self._sticker_map = {}
+        self._sticker_index = build_sticker_index([])
         self._code_inputs = {}
         stickers = {}  # type: Dict[int, Dict[str, Any]]
         order_n = len(self.rows)
@@ -864,7 +912,7 @@ class KizDialog(QDialog):
                 return
             codes = [c for c in self._row_codes(row) if str(c).strip()]
             try:
-                self.kiz.save_local(self.source_id, order_id, codes, wb_synced=False)
+                self._schedule_kiz_autosave(order_id, codes)
                 row["kiz_wb_synced"] = False
                 if codes:
                     row["kiz_status"] = "pending"
@@ -872,6 +920,7 @@ class KizDialog(QDialog):
             except Exception:
                 pass
             self._update_counter()
+            self._update_save_button()
         finally:
             inp._kiz_commit_lock = False
 
@@ -883,7 +932,7 @@ class KizDialog(QDialog):
         codes = self._row_codes(row)
         codes.append("")
         row["kiz_codes"] = codes
-        self._refresh_row(order_id)
+        self._patch_codes_cell(order_id)
 
     def _clear_code(self, order_id: int, idx: int) -> None:
         self._sync_codes_from_inputs()
@@ -902,13 +951,14 @@ class KizDialog(QDialog):
         self.row_errors.pop(order_id, None)
         cleaned = [c for c in codes if str(c).strip()]
         try:
-            self.kiz.save_local(self.source_id, order_id, cleaned, wb_synced=False)
+            self._schedule_kiz_autosave(order_id, cleaned)
             self._sync_session_kiz_rows()
         except Exception:
             pass
-        self._refresh_row(order_id)
+        self._patch_codes_cell(order_id)
         self._update_counter()
         self._apply_filters()
+        self._update_save_button()
 
     def _print_sticker(self, order_id: int) -> None:
         try:
@@ -955,6 +1005,23 @@ class KizDialog(QDialog):
         self._set_row_widgets(idx, row)
         self._resize_table_row(idx)
 
+    def _patch_codes_cell(self, order_id: int) -> None:
+        """Update only the КИЗ column (web cell patch) — avoid full row rebuild."""
+        oid = int(order_id)
+        idx = self._row_index_by_oid.get(oid)
+        row = self._row_by_oid.get(oid)
+        if idx is None or row is None:
+            return
+        active = self._pending_order_id == oid
+        self.table.setCellWidget(
+            idx, 2, self._wrap_cell(self._build_codes_widget(row), active=active)
+        )
+        # Keep active highlight on order/product columns without rebuilding them
+        # when only codes changed; sticker/product highlight updated via _refresh_row.
+        if active:
+            self.table.selectRow(idx)
+        self._resize_table_row(idx)
+
     def _refresh_changed_rows(self, order_ids: List[int]) -> None:
         for oid in order_ids:
             self._refresh_row(oid)
@@ -964,6 +1031,7 @@ class KizDialog(QDialog):
         self._update_counter()
         self._clear_table()
         self._row_by_oid = {int(r["order_id"]): r for r in self.rows}
+        self._rebuild_sticker_index()
         row_count = len(self.rows)
         self.table.setUpdatesEnabled(False)
         self.table.setRowCount(row_count)
@@ -994,18 +1062,21 @@ class KizDialog(QDialog):
     def on_sticker(self) -> None:
         if not self._rows_ready or self.sticker_input.isReadOnly():
             return
+        if self.scan_prompt.isVisible():
+            return
         if block_ru_layout_scan(self, self.sticker_input):
             return
         raw = normalize_scan(self.sticker_input.text())
         if not raw:
             return
-        found, ambiguous, matches = find_row_by_sticker(self.rows, raw)
+        found, ambiguous, matches = find_row_by_sticker(
+            self.rows, raw, index=self._sticker_index
+        )
         if ambiguous:
             self._set_ambiguous_sticker_info(matches)
             self.sticker_input.selectAll()
             return
         if not found:
-            # Always overwrite prior banner (ok/error); do not gate on isVisible().
             self._set_info(
                 "Заказ со стикером «{}» не найден среди товаров с маркировкой.".format(
                     raw
@@ -1021,21 +1092,7 @@ class KizDialog(QDialog):
         if prev_pending and prev_pending != pending_oid:
             self._refresh_row(prev_pending)
         self._refresh_row(pending_oid)
-        dlg = KizMarkScanDialog(
-            pending_oid,
-            str(found.get("sticker_number") or "—"),
-            self,
-        )
-        if dlg.exec_() != QDialog.Accepted:
-            self._pending_order_id = None
-            self._refresh_row(pending_oid)
-            if prev_pending and prev_pending != pending_oid:
-                self._refresh_row(prev_pending)
-            self.sticker_input.setFocus()
-            return
-        self._apply_mark_scan(found, dlg.mark_code)
-        self._pending_order_id = None
-        self.sticker_input.setFocus()
+        self._show_mark_prompt(found)
 
     def _apply_mark_scan(self, row: Dict[str, Any], raw_mark: str) -> None:
         if block_ru_layout_scan(self, text=raw_mark):
@@ -1050,14 +1107,21 @@ class KizDialog(QDialog):
         if not ok:
             self.row_errors[oid] = err
             self._set_info(err)
-            self._refresh_row(oid)
+            self._patch_codes_cell(oid)
             self._apply_filters()
+            return
+        dup = find_existing_mark(self.rows, code)
+        if dup:
+            self._set_info(
+                "Этот КИЗ уже привязан к заказу {}".format(dup.get("order_id"))
+            )
+            self._patch_codes_cell(oid)
             return
         self.row_errors.pop(oid, None)
         codes = [c for c in self._row_codes(row) if str(c).strip()]
         if code in codes:
             self._set_info("Этот КИЗ уже добавлен")
-            self._refresh_row(oid)
+            self._patch_codes_cell(oid)
             return
         placed = False
         mutable = self._row_codes(row)
@@ -1071,11 +1135,13 @@ class KizDialog(QDialog):
         row["kiz_codes"] = mutable
         row["kiz_status"] = "pending"
         row["kiz_wb_synced"] = False
-        self.kiz.save_local(self.source_id, oid, [c for c in mutable if str(c).strip()], wb_synced=False)
+        cleaned = [c for c in mutable if str(c).strip()]
+        self._schedule_kiz_autosave(oid, cleaned)
         self._sync_session_kiz_rows()
+        self.data_changed = True
         self._set_info("", ok=True)
         self._update_counter()
-        self._refresh_row(oid)
+        self._patch_codes_cell(oid)
         self._apply_filters()
         self._update_save_button()
 
@@ -1083,6 +1149,7 @@ class KizDialog(QDialog):
         if self._saving:
             return
         self._sync_codes_from_inputs()
+        self._flush_autosave_sync()
         only_ids = (
             sorted(self._save_failed_oids)
             if self._save_retry_mode and self._save_failed_oids

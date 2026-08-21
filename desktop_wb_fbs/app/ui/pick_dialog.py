@@ -28,15 +28,19 @@ from PyQt5.QtWidgets import (
 
 from app.services.kiz_pick import PickVerifyService, row_matches_modal_search
 from app.services import supply_session
+from app.services.local_autosave import LocalAutosaveQueue
 from app.services.print_docs import _fetch_picking_stickers
-from app.services.sticker_lookup import find_row_by_sticker, normalize_scan
+from app.services.sticker_lookup import (
+    build_sticker_index,
+    find_row_by_sticker,
+    normalize_scan,
+)
 from app.services.trbx_stickers import StickersService
 from app.ui.dialog_utils import (
     apply_fullscreen_on_show,
     block_ru_layout_scan,
     fullscreen_parent,
     init_fullscreen_dialog,
-    init_maximized_window,
     install_live_ru_layout_guard,
     make_modal_search_box,
     style_app_menu,
@@ -63,69 +67,6 @@ _LOAD_STEPS = (
 )
 
 
-class PickSkuScanDialog(QDialog):
-    """Secondary prompt: scan product barcode after order sticker."""
-
-    def __init__(
-        self,
-        order_id: int,
-        sticker_label: str,
-        parent: Optional[QWidget] = None,
-    ) -> None:
-        super(PickSkuScanDialog, self).__init__(parent)
-        self.order_id = int(order_id)
-        self.barcode = ""  # type: str
-        self.setWindowTitle("Просканируйте ШК")
-        self.setModal(True)
-        init_maximized_window(
-            self,
-            maximized=False,
-            default_size=(440, 220),
-        )
-        lay = QVBoxLayout(self)
-        lay.setContentsMargins(24, 24, 24, 24)
-        lay.setSpacing(12)
-        title = QLabel("Просканируйте ШК")
-        title.setObjectName("kizPromptTitle")
-        lay.addWidget(title)
-        meta = QLabel("Заказ {} · стикер {}".format(order_id, sticker_label or "—"))
-        meta.setObjectName("kizPromptMeta")
-        meta.setWordWrap(True)
-        lay.addWidget(meta)
-        row = QHBoxLayout()
-        row.setSpacing(8)
-        self.sku_input = QLineEdit()
-        self.sku_input.setObjectName("kizScanInput")
-        self.sku_input.setPlaceholderText("Сканируйте ШК с того же изделия")
-        self.sku_input.returnPressed.connect(self._accept_sku)
-        install_live_ru_layout_guard(self.sku_input, self)
-        clear_btn = QToolButton()
-        clear_btn.setObjectName("kizScanClear")
-        clear_btn.setText("✕")
-        clear_btn.setToolTip("Очистить")
-        clear_btn.clicked.connect(self.sku_input.clear)
-        row.addWidget(self.sku_input, 1)
-        row.addWidget(clear_btn)
-        lay.addLayout(row)
-        cancel = QPushButton("Отмена")
-        cancel.setObjectName("secondary")
-        cancel.clicked.connect(self.reject)
-        actions = QHBoxLayout()
-        actions.addStretch(1)
-        actions.addWidget(cancel)
-        lay.addLayout(actions)
-
-    def showEvent(self, event) -> None:
-        super(PickSkuScanDialog, self).showEvent(event)
-        self.sku_input.setFocus()
-
-    def _accept_sku(self) -> None:
-        if block_ru_layout_scan(self, self.sku_input):
-            return
-        self.barcode = self.sku_input.text()
-        self.accept()
-
-
 class PickDialog(QDialog):
     """Товары без маркировки — portal layout parity with KIZ modal."""
 
@@ -146,8 +87,9 @@ class PickDialog(QDialog):
         self.supply_id = supply_id
         self.rows = []  # type: List[Dict[str, Any]]
         self.row_errors = {}  # type: Dict[int, str]
-        self._sticker_map = {}  # type: Dict[str, Dict[str, Any]]
+        self._sticker_index = build_sticker_index([])  # type: Dict[str, Any]
         self._pending_order_id = None  # type: Optional[int]
+        self._pending_row = None  # type: Optional[Dict[str, Any]]
         self._sku_inputs = {}  # type: Dict[int, QLineEdit]
         self._row_index_by_oid = {}  # type: Dict[int, int]
         self._row_by_oid = {}  # type: Dict[int, Dict[str, Any]]
@@ -158,6 +100,11 @@ class PickDialog(QDialog):
         self._load_detail = ""
         self._loading_table_label = None  # type: Optional[QLabel]
         self.data_changed = False
+        self._autosave = LocalAutosaveQueue(self.pick.db)
+        self._autosave_timer = QTimer(self)
+        self._autosave_timer.setSingleShot(True)
+        self._autosave_timer.setInterval(0)
+        self._autosave_timer.timeout.connect(self._flush_autosave_async)
         self._search_timer = QTimer(self)
         self._search_timer.setSingleShot(True)
         self._search_timer.setInterval(200)
@@ -245,6 +192,41 @@ class PickDialog(QDialog):
         scan_lay.addWidget(sticker_clear)
         root.addWidget(scan_bar)
 
+        # Inline SKU prompt (web #wbFbsPickScanPrompt)
+        self.scan_prompt = QFrame()
+        self.scan_prompt.setObjectName("kizScanPrompt")
+        self.scan_prompt.hide()
+        prompt_lay = QVBoxLayout(self.scan_prompt)
+        prompt_lay.setContentsMargins(24, 12, 24, 12)
+        prompt_lay.setSpacing(8)
+        prompt_title = QLabel("Просканируйте ШК")
+        prompt_title.setObjectName("kizPromptTitle")
+        prompt_lay.addWidget(prompt_title)
+        self.scan_prompt_meta = QLabel("")
+        self.scan_prompt_meta.setObjectName("kizPromptMeta")
+        self.scan_prompt_meta.setWordWrap(True)
+        prompt_lay.addWidget(self.scan_prompt_meta)
+        prompt_row = QHBoxLayout()
+        prompt_row.setSpacing(8)
+        self.sku_prompt_input = QLineEdit()
+        self.sku_prompt_input.setObjectName("kizScanInput")
+        self.sku_prompt_input.setPlaceholderText("Сканируйте ШК с того же изделия")
+        self.sku_prompt_input.returnPressed.connect(self._on_sku_prompt_enter)
+        install_live_ru_layout_guard(self.sku_prompt_input, self)
+        sku_clear = QToolButton()
+        sku_clear.setObjectName("kizScanClear")
+        sku_clear.setText("✕")
+        sku_clear.setToolTip("Очистить")
+        sku_clear.clicked.connect(self.sku_prompt_input.clear)
+        prompt_cancel = QPushButton("Отмена")
+        prompt_cancel.setObjectName("secondary")
+        prompt_cancel.clicked.connect(lambda: self._hide_sku_prompt())
+        prompt_row.addWidget(self.sku_prompt_input, 1)
+        prompt_row.addWidget(sku_clear)
+        prompt_row.addWidget(prompt_cancel)
+        prompt_lay.addLayout(prompt_row)
+        root.addWidget(self.scan_prompt)
+
         self.info_banner = QFrame()
         self.info_banner.setObjectName("kizInfo")
         self.info_banner.hide()
@@ -298,15 +280,80 @@ class PickDialog(QDialog):
 
     def reject(self) -> None:
         self._abort_deferred_load()
+        self._hide_sku_prompt(refocus=False)
+        self._flush_autosave_sync()
         super(PickDialog, self).reject()
 
     def accept(self) -> None:
         self._abort_deferred_load()
+        self._hide_sku_prompt(refocus=False)
+        self._flush_autosave_sync()
         super(PickDialog, self).accept()
 
     def closeEvent(self, event) -> None:
         self._abort_deferred_load()
+        self._hide_sku_prompt(refocus=False)
+        self._flush_autosave_sync()
         super(PickDialog, self).closeEvent(event)
+
+    def _schedule_pick_autosave(
+        self, order_id: int, verified: bool, barcode: str = ""
+    ) -> None:
+        self._autosave.schedule_pick(
+            self.source_id, int(order_id), verified, barcode
+        )
+        self._autosave_timer.start()
+
+    def _flush_autosave_async(self) -> None:
+        self._autosave.flush_async()
+
+    def _flush_autosave_sync(self) -> None:
+        self._autosave_timer.stop()
+        self._autosave.flush_sync()
+
+    def _rebuild_sticker_index(self) -> None:
+        self._sticker_index = build_sticker_index(self.rows)
+
+    def _show_sku_prompt(self, row: Dict[str, Any]) -> None:
+        oid = int(row["order_id"])
+        sticker = str(row.get("sticker_number") or "—")
+        self._pending_order_id = oid
+        self._pending_row = row
+        self.scan_prompt_meta.setText(
+            "Заказ {} · стикер {}".format(oid, sticker)
+        )
+        self.sku_prompt_input.clear()
+        self.scan_prompt.show()
+        self.sticker_input.setEnabled(False)
+        QTimer.singleShot(0, self.sku_prompt_input.setFocus)
+
+    def _hide_sku_prompt(self, *, refocus: bool = True) -> None:
+        was_pending = self._pending_order_id
+        self.scan_prompt.hide()
+        self.sku_prompt_input.clear()
+        self._pending_row = None
+        self.sticker_input.setEnabled(True)
+        if was_pending is not None:
+            self._pending_order_id = None
+            self._patch_sku_cell(was_pending)
+        if refocus and self._rows_ready:
+            self.sticker_input.setFocus()
+
+    def _on_sku_prompt_enter(self) -> None:
+        if block_ru_layout_scan(self, self.sku_prompt_input):
+            return
+        row = self._pending_row
+        if not row:
+            self._hide_sku_prompt()
+            return
+        code = self.sku_prompt_input.text()
+        self.scan_prompt.hide()
+        self.sku_prompt_input.clear()
+        self.sticker_input.setEnabled(True)
+        self._pending_row = None
+        self._pending_order_id = None
+        self._apply_sku_scan(row, code)
+        self.sticker_input.setFocus()
 
     def _set_filters_ready(self, ready: bool) -> None:
         self._rows_ready = bool(ready)
@@ -502,7 +549,7 @@ class PickDialog(QDialog):
         if self._load_aborted(gen):
             return
         self.row_errors = {}
-        self._sticker_map = {}
+        self._sticker_index = build_sticker_index([])
         stickers = {}  # type: Dict[int, Dict[str, Any]]
         order_n = len(self.rows)
         need_sticker_fill = any(
@@ -688,13 +735,10 @@ class PickDialog(QDialog):
         row["pick_barcode"] = ""
         self.row_errors.pop(order_id, None)
         self.data_changed = True
-        try:
-            self.pick.save(self.source_id, order_id, False, "")
-        except Exception:
-            pass
+        self._schedule_pick_autosave(order_id, False, "")
         self._sync_session_pick_rows()
         self._update_counter()
-        self._refresh_row(order_id)
+        self._patch_sku_cell(order_id)
         self._apply_filters()
 
     def _apply_sku(self, row: Dict[str, Any], code: str) -> None:
@@ -703,18 +747,10 @@ class PickDialog(QDialog):
         if not ok:
             self.row_errors[oid] = err
             self._set_info(err)
-            self._refresh_row(oid)
+            self._patch_sku_cell(oid)
             self._apply_filters()
             return
         self.row_errors.pop(oid, None)
-        try:
-            self.pick.save(self.source_id, oid, True, code)
-        except Exception as exc:
-            self.row_errors[oid] = str(exc)
-            self._set_info(str(exc))
-            self._refresh_row(oid)
-            self._apply_filters()
-            return
         self.data_changed = True
         row["pick_verified"] = True
         row["pick_barcode"] = code
@@ -723,10 +759,11 @@ class PickDialog(QDialog):
                 r["pick_verified"] = True
                 r["pick_barcode"] = code
                 break
+        self._schedule_pick_autosave(oid, True, code)
         self._sync_session_pick_rows()
         self._set_info("", ok=True)
         self._update_counter()
-        self._refresh_row(oid)
+        self._patch_sku_cell(oid)
         self._apply_filters()
 
     def _print_sticker(self, order_id: int) -> None:
@@ -774,10 +811,25 @@ class PickDialog(QDialog):
         self._set_row_widgets(idx, row)
         self._resize_table_row(idx)
 
+    def _patch_sku_cell(self, order_id: int) -> None:
+        oid = int(order_id)
+        idx = self._row_index_by_oid.get(oid)
+        row = self._row_by_oid.get(oid)
+        if idx is None or row is None:
+            return
+        active = self._pending_order_id == oid
+        self.table.setCellWidget(
+            idx, 2, self._wrap_cell(self._build_sku_widget(row), active=active)
+        )
+        if active:
+            self.table.selectRow(idx)
+        self._resize_table_row(idx)
+
     def _render_table(self, *, fast: bool = False) -> None:
         self._update_counter()
         self._clear_table()
         self._row_by_oid = {int(r["order_id"]): r for r in self.rows}
+        self._rebuild_sticker_index()
         row_count = len(self.rows)
         self.table.setUpdatesEnabled(False)
         self.table.setRowCount(row_count)
@@ -808,18 +860,21 @@ class PickDialog(QDialog):
     def on_sticker(self) -> None:
         if not self._rows_ready or self.sticker_input.isReadOnly():
             return
+        if self.scan_prompt.isVisible():
+            return
         if block_ru_layout_scan(self, self.sticker_input):
             return
         raw = normalize_scan(self.sticker_input.text())
         if not raw:
             return
-        found, ambiguous, matches = find_row_by_sticker(self.rows, raw)
+        found, ambiguous, matches = find_row_by_sticker(
+            self.rows, raw, index=self._sticker_index
+        )
         if ambiguous:
             self._set_ambiguous_sticker_info(matches)
             self.sticker_input.selectAll()
             return
         if not found:
-            # Always overwrite prior banner (ok/error); do not gate on isVisible().
             self._set_info(
                 "Заказ со стикером «{}» не найден среди товаров без маркировки.".format(
                     raw
@@ -835,21 +890,7 @@ class PickDialog(QDialog):
         if prev_pending and prev_pending != pending_oid:
             self._refresh_row(prev_pending)
         self._refresh_row(pending_oid)
-        dlg = PickSkuScanDialog(
-            pending_oid,
-            str(found.get("sticker_number") or "—"),
-            self,
-        )
-        if dlg.exec_() != QDialog.Accepted:
-            self._pending_order_id = None
-            self._refresh_row(pending_oid)
-            if prev_pending and prev_pending != pending_oid:
-                self._refresh_row(prev_pending)
-            self.sticker_input.setFocus()
-            return
-        self._apply_sku_scan(found, dlg.barcode)
-        self._pending_order_id = None
-        self.sticker_input.setFocus()
+        self._show_sku_prompt(found)
 
     def _apply_sku_scan(self, row: Dict[str, Any], raw_barcode: str) -> None:
         if block_ru_layout_scan(self, text=raw_barcode):

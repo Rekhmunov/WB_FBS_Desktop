@@ -48,13 +48,11 @@ class SyncWorker(QThread):
         self,
         db: Database,
         sources: List[Dict[str, Any]],
-        lookback_days: int,
         parent: Optional[QWidget] = None,
     ) -> None:
         super(SyncWorker, self).__init__(parent)
         self.db = db
         self.sources = list(sources or [])
-        self.lookback_days = lookback_days
         self._stop = False
 
     def request_stop(self) -> None:
@@ -62,6 +60,7 @@ class SyncWorker(QThread):
 
     def run(self) -> None:
         from app.services.pallet import compute_pallet_summary
+        from app.services import clamp_lookback_days
 
         try:
             total_orders = 0
@@ -76,6 +75,7 @@ class SyncWorker(QThread):
                     break
                 sid = int(src["id"])
                 name = str(src.get("name") or sid)
+                lookback_days = clamp_lookback_days(src.get("lookback_days"))
                 self.progress.emit("{}…".format(name), total_orders)
 
                 def _prog(msg, n, _name=name):
@@ -85,7 +85,7 @@ class SyncWorker(QThread):
                     self.db,
                     sid,
                     str(src.get("api_key") or ""),
-                    lookback_days=self.lookback_days,
+                    lookback_days=lookback_days,
                     stop_requested=lambda: self._stop,
                     progress=_prog,
                 )
@@ -965,7 +965,6 @@ class FbsPage(QWidget):
             return
         if self._worker and self._worker.isRunning():
             return
-        lookback = 3
         self._show_sync_info(
             "Синхронизация {} источник(ов)…".format(len(all_sources)), ""
         )
@@ -973,7 +972,7 @@ class FbsPage(QWidget):
         self.sync_btn.setEnabled(False)
         self.stop_btn.setEnabled(True)
         self.stop_btn.setVisible(True)
-        self._worker = SyncWorker(self.db, all_sources, lookback, self)
+        self._worker = SyncWorker(self.db, all_sources, self)
         self._worker.progress.connect(self._on_sync_progress)
         self._worker.finished_ok.connect(self._on_sync_done)
         self._worker.failed.connect(self._on_sync_fail)

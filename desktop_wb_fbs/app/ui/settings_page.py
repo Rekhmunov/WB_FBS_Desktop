@@ -56,8 +56,9 @@ class SettingsPage(QWidget):
         layout.setContentsMargins(24, 20, 24, 16)
         layout.setSpacing(12)
         hint = QLabel(
-            "Нужны для работы ВБ ФБС: источники (токен Marketplace), товары "
-            "(фото, короба, пропуск GTIN), категории (коробов на палете)."
+            "Нужны для работы ВБ ФБС: источники (токен Marketplace, глубина "
+            "синхронизации), товары (фото, короба, пропуск GTIN). Категории — "
+            "кнопка «Категории товаров» на вкладке Товары."
         )
         hint.setWordWrap(True)
         hint.setObjectName("hint")
@@ -71,7 +72,6 @@ class SettingsPage(QWidget):
         self._settings_tabs = tabs
         tabs.addTab(self._build_sources_tab(), "Источники")
         tabs.addTab(self._build_products_tab(), "Товары")
-        tabs.addTab(self._build_categories_tab(), "Категории")
         layout.addWidget(tabs, 1)
 
     # --- Sources ---
@@ -92,9 +92,9 @@ class SettingsPage(QWidget):
         bar.addWidget(delete)
         bar.addStretch(1)
         v.addLayout(bar)
-        self.src_table = QTableWidget(0, 4)
+        self.src_table = QTableWidget(0, 5)
         self.src_table.setHorizontalHeaderLabels(
-            ["Название", "Включён", "Ключ", "Последняя синхр."]
+            ["Название", "Включён", "Дней", "Ключ", "Последняя синхр."]
         )
         self.src_table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.src_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
@@ -102,7 +102,8 @@ class SettingsPage(QWidget):
         v.addWidget(self.src_table, 1)
         note = QLabel(
             "В названии обязательно «ФБС» или FBS. Токен — категория Marketplace "
-            "(и Контент для названий товаров)."
+            "(и Контент для названий товаров). «Дней» — глубина синхронизации "
+            "заказов/поставок (по умолчанию 2)."
         )
         note.setWordWrap(True)
         note.setObjectName("hint")
@@ -119,11 +120,17 @@ class SettingsPage(QWidget):
             self.src_table.setItem(
                 i, 1, QTableWidgetItem("да" if int(s.get("is_enabled") or 0) else "нет")
             )
+            lookback = s.get("lookback_days")
+            try:
+                lookback_text = str(int(lookback)) if lookback is not None else "2"
+            except (TypeError, ValueError):
+                lookback_text = "2"
+            self.src_table.setItem(i, 2, QTableWidgetItem(lookback_text))
             key = str(s.get("api_key") or "")
             masked = (key[:4] + "…" + key[-4:]) if len(key) > 10 else ("*" * len(key))
-            self.src_table.setItem(i, 2, QTableWidgetItem(masked))
+            self.src_table.setItem(i, 3, QTableWidgetItem(masked))
             self.src_table.setItem(
-                i, 3, QTableWidgetItem(str(s.get("last_synced_at") or "—"))
+                i, 4, QTableWidgetItem(str(s.get("last_synced_at") or "—"))
             )
 
     def _selected_source_id(self) -> Optional[int]:
@@ -139,7 +146,9 @@ class SettingsPage(QWidget):
         dlg = SourceEditDialog(self)
         if dlg.exec_():
             try:
-                self.sources.create(dlg.name, dlg.api_key, dlg.enabled)
+                self.sources.create(
+                    dlg.name, dlg.api_key, dlg.enabled, dlg.lookback_days
+                )
                 self.reload_sources_table()
                 self.sources_changed.emit()
             except Exception as exc:
@@ -155,7 +164,9 @@ class SettingsPage(QWidget):
         dlg = SourceEditDialog(self, src)
         if dlg.exec_():
             try:
-                self.sources.update(sid, dlg.name, dlg.api_key, dlg.enabled)
+                self.sources.update(
+                    sid, dlg.name, dlg.api_key, dlg.enabled, dlg.lookback_days
+                )
                 self.reload_sources_table()
                 self.sources_changed.emit()
             except Exception as exc:
@@ -193,7 +204,7 @@ class SettingsPage(QWidget):
         head.addStretch(1)
         cats_btn = QPushButton("Категории товаров")
         cats_btn.setObjectName("secondary")
-        cats_btn.clicked.connect(self._open_product_categories_tab)
+        cats_btn.clicked.connect(self._open_product_categories)
         import_btn = QPushButton("Импорт")
         import_btn.setObjectName("secondary")
         import_btn.setToolTip(
@@ -237,14 +248,9 @@ class SettingsPage(QWidget):
         self.reload_products_table()
         return w
 
-    def _open_product_categories_tab(self) -> None:
-        tabs = getattr(self, "_settings_tabs", None)
-        if tabs is None:
-            return
-        for i in range(tabs.count()):
-            if tabs.tabText(i) == "Категории":
-                tabs.setCurrentIndex(i)
-                return
+    def _open_product_categories(self) -> None:
+        dlg = CategoriesDialog(self.categories, self)
+        dlg.exec_()
 
     @staticmethod
     def _dash(value: object) -> str:
@@ -420,10 +426,20 @@ class SettingsPage(QWidget):
             ),
         )
 
-    # --- Categories ---
-    def _build_categories_tab(self) -> QWidget:
-        w = QWidget()
-        v = QVBoxLayout(w)
+class CategoriesDialog(QDialog):
+    def __init__(self, categories: CategoryService, parent: Optional[QWidget] = None) -> None:
+        super(CategoriesDialog, self).__init__(parent)
+        self.categories = categories
+        self.setWindowTitle("Категории товаров")
+        prepare_modal_dialog(
+            self,
+            maximized=True,
+            default_size=(560, 420),
+            minimum_size=(480, 360),
+        )
+        v = QVBoxLayout(self)
+        v.setContentsMargins(24, 24, 24, 24)
+        v.setSpacing(12)
         bar = QHBoxLayout()
         add = QPushButton("Добавить строку")
         add.clicked.connect(self._cat_add_row)
@@ -441,9 +457,14 @@ class SettingsPage(QWidget):
             "Используется для оценки палет после синхронизации и печати стикеров по категориям."
         )
         note.setObjectName("hint")
+        note.setWordWrap(True)
         v.addWidget(note)
+        close_btn = QDialogButtonBox(QDialogButtonBox.Close)
+        close_btn.button(QDialogButtonBox.Close).setObjectName("secondary")
+        close_btn.rejected.connect(self.reject)
+        close_btn.accepted.connect(self.accept)
+        v.addWidget(close_btn)
         self.reload_categories_table()
-        return w
 
     def reload_categories_table(self) -> None:
         rows = self.categories.list_all()
@@ -473,7 +494,9 @@ class SettingsPage(QWidget):
                     boxes = int(boxes_raw)
                 except ValueError:
                     QMessageBox.warning(
-                        self, "Категории", "Неверное число коробов в строке {}".format(r + 1)
+                        self,
+                        "Категории",
+                        "Неверное число коробов в строке {}".format(r + 1),
                     )
                     return
             if name:
@@ -490,12 +513,13 @@ class SourceEditDialog(QDialog):
         prepare_modal_dialog(
             self,
             maximized=True,
-            default_size=(480, 320),
-            minimum_size=(420, 280),
+            default_size=(480, 360),
+            minimum_size=(420, 300),
         )
         self.name = ""
         self.api_key = ""
         self.enabled = True
+        self.lookback_days = 2
         form = QFormLayout(self)
         form.setContentsMargins(24, 24, 24, 24)
         form.setHorizontalSpacing(16)
@@ -508,10 +532,22 @@ class SourceEditDialog(QDialog):
         )
         if src and src.get("api_key"):
             self.key_edit.setText("")  # don't show full key; require re-entry to change
+        self.lookback_spin = QSpinBox()
+        self.lookback_spin.setRange(1, 30)
+        self.lookback_spin.setSuffix(" дн.")
+        try:
+            initial_lookback = int((src or {}).get("lookback_days") or 2)
+        except (TypeError, ValueError):
+            initial_lookback = 2
+        self.lookback_spin.setValue(max(1, min(initial_lookback, 30)))
+        self.lookback_spin.setToolTip(
+            "За сколько дней назад подтягивать заказы и поставки при синхронизации"
+        )
         self.enabled_chk = QCheckBox("Включён")
         self.enabled_chk.setChecked(bool(int((src or {}).get("is_enabled", 1))))
         form.addRow("Название", self.name_edit)
         form.addRow("API-ключ", self.key_edit)
+        form.addRow("Глубина синхр.", self.lookback_spin)
         form.addRow("", self.enabled_chk)
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         buttons.button(QDialogButtonBox.Cancel).setObjectName("secondary")
@@ -526,6 +562,7 @@ class SourceEditDialog(QDialog):
         if self._src and not self.api_key:
             self.api_key = str(self._src.get("api_key") or "")
         self.enabled = self.enabled_chk.isChecked()
+        self.lookback_days = int(self.lookback_spin.value())
         super(SourceEditDialog, self).accept()
 
 

@@ -21,6 +21,7 @@ CREATE TABLE IF NOT EXISTS supply_sources (
     marketplace TEXT NOT NULL DEFAULT 'wb',
     api_key TEXT NOT NULL DEFAULT '',
     is_enabled INTEGER NOT NULL DEFAULT 1,
+    lookback_days INTEGER NOT NULL DEFAULT 2,
     created_at TEXT NOT NULL,
     last_synced_at TEXT
 );
@@ -145,6 +146,7 @@ class Database:
         with self.connect() as conn:
             conn.executescript(SCHEMA_SQL)
             self._migrate_product_photos(conn)
+            self._migrate_supply_sources(conn)
             conn.commit()
 
     @staticmethod
@@ -162,6 +164,19 @@ class Database:
                 conn.execute(
                     "ALTER TABLE product_photos ADD COLUMN {} {}".format(name, decl)
                 )
+
+    @staticmethod
+    def _migrate_supply_sources(conn: sqlite3.Connection) -> None:
+        """Add newer supply_sources columns on existing SQLite databases."""
+        cols = {
+            str(r[1])
+            for r in conn.execute("PRAGMA table_info(supply_sources)").fetchall()
+        }
+        if "lookback_days" not in cols:
+            conn.execute(
+                "ALTER TABLE supply_sources ADD COLUMN lookback_days "
+                "INTEGER NOT NULL DEFAULT 2"
+            )
 
     @contextmanager
     def cursor(self) -> Iterator[sqlite3.Cursor]:

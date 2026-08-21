@@ -206,7 +206,7 @@ def sync_source(
     db: Database,
     source_id: int,
     api_key: str,
-    lookback_days: int = 3,
+    lookback_days: int = 2,
     stop_requested: Optional[Callable[[], bool]] = None,
     progress: Optional[Callable[[str, int], None]] = None,
 ) -> Dict[str, Any]:

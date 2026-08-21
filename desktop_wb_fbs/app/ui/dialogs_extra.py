@@ -738,56 +738,60 @@ def _fmt_order_ids(ids: List[Any], limit: int = 40) -> str:
     return shown
 
 
+def _ru_orders_word(count: int) -> str:
+    n = abs(int(count))
+    mod10 = n % 10
+    mod100 = n % 100
+    if mod10 == 1 and mod100 != 11:
+        return "заказ"
+    if 2 <= mod10 <= 4 and not (12 <= mod100 <= 14):
+        return "заказа"
+    return "заказов"
+
+
+def _group_kind_label(group: Dict[str, Any]) -> str:
+    label = str(group.get("label") or "").strip()
+    if label:
+        return label
+    return "B2B" if group.get("is_b2b") else "не B2B"
+
+
 def show_collect_mgt_result(parent: Optional[QWidget], data: Dict[str, Any]) -> None:
-    """Web ``_wbFbsCollectMgtShowResult`` — detailed outcome after collect."""
+    """Web ``_wbFbsCollectMgtShowResult`` — structured outcome dialog."""
+    dlg = CollectMgtResultDialog(data if isinstance(data, dict) else {}, parent)
+    dlg.exec_()
+
+
+def _collect_mgt_result_summary(data: Dict[str, Any]) -> str:
+    """Short left-aligned summary; details go into sections below."""
     ok = bool(data.get("ok"))
-    title = "Готово" if ok else "Есть проблемы"
-    lines = [str(data.get("message") or "")]
-    for g in data.get("groups") or []:
-        if isinstance(g, dict) and g.get("message"):
-            lines.append("• {}".format(g.get("message")))
-    created = data.get("created_supplies") or []
-    if created:
-        lines.append("")
-        lines.append("Созданы поставки:")
-        for s in created:
-            if isinstance(s, dict):
-                lines.append("• {}".format(s.get("name") or s.get("supply_id") or ""))
-    errors = data.get("errors") or []
-    if errors:
-        lines.append("")
-        lines.append("Ошибки:")
-        for e in errors:
-            lines.append("• {}".format(e))
-    warnings = data.get("warnings") or []
-    if warnings:
-        lines.append("")
-        lines.append("Предупреждения:")
-        for w in warnings:
-            lines.append("• {}".format(w))
+    added = int(data.get("added") or 0)
+    planned = int(data.get("planned_live") or 0)
     remaining = data.get("remaining_in_new")
     if remaining is None:
         remaining = data.get("not_added") or []
-    if remaining:
-        lines.append("")
-        lines.append(
-            "Остались в «Новых» ({}): {}".format(
-                len(remaining), _fmt_order_ids(remaining)
-            )
-        )
-    skipped = data.get("skipped_cancelled") or []
-    if skipped:
-        lines.append("")
-        lines.append(
-            "Пропущено — уже не new / отмена на WB ({}): {}".format(
-                len(skipped), _fmt_order_ids(skipped)
-            )
-        )
-    text_msg = "\n".join(lines).strip() or "Готово"
+    rem_n = len(list(remaining or []))
+    errors = [e for e in (data.get("errors") or []) if str(e).strip()]
     if ok:
-        QMessageBox.information(parent, title, text_msg)
-    else:
-        QMessageBox.warning(parent, title, text_msg)
+        if added > 0:
+            return "Добавлено {} {}.".format(added, _ru_orders_word(added))
+        return "Сборка МГТ завершена."
+    if added > 0 and planned > 0:
+        return "Частично: добавлено {} из {}. В «Новых» осталось {}.".format(
+            added, planned, rem_n
+        )
+    if errors:
+        return "Не удалось собрать МГТ-заказы."
+    raw = str(data.get("message") or "").strip()
+    if raw:
+        for marker in (" Пропущено (отмена/не new):", " Предупреждений:"):
+            idx = raw.find(marker)
+            if idx >= 0:
+                raw = raw[:idx].rstrip()
+        if raw and not raw.endswith("."):
+            raw += "."
+        return raw or "Сборка МГТ завершилась с ошибками."
+    return "Нечего добавлять."
 
 
 def _add_one_supply_label(group: Dict[str, Any]) -> str:
@@ -822,6 +826,151 @@ def preview_force_create(preview: Dict[str, Any]) -> Dict[str, Any]:
     return out
 
 
+class CollectMgtResultDialog(QDialog):
+    """Structured result after collect MGT — left-aligned sections, not QMessageBox."""
+
+    def __init__(
+        self, data: Dict[str, Any], parent: Optional[QWidget] = None
+    ) -> None:
+        super(CollectMgtResultDialog, self).__init__(parent)
+        ok = bool(data.get("ok"))
+        self.setWindowTitle("Готово" if ok else "Есть проблемы")
+        prepare_modal_dialog(
+            self,
+            maximized=False,
+            default_size=(560, 420),
+            minimum_size=(440, 300),
+        )
+        root = QVBoxLayout(self)
+        root.setContentsMargins(24, 24, 24, 24)
+        root.setSpacing(16)
+
+        title = QLabel("Готово" if ok else "Есть проблемы")
+        title.setObjectName("dialogTitle")
+        title.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        root.addWidget(title)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        body = QWidget()
+        body.setObjectName("mgtResultBody")
+        lay = QVBoxLayout(body)
+        lay.setContentsMargins(0, 0, 8, 0)
+        lay.setSpacing(14)
+
+        summary = _collect_mgt_result_summary(data)
+        summary_lab = QLabel(summary)
+        summary_lab.setObjectName("mgtResultSummaryOk" if ok else "mgtResultSummaryErr")
+        summary_lab.setWordWrap(True)
+        summary_lab.setAlignment(Qt.AlignLeft | Qt.AlignTop)
+        lay.addWidget(summary_lab)
+
+        groups = [
+            g
+            for g in (data.get("groups") or [])
+            if isinstance(g, dict)
+            and (
+                str(g.get("message") or "").strip()
+                or int(g.get("added") or 0) > 0
+            )
+        ]
+        if groups:
+            lay.addWidget(self._section_title("По группам"))
+            for g in groups:
+                msg = str(g.get("message") or "").strip()
+                if not msg:
+                    kind = _group_kind_label(g)
+                    added_n = int(g.get("added") or 0)
+                    msg = "{}: добавлено {}".format(kind, added_n)
+                lay.addWidget(self._bullet(msg))
+
+        created = [
+            s for s in (data.get("created_supplies") or []) if isinstance(s, dict)
+        ]
+        if created:
+            lay.addWidget(self._section_title("Созданы поставки"))
+            for s in created:
+                name = str(s.get("name") or s.get("supply_id") or "").strip()
+                if name:
+                    lay.addWidget(self._bullet(name))
+
+        errors = [str(e).strip() for e in (data.get("errors") or []) if str(e).strip()]
+        if errors:
+            err_title = self._section_title("Ошибки")
+            err_title.setObjectName("mgtResultSectionErr")
+            lay.addWidget(err_title)
+            for e in errors:
+                lab = self._bullet(e)
+                lab.setObjectName("mgtResultBulletErr")
+                lay.addWidget(lab)
+
+        warnings = [
+            str(w).strip() for w in (data.get("warnings") or []) if str(w).strip()
+        ]
+        if warnings:
+            lay.addWidget(self._section_title("Предупреждения"))
+            for w in warnings:
+                lay.addWidget(self._bullet(w))
+
+        remaining = data.get("remaining_in_new")
+        if remaining is None:
+            remaining = data.get("not_added") or []
+        remaining_ids = list(remaining or [])
+        if remaining_ids:
+            rem_title = self._section_title(
+                "Остались в «Новых» ({})".format(len(remaining_ids))
+            )
+            rem_title.setObjectName("mgtResultSectionErr")
+            lay.addWidget(rem_title)
+            rem = QLabel(_fmt_order_ids(remaining_ids))
+            rem.setObjectName("mgtResultIds")
+            rem.setWordWrap(True)
+            rem.setAlignment(Qt.AlignLeft | Qt.AlignTop)
+            lay.addWidget(rem)
+
+        skipped = list(data.get("skipped_cancelled") or [])
+        if skipped:
+            lay.addWidget(
+                self._section_title(
+                    "Пропущено — уже не new / отмена на WB ({})".format(len(skipped))
+                )
+            )
+            sk = QLabel(_fmt_order_ids(skipped))
+            sk.setObjectName("mgtResultIds")
+            sk.setWordWrap(True)
+            sk.setAlignment(Qt.AlignLeft | Qt.AlignTop)
+            lay.addWidget(sk)
+
+        lay.addStretch(1)
+        scroll.setWidget(body)
+        root.addWidget(scroll, 1)
+
+        actions = QHBoxLayout()
+        actions.addStretch(1)
+        ok_btn = QPushButton("Понятно")
+        ok_btn.setObjectName("bottomPrimary")
+        ok_btn.setMinimumHeight(40)
+        ok_btn.clicked.connect(self.accept)
+        actions.addWidget(ok_btn)
+        root.addLayout(actions)
+
+    @staticmethod
+    def _section_title(text: str) -> QLabel:
+        lab = QLabel(text)
+        lab.setObjectName("mgtResultSection")
+        lab.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        return lab
+
+    @staticmethod
+    def _bullet(text: str) -> QLabel:
+        lab = QLabel("• {}".format(text))
+        lab.setObjectName("mgtResultBullet")
+        lab.setWordWrap(True)
+        lab.setAlignment(Qt.AlignLeft | Qt.AlignTop)
+        return lab
+
+
 class CollectMgtAddConfirmDialog(QDialog):
     """Confirm adding MGT into the single active compatible supply.
 
@@ -854,53 +1003,101 @@ class CollectMgtAddConfirmDialog(QDialog):
         prepare_modal_dialog(
             self,
             maximized=False,
-            default_size=(520, 280),
-            minimum_size=(420, 220),
+            default_size=(560, 360),
+            minimum_size=(460, 280),
         )
         root = QVBoxLayout(self)
         root.setContentsMargins(24, 24, 24, 24)
         root.setSpacing(16)
+
         title = QLabel("Собрать все МГТ-заказы")
         title.setObjectName("dialogTitle")
+        title.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         root.addWidget(title)
+
+        lead = QLabel(
+            "В «Новых» есть МГТ-заказы. Их можно добавить "
+            "в уже открытые поставки:"
+        )
+        lead.setObjectName("mgtConfirmLead")
+        lead.setWordWrap(True)
+        lead.setAlignment(Qt.AlignLeft | Qt.AlignTop)
+        root.addWidget(lead)
 
         groups = [
             g
             for g in (self.preview.get("groups") or [])
             if isinstance(g, dict) and str(g.get("mode") or "") == "add_one"
         ]
-        lines = []  # type: List[str]
+        cards = QVBoxLayout()
+        cards.setSpacing(10)
+        if not groups:
+            empty = QLabel("Нет групп для добавления в существующую поставку.")
+            empty.setObjectName("hint")
+            empty.setWordWrap(True)
+            empty.setAlignment(Qt.AlignLeft | Qt.AlignTop)
+            cards.addWidget(empty)
         for g in groups:
             sname = _add_one_supply_label(g)
             count = int(g.get("order_count") or len(g.get("order_ids") or []) or 0)
-            label = str(g.get("label") or "").strip()
-            prefix = "{}: ".format(label) if label else ""
-            lines.append(
-                "{}Вы точно хотите добавить {} заказ(ов) в поставку «{}»?".format(
-                    prefix, count, sname
+            kind = _group_kind_label(g)
+            card = QFrame()
+            card.setObjectName("mgtConfirmCard")
+            card_lay = QVBoxLayout(card)
+            card_lay.setContentsMargins(14, 12, 14, 12)
+            card_lay.setSpacing(6)
+            kind_lab = QLabel(kind)
+            kind_lab.setObjectName("mgtConfirmKind")
+            kind_lab.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+            detail = QLabel(
+                "Добавить {} {} в поставку «{}»".format(
+                    count, _ru_orders_word(count), sname or "—"
                 )
             )
-        ask = QLabel(
-            "\n\n".join(lines) if lines else "Добавить заказы в существующую поставку?"
+            detail.setObjectName("mgtConfirmDetail")
+            detail.setWordWrap(True)
+            detail.setAlignment(Qt.AlignLeft | Qt.AlignTop)
+            card_lay.addWidget(kind_lab)
+            card_lay.addWidget(detail)
+            cards.addWidget(card)
+        root.addLayout(cards)
+
+        hint = QLabel(
+            "«Да» — добавить в эти поставки. "
+            "«Новая поставка» — создать отдельно. "
+            "«Нет» — отмена."
         )
-        ask.setWordWrap(True)
-        root.addWidget(ask)
+        hint.setObjectName("mgtConfirmHint")
+        hint.setWordWrap(True)
+        hint.setAlignment(Qt.AlignLeft | Qt.AlignTop)
+        root.addWidget(hint)
 
         self.err = QLabel("")
         self.err.setObjectName("hint")
         self.err.setWordWrap(True)
         self.err.setStyleSheet("color: #b91c1c;")
+        self.err.setAlignment(Qt.AlignLeft | Qt.AlignTop)
         self.err.hide()
         root.addWidget(self.err)
         root.addStretch(1)
 
         row = QHBoxLayout()
-        row.setSpacing(8)
+        row.setSpacing(10)
+        btn_h = 40
         self.yes_btn = MgtCollectButton(self, idle_text="Да")
+        self.yes_btn.setMinimumHeight(btn_h)
+        self.yes_btn.setMaximumHeight(btn_h)
+        self.yes_btn.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Fixed)
         self.new_btn = QPushButton("Новая поставка")
         self.new_btn.setObjectName("secondary")
+        self.new_btn.setMinimumHeight(btn_h)
+        self.new_btn.setMaximumHeight(btn_h)
+        self.new_btn.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Fixed)
         self.no_btn = QPushButton("Нет")
         self.no_btn.setObjectName("secondary")
+        self.no_btn.setMinimumHeight(btn_h)
+        self.no_btn.setMaximumHeight(btn_h)
+        self.no_btn.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Fixed)
         self.yes_btn.clicked.connect(self._on_yes)
         self.new_btn.clicked.connect(self._on_new)
         self.no_btn.clicked.connect(self.reject)

@@ -1494,6 +1494,94 @@ QToolButton#trbxBoxDeleteBtn:hover {
     background: #fef2f2;
     border-color: #fecaca;
 }
+
+/* ========== Collect MGT confirm / result modals ========== */
+QLabel#mgtConfirmLead {
+    font-size: 14px;
+    font-weight: 500;
+    color: #0f1f33;
+    line-height: 1.45;
+}
+QLabel#mgtConfirmHint {
+    font-size: 12px;
+    font-weight: 500;
+    color: #5f7691;
+    line-height: 1.4;
+}
+QFrame#mgtConfirmCard {
+    background: #f2f8ff;
+    border: 1px solid #d9e8f7;
+    border-radius: 12px;
+}
+QLabel#mgtConfirmKind {
+    font-size: 12px;
+    font-weight: 700;
+    color: #5f7691;
+    letter-spacing: 0.02em;
+}
+QLabel#mgtConfirmDetail {
+    font-size: 14px;
+    font-weight: 600;
+    color: #0f1f33;
+    line-height: 1.4;
+}
+QWidget#mgtResultBody {
+    background: transparent;
+}
+QLabel#mgtResultSummaryOk {
+    font-size: 14px;
+    font-weight: 600;
+    color: #166534;
+    line-height: 1.45;
+    background: #f0fdf4;
+    border: 1px solid #bbf7d0;
+    border-radius: 10px;
+    padding: 12px 14px;
+}
+QLabel#mgtResultSummaryErr {
+    font-size: 14px;
+    font-weight: 600;
+    color: #b91c1c;
+    line-height: 1.45;
+    background: #fef2f2;
+    border: 1px solid #fecaca;
+    border-radius: 10px;
+    padding: 12px 14px;
+}
+QLabel#mgtResultSection {
+    font-size: 13px;
+    font-weight: 700;
+    color: #0f1f33;
+    padding-top: 4px;
+}
+QLabel#mgtResultSectionErr {
+    font-size: 13px;
+    font-weight: 700;
+    color: #b91c1c;
+    padding-top: 4px;
+}
+QLabel#mgtResultBullet {
+    font-size: 13px;
+    font-weight: 500;
+    color: #0f1f33;
+    line-height: 1.4;
+    padding-left: 2px;
+}
+QLabel#mgtResultBulletErr {
+    font-size: 13px;
+    font-weight: 500;
+    color: #b91c1c;
+    line-height: 1.4;
+    padding-left: 2px;
+}
+QLabel#mgtResultIds {
+    font-size: 12px;
+    font-weight: 500;
+    color: #5f7691;
+    line-height: 1.45;
+    font-family: ui-monospace, "SF Mono", "Cascadia Mono", "Consolas", monospace;
+    padding-left: 2px;
+}
 """
 
 

@@ -887,8 +887,9 @@ class CollectMgtAddConfirmDialog(QDialog):
         root.addWidget(ask)
 
         self.err = QLabel("")
-        self.err.setObjectName("errorText")
+        self.err.setObjectName("hint")
         self.err.setWordWrap(True)
+        self.err.setStyleSheet("color: #b91c1c;")
         self.err.hide()
         root.addWidget(self.err)
         root.addStretch(1)

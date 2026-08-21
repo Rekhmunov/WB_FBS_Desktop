@@ -34,13 +34,21 @@ from app.wb import default_mgt_supply_name
 
 
 class MgtCollectButton(QPushButton):
-    """Purple МГТ action — idle «Собрать», busy spinner + status text."""
+    """Purple МГТ action — idle label, busy spinner + status text."""
 
     IDLE_TEXT = "Собрать"
     BUSY_TEXT = "Собираем заказы в поставку"
 
-    def __init__(self, parent: Optional[QWidget] = None) -> None:
-        super(MgtCollectButton, self).__init__(self.IDLE_TEXT, parent)
+    def __init__(
+        self,
+        parent: Optional[QWidget] = None,
+        *,
+        idle_text: Optional[str] = None,
+        busy_text: Optional[str] = None,
+    ) -> None:
+        self._idle_text = str(idle_text or self.IDLE_TEXT)
+        self._busy_text = str(busy_text or self.BUSY_TEXT)
+        super(MgtCollectButton, self).__init__(self._idle_text, parent)
         self.setObjectName("mgtBtn")
         self.setCursor(Qt.PointingHandCursor)
         self.setMinimumHeight(40)
@@ -58,14 +66,14 @@ class MgtCollectButton(QPushButton):
         self.setProperty("loading", self._loading)
         self.setEnabled(not self._loading)
         if self._loading:
-            self.setText(self.BUSY_TEXT)
+            self.setText(self._busy_text)
             self.setCursor(Qt.ArrowCursor)
             if not self._timer.isActive():
                 self._timer.start(40)
         else:
             self._timer.stop()
             self._angle = 0
-            self.setText(self.IDLE_TEXT)
+            self.setText(self._idle_text)
             self.setCursor(Qt.PointingHandCursor)
         self.style().unpolish(self)
         self.style().polish(self)
@@ -77,7 +85,7 @@ class MgtCollectButton(QPushButton):
         if not self._loading:
             return hint
         fm = QFontMetrics(self.font())
-        text_w = fm.horizontalAdvance(self.BUSY_TEXT)
+        text_w = fm.horizontalAdvance(self._busy_text)
         # Spinner (16) + gap (8) + text + horizontal padding.
         return hint.expandedTo(
             QSize(text_w + 16 + 8 + 32, max(40, hint.height()))
@@ -99,7 +107,7 @@ class MgtCollectButton(QPushButton):
         self.style().drawControl(QStyle.CE_PushButton, opt, painter, self)
 
         fm = QFontMetrics(self.font())
-        text = self.BUSY_TEXT
+        text = self._busy_text
         text_w = fm.horizontalAdvance(text)
         gap = 8
         spin = 16
@@ -819,15 +827,29 @@ class CollectMgtAddConfirmDialog(QDialog):
 
     Buttons: Да / Новая поставка / Нет.
     ``choice`` is ``"add"`` or ``"create"`` after accept.
+    When ``choice == "add"``, collect runs inside this dialog (loading on Да)
+    and ``result_payload`` holds the execute result — same busy UX as
+    ``CollectMgtDialog`` «Собрать».
     """
 
     def __init__(
         self,
         preview: Dict[str, Any],
+        source: Dict[str, Any],
+        db: Database,
+        orders: OrdersService,
         parent: Optional[QWidget] = None,
     ) -> None:
         super(CollectMgtAddConfirmDialog, self).__init__(parent)
+        from app.services.collect_mgt import CollectMgtService
+
         self.choice = ""  # type: str
+        self.result_payload = None  # type: Optional[Dict[str, Any]]
+        self.preview = preview if isinstance(preview, dict) else {}
+        self.source = source
+        self.svc = CollectMgtService(db, orders)
+        self._busy = False
+        self._collect_worker = None  # type: Optional[_CollectMgtWorker]
         self.setWindowTitle("Собрать все МГТ-заказы")
         prepare_modal_dialog(
             self,
@@ -844,7 +866,7 @@ class CollectMgtAddConfirmDialog(QDialog):
 
         groups = [
             g
-            for g in (preview.get("groups") or [])
+            for g in (self.preview.get("groups") or [])
             if isinstance(g, dict) and str(g.get("mode") or "") == "add_one"
         ]
         lines = []  # type: List[str]
@@ -858,35 +880,123 @@ class CollectMgtAddConfirmDialog(QDialog):
                     prefix, count, sname
                 )
             )
-        ask = QLabel("\n\n".join(lines) if lines else "Добавить заказы в существующую поставку?")
+        ask = QLabel(
+            "\n\n".join(lines) if lines else "Добавить заказы в существующую поставку?"
+        )
         ask.setWordWrap(True)
         root.addWidget(ask)
+
+        self.err = QLabel("")
+        self.err.setObjectName("errorText")
+        self.err.setWordWrap(True)
+        self.err.hide()
+        root.addWidget(self.err)
         root.addStretch(1)
 
         row = QHBoxLayout()
         row.setSpacing(8)
-        yes_btn = QPushButton("Да")
-        yes_btn.setObjectName("mgtBtn")
-        new_btn = QPushButton("Новая поставка")
-        new_btn.setObjectName("secondary")
-        no_btn = QPushButton("Нет")
-        no_btn.setObjectName("secondary")
-        yes_btn.clicked.connect(self._on_yes)
-        new_btn.clicked.connect(self._on_new)
-        no_btn.clicked.connect(self.reject)
-        row.addWidget(yes_btn)
-        row.addWidget(new_btn)
+        self.yes_btn = MgtCollectButton(self, idle_text="Да")
+        self.new_btn = QPushButton("Новая поставка")
+        self.new_btn.setObjectName("secondary")
+        self.no_btn = QPushButton("Нет")
+        self.no_btn.setObjectName("secondary")
+        self.yes_btn.clicked.connect(self._on_yes)
+        self.new_btn.clicked.connect(self._on_new)
+        self.no_btn.clicked.connect(self.reject)
+        row.addWidget(self.yes_btn)
+        row.addWidget(self.new_btn)
         row.addStretch(1)
-        row.addWidget(no_btn)
+        row.addWidget(self.no_btn)
         root.addLayout(row)
 
+    def _add_decisions(self) -> List[Dict[str, Any]]:
+        return [
+            {
+                "group_key": str(g.get("group_key") or ""),
+                "is_b2b": bool(g.get("is_b2b")),
+                "action": "add",
+                "supply_id": str(g.get("default_supply_id") or ""),
+            }
+            for g in (self.preview.get("groups") or [])
+            if isinstance(g, dict) and str(g.get("mode") or "") == "add_one"
+        ]
+
+    def _set_busy(self, busy: bool) -> None:
+        self._busy = bool(busy)
+        self.yes_btn.set_loading(self._busy)
+        self.new_btn.setEnabled(not self._busy)
+        self.no_btn.setEnabled(not self._busy)
+
     def _on_yes(self) -> None:
+        if self._busy:
+            return
+        decisions = self._add_decisions()
+        if not decisions:
+            self.err.setText("Нет групп для добавления")
+            self.err.show()
+            return
+        self.err.hide()
         self.choice = "add"
-        self.accept()
+        self._set_busy(True)
+        worker = _CollectMgtWorker(
+            self.svc,
+            int(self.source["id"]),
+            str(self.source.get("api_key") or ""),
+            decisions,
+            None,
+        )
+        self._collect_worker = worker
+        worker.finished_ok.connect(self._on_collect_ok)
+        worker.failed.connect(self._on_collect_failed)
+        worker.finished.connect(self._on_collect_worker_finished)
+        worker.start()
 
     def _on_new(self) -> None:
+        if self._busy:
+            return
         self.choice = "create"
         self.accept()
+
+    def _disconnect_collect_worker(self) -> None:
+        worker = self._collect_worker
+        self._collect_worker = None
+        if worker is None:
+            return
+        for name in ("finished_ok", "failed", "finished"):
+            signal = getattr(worker, name, None)
+            if signal is None:
+                continue
+            try:
+                signal.disconnect()
+            except Exception:
+                pass
+        worker.deleteLater()
+
+    def _on_collect_worker_finished(self) -> None:
+        self._disconnect_collect_worker()
+
+    def _on_collect_ok(self, result: object) -> None:
+        self.result_payload = result if isinstance(result, dict) else None
+        self._set_busy(False)
+        self._disconnect_collect_worker()
+        self.accept()
+
+    def _on_collect_failed(self, message: str) -> None:
+        self.err.setText(str(message or "Ошибка сбора МГТ"))
+        self.err.show()
+        self._set_busy(False)
+        self._disconnect_collect_worker()
+
+    def reject(self) -> None:  # type: ignore[override]
+        if self._busy:
+            return
+        super(CollectMgtAddConfirmDialog, self).reject()
+
+    def closeEvent(self, event) -> None:  # noqa: N802
+        if self._busy:
+            event.ignore()
+            return
+        super(CollectMgtAddConfirmDialog, self).closeEvent(event)
 
 
 class CollectMgtDialog(QDialog):

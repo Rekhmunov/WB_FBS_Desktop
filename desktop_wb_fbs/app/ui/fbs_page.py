@@ -1225,26 +1225,13 @@ class FbsPage(QWidget):
                 preview_force_create,
             )
 
-            confirm = CollectMgtAddConfirmDialog(preview, self)
+            confirm = CollectMgtAddConfirmDialog(
+                preview, src, self.db, self.orders, self
+            )
             if not confirm.exec_():
                 return
             if confirm.choice == "add":
-                decisions = [
-                    {
-                        "group_key": str(g.get("group_key") or ""),
-                        "is_b2b": bool(g.get("is_b2b")),
-                        "action": "add",
-                        "supply_id": str(g.get("default_supply_id") or ""),
-                    }
-                    for g in groups
-                ]
-                try:
-                    result = svc.execute(
-                        int(src["id"]), str(src["api_key"]), decisions
-                    )
-                except Exception as exc:
-                    QMessageBox.critical(self, "МГТ", str(exc))
-                    return
+                result = confirm.result_payload
             else:
                 dlg = CollectMgtDialog(
                     self.db,

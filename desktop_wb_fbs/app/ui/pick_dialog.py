@@ -747,7 +747,7 @@ class PickDialog(QDialog):
         if not ok:
             self.row_errors[oid] = err
             self._set_info(err)
-            self._patch_sku_cell(oid)
+            self._refresh_row(oid)
             self._apply_filters()
             return
         self.row_errors.pop(oid, None)
@@ -763,7 +763,8 @@ class PickDialog(QDialog):
         self._sync_session_pick_rows()
         self._set_info("", ok=True)
         self._update_counter()
-        self._patch_sku_cell(oid)
+        # Full row refresh clears pending highlight on order/product columns.
+        self._refresh_row(oid)
         self._apply_filters()
 
     def _print_sticker(self, order_id: int) -> None:

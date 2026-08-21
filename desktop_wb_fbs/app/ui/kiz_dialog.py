@@ -1107,7 +1107,7 @@ class KizDialog(QDialog):
         if not ok:
             self.row_errors[oid] = err
             self._set_info(err)
-            self._patch_codes_cell(oid)
+            self._refresh_row(oid)
             self._apply_filters()
             return
         dup = find_existing_mark(self.rows, code)
@@ -1115,13 +1115,13 @@ class KizDialog(QDialog):
             self._set_info(
                 "Этот КИЗ уже привязан к заказу {}".format(dup.get("order_id"))
             )
-            self._patch_codes_cell(oid)
+            self._refresh_row(oid)
             return
         self.row_errors.pop(oid, None)
         codes = [c for c in self._row_codes(row) if str(c).strip()]
         if code in codes:
             self._set_info("Этот КИЗ уже добавлен")
-            self._patch_codes_cell(oid)
+            self._refresh_row(oid)
             return
         placed = False
         mutable = self._row_codes(row)
@@ -1141,7 +1141,8 @@ class KizDialog(QDialog):
         self.data_changed = True
         self._set_info("", ok=True)
         self._update_counter()
-        self._patch_codes_cell(oid)
+        # Full row refresh clears pending highlight on order/product columns.
+        self._refresh_row(oid)
         self._apply_filters()
         self._update_save_button()
 

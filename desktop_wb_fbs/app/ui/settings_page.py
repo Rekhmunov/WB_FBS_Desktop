@@ -68,6 +68,7 @@ class SettingsPage(QWidget):
         tabs.tabBar().setElideMode(Qt.ElideNone)
         tabs.tabBar().setUsesScrollButtons(True)
         tabs.tabBar().setExpanding(False)
+        self._settings_tabs = tabs
         tabs.addTab(self._build_sources_tab(), "Источники")
         tabs.addTab(self._build_products_tab(), "Товары")
         tabs.addTab(self._build_categories_tab(), "Категории")
@@ -177,19 +178,22 @@ class SettingsPage(QWidget):
         self.reload_sources_table()
         self.sources_changed.emit()
 
-    # --- Products ---
+    # --- Products (web: Обратная связь → Настройки → Товары) ---
     def _build_products_tab(self) -> QWidget:
         w = QWidget()
         v = QVBoxLayout(w)
-        bar = QHBoxLayout()
-        add = QPushButton("Добавить")
-        add.clicked.connect(self.add_product)
-        edit = QPushButton("Изменить")
-        edit.setObjectName("secondary")
-        edit.clicked.connect(self.edit_product)
-        delete = QPushButton("Удалить")
-        delete.setObjectName("danger")
-        delete.clicked.connect(self.delete_product)
+        v.setContentsMargins(0, 8, 0, 0)
+        v.setSpacing(10)
+
+        head = QHBoxLayout()
+        head.setSpacing(8)
+        title = QLabel("Каталог товаров")
+        title.setObjectName("dialogTitle")
+        head.addWidget(title)
+        head.addStretch(1)
+        cats_btn = QPushButton("Категории товаров")
+        cats_btn.setObjectName("secondary")
+        cats_btn.clicked.connect(self._open_product_categories_tab)
         import_btn = QPushButton("Импорт")
         import_btn.setObjectName("secondary")
         import_btn.setToolTip(
@@ -197,37 +201,60 @@ class SettingsPage(QWidget):
             "(название, артикулы WB/Ozon/ЯМ, кратность, категория, GTIN)"
         )
         import_btn.clicked.connect(self.import_products)
-        bar.addWidget(add)
-        bar.addWidget(edit)
-        bar.addWidget(delete)
-        bar.addWidget(import_btn)
-        bar.addStretch(1)
-        v.addLayout(bar)
+        add = QPushButton("+ Добавить товар")
+        add.clicked.connect(self.add_product)
+        head.addWidget(cats_btn)
+        head.addWidget(import_btn)
+        head.addWidget(add)
+        v.addLayout(head)
+
+        self.prod_info = QLabel("Товаров: 0")
+        self.prod_info.setObjectName("hint")
+        v.addWidget(self.prod_info)
+
         self.prod_table = QTableWidget(0, 9)
         self.prod_table.setHorizontalHeaderLabels(
             [
                 "Фото",
-                "Название",
-                "Артикул",
-                "nmID",
-                "Ozon",
-                "Яндекс",
-                "В коробе",
-                "Категория",
-                "Без GTIN",
+                "Наименование",
+                "Артикул продавца",
+                "Артикул WB",
+                "SKU Ozon",
+                "Артикул ЯМ",
+                "Кратность в коробе",
+                "Категория товара",
+                "Действия",
             ]
         )
         self.prod_table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.prod_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.prod_table.verticalHeader().setVisible(False)
         self.prod_table.setColumnWidth(_PRODUCT_PHOTO_COL, _PRODUCT_PHOTO_SIZE + 16)
+        self.prod_table.setColumnWidth(8, 96)
         self.prod_table.horizontalHeader().setStretchLastSection(True)
+        self.prod_table.doubleClicked.connect(lambda _idx: self.edit_product())
         v.addWidget(self.prod_table, 1)
         self.reload_products_table()
         return w
 
+    def _open_product_categories_tab(self) -> None:
+        tabs = getattr(self, "_settings_tabs", None)
+        if tabs is None:
+            return
+        for i in range(tabs.count()):
+            if tabs.tabText(i) == "Категории":
+                tabs.setCurrentIndex(i)
+                return
+
+    @staticmethod
+    def _dash(value: object) -> str:
+        text = str(value or "").strip()
+        return text if text else "—"
+
     def reload_products_table(self) -> None:
         rows = self.products.list_all()
+        if hasattr(self, "prod_info") and self.prod_info is not None:
+            self.prod_info.setText("Товаров: {}".format(len(rows)))
         self.prod_table.setRowCount(len(rows))
         row_h = _PRODUCT_PHOTO_SIZE + 12
         for i, p in enumerate(rows):
@@ -237,7 +264,11 @@ class SettingsPage(QWidget):
             photo_lay.setContentsMargins(4, 4, 4, 4)
             photo_lay.setAlignment(Qt.AlignCenter)
             photo_lay.addWidget(
-                make_photo_label(p.get("photo_path"), size=_PRODUCT_PHOTO_SIZE)
+                make_photo_label(
+                    p.get("photo_path"),
+                    size=_PRODUCT_PHOTO_SIZE,
+                    placeholder="",
+                )
             )
             self.prod_table.setCellWidget(i, _PRODUCT_PHOTO_COL, photo_wrap)
 
@@ -248,26 +279,53 @@ class SettingsPage(QWidget):
                 Qt.UserRole, int(p["id"])
             )
             self.prod_table.setItem(
-                i, 2, QTableWidgetItem(str(p.get("supplier_article") or ""))
+                i, 2, QTableWidgetItem(self._dash(p.get("supplier_article")))
             )
-            self.prod_table.setItem(i, 3, QTableWidgetItem(str(p.get("wb_nmid") or "")))
+            self.prod_table.setItem(i, 3, QTableWidgetItem(self._dash(p.get("wb_nmid"))))
             self.prod_table.setItem(
-                i, 4, QTableWidgetItem(str(p.get("ozon_sku") or ""))
-            )
-            self.prod_table.setItem(
-                i, 5, QTableWidgetItem(str(p.get("yandex_offer_id") or ""))
+                i, 4, QTableWidgetItem(self._dash(p.get("ozon_sku")))
             )
             self.prod_table.setItem(
-                i, 6, QTableWidgetItem(str(p.get("box_qty") or ""))
+                i, 5, QTableWidgetItem(self._dash(p.get("yandex_offer_id")))
             )
-            self.prod_table.setItem(
-                i, 7, QTableWidgetItem(str(p.get("product_category") or ""))
-            )
+            box_qty = p.get("box_qty")
             self.prod_table.setItem(
                 i,
-                8,
-                QTableWidgetItem("да" if p.get("skip_kiz_gtin_check") else ""),
+                6,
+                QTableWidgetItem(
+                    "—"
+                    if box_qty in (None, "")
+                    else str(box_qty)
+                ),
             )
+            self.prod_table.setItem(
+                i, 7, QTableWidgetItem(self._dash(p.get("product_category")))
+            )
+
+            actions = QWidget()
+            actions_lay = QHBoxLayout(actions)
+            actions_lay.setContentsMargins(4, 0, 4, 0)
+            actions_lay.setSpacing(6)
+            edit_btn = QPushButton("✏")
+            edit_btn.setObjectName("secondary")
+            edit_btn.setFixedSize(32, 28)
+            edit_btn.setToolTip("Изменить")
+            edit_btn.setCursor(Qt.PointingHandCursor)
+            edit_btn.clicked.connect(
+                lambda _=False, pid=int(p["id"]): self._edit_product_by_id(pid)
+            )
+            del_btn = QPushButton("✕")
+            del_btn.setObjectName("danger")
+            del_btn.setFixedSize(32, 28)
+            del_btn.setToolTip("Удалить")
+            del_btn.setCursor(Qt.PointingHandCursor)
+            del_btn.clicked.connect(
+                lambda _=False, pid=int(p["id"]): self._delete_product_by_id(pid)
+            )
+            actions_lay.addWidget(edit_btn)
+            actions_lay.addWidget(del_btn)
+            actions_lay.addStretch(1)
+            self.prod_table.setCellWidget(i, 8, actions)
 
     def _selected_product_id(self) -> Optional[int]:
         row = self.prod_table.currentRow()
@@ -300,6 +358,9 @@ class SettingsPage(QWidget):
         pid = self._selected_product_id()
         if pid is None:
             return
+        self._edit_product_by_id(pid)
+
+    def _edit_product_by_id(self, pid: int) -> None:
         p = self.products.get(pid)
         if not p:
             return
@@ -326,6 +387,9 @@ class SettingsPage(QWidget):
         pid = self._selected_product_id()
         if pid is None:
             return
+        self._delete_product_by_id(pid)
+
+    def _delete_product_by_id(self, pid: int) -> None:
         if QMessageBox.question(self, "Удалить", "Удалить товар?") != QMessageBox.Yes:
             return
         self.products.delete(pid)

@@ -275,7 +275,9 @@ def make_status_pill(text: str, kind: str = "assembly") -> QLabel:
     return lab
 
 
-def make_photo_label(path: Optional[str], size: int = 72) -> QLabel:
+def make_photo_label(
+    path: Optional[str], size: int = 72, placeholder: str = "—"
+) -> QLabel:
     lab = QLabel()
     lab.setFixedSize(size, size)
     lab.setAlignment(Qt.AlignCenter)
@@ -299,10 +301,11 @@ def make_photo_label(path: Optional[str], size: int = 72) -> QLabel:
         if pix is not None and not pix.isNull():
             lab.setPixmap(pix)
             return lab
-    lab.setText("—")
-    lab.setStyleSheet(
-        lab.styleSheet() + " QLabel { color:#94a3b8; font-size:12px; }"
-    )
+    if placeholder:
+        lab.setText(placeholder)
+        lab.setStyleSheet(
+            lab.styleSheet() + " QLabel { color:#94a3b8; font-size:12px; }"
+        )
     return lab
 
 

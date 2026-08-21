@@ -1189,10 +1189,10 @@ QToolButton#iconBtn:hover {
     border-color: #c2d9f2;
 }
 QToolButton#kizRowMenu {
-    min-width: 32px;
-    max-width: 32px;
-    min-height: 32px;
-    max-height: 32px;
+    min-width: 36px;
+    max-width: 36px;
+    min-height: 36px;
+    max-height: 36px;
     padding: 0;
     color: #5f7691;
     border: 1px solid #d9e8f7;
@@ -1364,10 +1364,10 @@ QLineEdit#kizCodeInput[state="error"] {
     background: #fef2f2;
 }
 QToolButton#kizCodeRemove {
-    min-width: 32px;
-    max-width: 32px;
-    min-height: 32px;
-    max-height: 32px;
+    min-width: 36px;
+    max-width: 36px;
+    min-height: 36px;
+    max-height: 36px;
     padding: 0;
     color: #5f7691;
     border: 1px solid #d9e8f7;

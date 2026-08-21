@@ -28,9 +28,9 @@ from app.ui.format_helpers import (
 
 
 def standard_window_flags() -> Qt.WindowFlags:
-    """Native Windows title bar with minimize, maximize, and close."""
+    """Native title bar with min/max/close; Dialog type stays under one app window."""
     return (
-        Qt.Window
+        Qt.Dialog
         | Qt.WindowTitleHint
         | Qt.WindowSystemMenuHint
         | Qt.WindowMinimizeButtonHint
@@ -42,7 +42,12 @@ def standard_window_flags() -> Qt.WindowFlags:
 def fullscreen_parent(
     parent: Optional[QWidget], fullscreen: bool
 ) -> Optional[QWidget]:
-    return None if fullscreen else parent
+    """Always keep ``parent`` so child dialogs share the main taskbar entry.
+
+    Fullscreen/maximized is handled by window state, not by detaching the parent.
+    """
+    _ = fullscreen
+    return parent
 
 
 def init_maximized_window(

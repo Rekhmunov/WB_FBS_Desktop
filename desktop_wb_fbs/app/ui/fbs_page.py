@@ -1020,7 +1020,7 @@ class FbsPage(QWidget):
             self.orders,
             src,
             sid,
-            None,
+            self.window(),
             fullscreen=fullscreen,
         )
         dlg.exec_()

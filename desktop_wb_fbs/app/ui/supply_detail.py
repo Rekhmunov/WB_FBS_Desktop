@@ -1637,7 +1637,12 @@ class SupplyDetailDialog(QDialog):
         from app.ui.kiz_pick_dialogs import KizDialog
 
         dlg = KizDialog(
-            self.kiz, self.source_id, self.api_key, self.supply_id, fullscreen=True
+            self.kiz,
+            self.source_id,
+            self.api_key,
+            self.supply_id,
+            parent=self,
+            fullscreen=True,
         )
         dlg.exec_()
         if getattr(dlg, "data_changed", False):
@@ -1649,7 +1654,12 @@ class SupplyDetailDialog(QDialog):
         from app.ui.kiz_pick_dialogs import PickDialog
 
         dlg = PickDialog(
-            self.pick, self.source_id, self.api_key, self.supply_id, fullscreen=True
+            self.pick,
+            self.source_id,
+            self.api_key,
+            self.supply_id,
+            parent=self,
+            fullscreen=True,
         )
         dlg.exec_()
         if getattr(dlg, "data_changed", False):

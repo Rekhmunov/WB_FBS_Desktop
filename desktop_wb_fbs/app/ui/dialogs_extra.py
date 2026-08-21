@@ -1255,18 +1255,38 @@ class CollectMgtDialog(QDialog):
             return
         self.err.hide()
         self._set_collect_busy(True)
+        # Do not parent the worker to the dialog — accept()/close must not
+        # destroy a still-finishing QThread (same pattern as KIZ save).
         worker = _CollectMgtWorker(
             self.svc,
             int(self.source["id"]),
             str(self.source["api_key"]),
             decisions,
-            self,
+            None,
         )
         self._collect_worker = worker
         worker.finished_ok.connect(self._on_collect_ok)
         worker.failed.connect(self._on_collect_failed)
-        worker.finished.connect(worker.deleteLater)
+        worker.finished.connect(self._on_collect_worker_finished)
         worker.start()
+
+    def _disconnect_collect_worker(self) -> None:
+        worker = self._collect_worker
+        self._collect_worker = None
+        if worker is None:
+            return
+        for name in ("finished_ok", "failed", "finished"):
+            signal = getattr(worker, name, None)
+            if signal is None:
+                continue
+            try:
+                signal.disconnect()
+            except Exception:
+                pass
+        worker.deleteLater()
+
+    def _on_collect_worker_finished(self) -> None:
+        self._disconnect_collect_worker()
 
     def _set_collect_busy(self, busy: bool) -> None:
         self._busy = bool(busy)
@@ -1286,16 +1306,16 @@ class CollectMgtDialog(QDialog):
                     btn.setEnabled(not self._busy)
 
     def _on_collect_ok(self, result: object) -> None:
-        self._collect_worker = None
         self.result_payload = result if isinstance(result, dict) else None
         self._set_collect_busy(False)
+        self._disconnect_collect_worker()
         self.accept()
 
     def _on_collect_failed(self, message: str) -> None:
-        self._collect_worker = None
         self.err.setText(str(message or "Ошибка сбора МГТ"))
         self.err.show()
         self._set_collect_busy(False)
+        self._disconnect_collect_worker()
 
     def reject(self) -> None:  # type: ignore[override]
         if self._busy:

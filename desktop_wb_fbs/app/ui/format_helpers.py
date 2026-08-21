@@ -6,11 +6,59 @@ import re
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import QSize, Qt
 from PyQt5.QtGui import QPixmap
 from PyQt5.QtWidgets import QHBoxLayout, QLabel, QSizePolicy, QVBoxLayout, QWidget
 
 _pixmap_cache = {}  # type: Dict[tuple, QPixmap]
+
+
+class AdaptiveWrapLabel(QLabel):
+    """Label that wraps only when the current width cannot fit one line.
+
+    Plain ``setWordWrap(True)`` inside a table cell often wraps at a narrow
+    sizeHint while the column still has empty space to the right. Keep a
+    single line when the allocated width is enough; wrap only when needed.
+    """
+
+    def __init__(self, text: str = "", parent: Optional[QWidget] = None) -> None:
+        super(AdaptiveWrapLabel, self).__init__(text, parent)
+        self.setWordWrap(False)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        self.setAlignment(Qt.AlignLeft | Qt.AlignTop)
+        if text:
+            self.setToolTip(text)
+
+    def setText(self, text: str) -> None:  # type: ignore[override]
+        super(AdaptiveWrapLabel, self).setText(text)
+        if text:
+            self.setToolTip(text)
+        self._sync_wrap()
+
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        super(AdaptiveWrapLabel, self).resizeEvent(event)
+        self._sync_wrap()
+
+    def minimumSizeHint(self) -> QSize:  # type: ignore[override]
+        # Avoid the tiny width hint that forces premature wrapping.
+        hint = super(AdaptiveWrapLabel, self).minimumSizeHint()
+        return hint.expandedTo(QSize(40, self.fontMetrics().height()))
+
+    def _sync_wrap(self) -> None:
+        text = self.text() or ""
+        avail = self.contentsRect().width()
+        if avail <= 0 or not text:
+            return
+        need = self.fontMetrics().horizontalAdvance(text)
+        wrap = need > avail
+        if self.wordWrap() == wrap:
+            return
+        self.setWordWrap(wrap)
+        self.updateGeometry()
+        parent = self.parentWidget()
+        if parent is not None:
+            parent.updateGeometry()
+
 
 # Web `_WB_FBS_RU_LAYOUT_TO_EN`
 _RU_LAYOUT_TO_EN = {
@@ -186,6 +234,7 @@ def build_product_cell_widget(
 ) -> QWidget:
     """Product cell matching supply detail table formatting."""
     wrap = QWidget()
+    wrap.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
     lay = QHBoxLayout(wrap)
     lay.setContentsMargins(8, 10, 8, 10)
     lay.setSpacing(12)
@@ -198,10 +247,8 @@ def build_product_cell_widget(
     text.setContentsMargins(0, 0, 0, 0)
 
     name = str(row.get("product_name") or row.get("article") or "—")
-    name_lab = QLabel(name)
+    name_lab = AdaptiveWrapLabel(name)
     name_lab.setObjectName("sdProductName")
-    name_lab.setWordWrap(True)
-    name_lab.setToolTip(name)
     text.addWidget(name_lab)
 
     article = str(row.get("article") or "—")
@@ -209,9 +256,8 @@ def build_product_cell_widget(
     sub = "Арт. {}".format(article)
     if nm not in (None, ""):
         sub += " · nmId {}".format(nm)
-    sub_lab = QLabel(sub)
+    sub_lab = AdaptiveWrapLabel(sub)
     sub_lab.setObjectName("sdProductSub")
-    sub_lab.setWordWrap(True)
     text.addWidget(sub_lab)
 
     skus = row.get("skus") if isinstance(row.get("skus"), list) else []

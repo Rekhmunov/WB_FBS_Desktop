@@ -50,6 +50,7 @@ from app.ui.dialog_utils import (
 )
 from app.ui.dialogs_extra import show_png_list, show_supply_qr
 from app.ui.format_helpers import (
+    AdaptiveWrapLabel,
     ago_label,
     build_order_cell_widget,
     build_product_cell_widget,
@@ -1689,6 +1690,7 @@ class SupplyDetailDialog(QDialog):
 
     def _build_cancelled_product_cell(self, row: Dict[str, Any]) -> QWidget:
         wrap = QWidget()
+        wrap.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
         lay = QHBoxLayout(wrap)
         lay.setContentsMargins(8, 10, 12, 10)
         lay.setSpacing(12)
@@ -1699,18 +1701,16 @@ class SupplyDetailDialog(QDialog):
         text.setSpacing(6)
         text.setContentsMargins(0, 0, 0, 0)
         name = str(row.get("product_name") or row.get("article") or "—")
-        name_lab = QLabel(name)
+        name_lab = AdaptiveWrapLabel(name)
         name_lab.setObjectName("sdProductName")
-        name_lab.setWordWrap(True)
         text.addWidget(name_lab)
         article = str(row.get("article") or "—")
         brand = str(row.get("brand") or "").strip()
         sub = "Арт. {}".format(article)
         if brand:
             sub = "{} · {}".format(brand, sub)
-        sub_lab = QLabel(sub)
+        sub_lab = AdaptiveWrapLabel(sub)
         sub_lab.setObjectName("sdProductSub")
-        sub_lab.setWordWrap(True)
         text.addWidget(sub_lab)
         skus = row.get("skus") if isinstance(row.get("skus"), list) else []
         for sku in skus:
@@ -1733,7 +1733,6 @@ class SupplyDetailDialog(QDialog):
         text.addLayout(badge_row)
         text.addStretch(1)
         lay.addLayout(text, 1)
-        wrap.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Minimum)
         return wrap
     def stickers_by_category(self) -> None:
         if not self._require_actions_ready():

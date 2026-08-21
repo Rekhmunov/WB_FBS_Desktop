@@ -137,9 +137,15 @@ class Database:
         self.path = str(path or db_path())
 
     def connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.path, timeout=30)
+        # Longer busy timeout: parallel per-source sync may contend on writes.
+        conn = sqlite3.connect(self.path, timeout=60)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA foreign_keys = ON")
+        try:
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA busy_timeout=60000")
+        except sqlite3.Error:
+            pass
         return conn
 
     def init_schema(self) -> None:

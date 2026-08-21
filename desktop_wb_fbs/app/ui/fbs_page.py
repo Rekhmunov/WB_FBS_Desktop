@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import json
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Dict, List, Optional
 
 from PyQt5.QtCore import Qt, QThread, QTimer, pyqtSignal
@@ -40,6 +42,8 @@ from app.wb.sync import sync_source
 
 
 class SyncWorker(QThread):
+    """Sync all FBS sources in parallel; progress text is one line per source."""
+
     progress = pyqtSignal(str, int)
     finished_ok = pyqtSignal(dict)
     failed = pyqtSignal(str)
@@ -54,53 +58,127 @@ class SyncWorker(QThread):
         self.db = db
         self.sources = list(sources or [])
         self._stop = False
+        self._status_lock = threading.Lock()
+        self._status = {}  # type: Dict[int, Dict[str, Any]]
 
     def request_stop(self) -> None:
         self._stop = True
+
+    def _set_status(self, source_id: int, line: str, orders: int = 0) -> None:
+        with self._status_lock:
+            self._status[int(source_id)] = {
+                "line": str(line or ""),
+                "orders": int(orders or 0),
+            }
+            ordered = []
+            total_orders = 0
+            for src in self.sources:
+                sid = int(src["id"])
+                info = self._status.get(sid)
+                if not info:
+                    continue
+                ordered.append(str(info.get("line") or ""))
+                total_orders += int(info.get("orders") or 0)
+            text = "\n".join(ordered)
+        self.progress.emit(text, total_orders)
 
     def run(self) -> None:
         from app.services.pallet import compute_pallet_summary
         from app.services import clamp_lookback_days
 
         try:
+            if not self.sources:
+                self.finished_ok.emit(
+                    {
+                        "orders": 0,
+                        "supplies": 0,
+                        "errors": [],
+                        "stopped": False,
+                        "scope_error": False,
+                        "message": "",
+                        "pallet_summary": [],
+                        "synced_sources": 0,
+                    }
+                )
+                return
+
+            for src in self.sources:
+                sid = int(src["id"])
+                name = str(src.get("name") or sid)
+                self._set_status(sid, "{} · ожидание…".format(name), 0)
+
+            def sync_one(src: Dict[str, Any]) -> Dict[str, Any]:
+                sid = int(src["id"])
+                name = str(src.get("name") or sid)
+                lookback_days = clamp_lookback_days(src.get("lookback_days"))
+                self._set_status(sid, "{} · старт…".format(name), 0)
+
+                def _prog(msg, n, _sid=sid, _name=name):
+                    self._set_status(
+                        _sid,
+                        "{} · {} · заказов: {}".format(_name, msg, n),
+                        int(n or 0),
+                    )
+
+                try:
+                    result = sync_source(
+                        self.db,
+                        sid,
+                        str(src.get("api_key") or ""),
+                        lookback_days=lookback_days,
+                        stop_requested=lambda: self._stop,
+                        progress=_prog,
+                    )
+                except Exception as exc:
+                    result = {
+                        "orders": 0,
+                        "supplies": 0,
+                        "errors": [str(exc)],
+                        "stopped": False,
+                    }
+
+                orders = int(result.get("orders") or 0)
+                supplies = int(result.get("supplies") or 0)
+                if result.get("scope_error"):
+                    line = "{} · ошибка доступа к API".format(name)
+                elif result.get("stopped"):
+                    line = "{} · остановлено · заказов: {}".format(name, orders)
+                elif result.get("errors"):
+                    line = "{} · готово с ошибками · заказов: {}, поставок: {}".format(
+                        name, orders, supplies
+                    )
+                else:
+                    line = "{} · готово · заказов: {}, поставок: {}".format(
+                        name, orders, supplies
+                    )
+                self._set_status(sid, line, orders)
+                return {"name": name, "result": result}
+
             total_orders = 0
             total_supplies = 0
             all_errors = []  # type: List[str]
             stopped = False
             scope_error = False
             scope_message = ""
-            for src in self.sources:
-                if self._stop:
-                    stopped = True
-                    break
-                sid = int(src["id"])
-                name = str(src.get("name") or sid)
-                lookback_days = clamp_lookback_days(src.get("lookback_days"))
-                self.progress.emit("{}…".format(name), total_orders)
+            workers = max(1, min(len(self.sources), 8))
+            with ThreadPoolExecutor(max_workers=workers) as pool:
+                futures = [pool.submit(sync_one, src) for src in self.sources]
+                for fut in as_completed(futures):
+                    item = fut.result()
+                    name = str(item.get("name") or "")
+                    result = item.get("result") or {}
+                    if result.get("scope_error"):
+                        scope_error = True
+                        scope_message = str(result.get("message") or "")
+                        all_errors.append("{}: {}".format(name, scope_message))
+                        continue
+                    total_orders += int(result.get("orders") or 0)
+                    total_supplies += int(result.get("supplies") or 0)
+                    for e in result.get("errors") or []:
+                        all_errors.append("{}: {}".format(name, e))
+                    if result.get("stopped"):
+                        stopped = True
 
-                def _prog(msg, n, _name=name):
-                    self.progress.emit("{} · {}".format(_name, msg), n)
-
-                result = sync_source(
-                    self.db,
-                    sid,
-                    str(src.get("api_key") or ""),
-                    lookback_days=lookback_days,
-                    stop_requested=lambda: self._stop,
-                    progress=_prog,
-                )
-                if result.get("scope_error"):
-                    scope_error = True
-                    scope_message = str(result.get("message") or "")
-                    all_errors.append("{}: {}".format(name, scope_message))
-                    continue
-                total_orders += int(result.get("orders") or 0)
-                total_supplies += int(result.get("supplies") or 0)
-                for e in result.get("errors") or []:
-                    all_errors.append("{}: {}".format(name, e))
-                if result.get("stopped"):
-                    stopped = True
-                    break
             pallet_summary = []
             try:
                 pallet_summary = compute_pallet_summary(self.db, self.sources)
@@ -965,9 +1043,11 @@ class FbsPage(QWidget):
             return
         if self._worker and self._worker.isRunning():
             return
-        self._show_sync_info(
-            "Синхронизация {} источник(ов)…".format(len(all_sources)), ""
-        )
+        lines = [
+            "{} · ожидание…".format(str(s.get("name") or s.get("id") or ""))
+            for s in all_sources
+        ]
+        self._show_sync_info("\n".join(lines), "")
         self.pallet_info.hide()
         self.sync_btn.setEnabled(False)
         self.stop_btn.setEnabled(True)
@@ -983,7 +1063,9 @@ class FbsPage(QWidget):
             self._worker.request_stop()
 
     def _on_sync_progress(self, msg: str, n: int) -> None:
-        self._show_sync_info("{} · заказов: {}".format(msg, n), "")
+        # Worker already formats one status line per source (parallel sync).
+        del n
+        self._show_sync_info(msg, "")
 
     def _on_sync_done(self, result: dict) -> None:
         self.sync_btn.setEnabled(True)

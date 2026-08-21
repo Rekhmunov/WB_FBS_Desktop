@@ -572,17 +572,19 @@ QLabel#sdChip {
     background: #f2f8ff;
     border: 1px solid #d9e8f7;
     border-radius: 8px;
-    padding: 2px 8px;
+    padding: 0 10px;
     font-size: 12px;
     font-weight: 600;
     color: #5f7691;
-    min-height: 24px;
+    min-height: 32px;
+    max-height: 32px;
 }
 QFrame#sdChipQr {
     background: #f2f8ff;
     border: 1px solid #d9e8f7;
     border-radius: 8px;
-    min-height: 24px;
+    min-height: 32px;
+    max-height: 32px;
 }
 QLabel#sdChipQrText {
     font-size: 12px;
@@ -596,6 +598,7 @@ QToolButton#sdQrPrint {
     min-width: 28px;
     max-width: 28px;
     min-height: 28px;
+    max-height: 28px;
     padding: 0;
     font-size: 14px;
 }

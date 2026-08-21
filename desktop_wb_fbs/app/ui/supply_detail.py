@@ -927,25 +927,31 @@ class SupplyDetailDialog(QDialog):
                 w.deleteLater()
 
     def _add_chip(self, text: str, *, qr: bool = False) -> QWidget:
+        chip_h = 32
         if qr:
             chip = QFrame()
             chip.setObjectName("sdChipQr")
+            chip.setFixedHeight(chip_h)
             lay = QHBoxLayout(chip)
-            lay.setContentsMargins(10, 2, 4, 2)
+            lay.setContentsMargins(10, 0, 4, 0)
             lay.setSpacing(6)
             lab = QLabel(text)
             lab.setObjectName("sdChipQrText")
+            lab.setAlignment(Qt.AlignVCenter | Qt.AlignLeft)
             lay.addWidget(lab)
             btn = QToolButton()
             btn.setObjectName("sdQrPrint")
             btn.setText("🖨")
+            btn.setFixedSize(28, 28)
             btn.setToolTip("Распечатать QR-код поставки")
             btn.clicked.connect(self.print_qr)
-            lay.addWidget(btn)
+            lay.addWidget(btn, 0, Qt.AlignVCenter)
             self.meta_chips.addWidget(chip)
             return chip
         lab = QLabel(text)
         lab.setObjectName("sdChip")
+        lab.setFixedHeight(chip_h)
+        lab.setAlignment(Qt.AlignVCenter | Qt.AlignLeft)
         self.meta_chips.addWidget(lab)
         return lab
 

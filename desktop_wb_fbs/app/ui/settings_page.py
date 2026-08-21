@@ -28,12 +28,26 @@ from PyQt5.QtWidgets import (
 from app.db import Database
 from app.ui.dialog_utils import prepare_modal_dialog
 from app.ui.format_helpers import make_photo_label
+from app.ui.table_col_widths import PersistentColumnWidths
 from app.services import SourceService
 from app.services.catalog import CategoryService, ProductService
 
 _PRODUCT_PHOTO_SIZE = 48
 _PRODUCT_PHOTO_COL = 0
 _PRODUCT_NAME_COL = 1
+_SRC_COL_DEFAULTS = [220, 80, 64, 160, 180]
+_PROD_COL_DEFAULTS = [
+    _PRODUCT_PHOTO_SIZE + 16,
+    220,
+    140,
+    110,
+    110,
+    110,
+    120,
+    140,
+    96,
+]
+_CAT_COL_DEFAULTS = [280, 160]
 
 
 class SettingsPage(QWidget):
@@ -74,6 +88,16 @@ class SettingsPage(QWidget):
         tabs.addTab(self._build_products_tab(), "Товары")
         layout.addWidget(tabs, 1)
 
+    def hideEvent(self, event) -> None:
+        # Flush pending column-width saves when leaving Settings (app exit / tab switch).
+        for holder in (
+            getattr(self, "_src_col_widths", None),
+            getattr(self, "_prod_col_widths", None),
+        ):
+            if holder is not None:
+                holder.persist()
+        super(SettingsPage, self).hideEvent(event)
+
     # --- Sources ---
     def _build_sources_tab(self) -> QWidget:
         w = QWidget()
@@ -98,7 +122,14 @@ class SettingsPage(QWidget):
         )
         self.src_table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.src_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
-        self.src_table.horizontalHeader().setStretchLastSection(True)
+        self._src_col_widths = PersistentColumnWidths(
+            self.db,
+            self.src_table,
+            "settings_sources_table_cols",
+            _SRC_COL_DEFAULTS,
+            parent=self,
+        )
+        self._src_col_widths.apply()
         v.addWidget(self.src_table, 1)
         note = QLabel(
             "В названии обязательно «ФБС» или FBS. Токен — категория Marketplace "
@@ -240,16 +271,21 @@ class SettingsPage(QWidget):
         self.prod_table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.prod_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.prod_table.verticalHeader().setVisible(False)
-        self.prod_table.setColumnWidth(_PRODUCT_PHOTO_COL, _PRODUCT_PHOTO_SIZE + 16)
-        self.prod_table.setColumnWidth(8, 96)
-        self.prod_table.horizontalHeader().setStretchLastSection(True)
         self.prod_table.doubleClicked.connect(lambda _idx: self.edit_product())
+        self._prod_col_widths = PersistentColumnWidths(
+            self.db,
+            self.prod_table,
+            "settings_products_table_cols",
+            _PROD_COL_DEFAULTS,
+            parent=self,
+        )
+        self._prod_col_widths.apply()
         v.addWidget(self.prod_table, 1)
         self.reload_products_table()
         return w
 
     def _open_product_categories(self) -> None:
-        dlg = CategoriesDialog(self.categories, self)
+        dlg = CategoriesDialog(self.categories, self.db, self)
         dlg.exec_()
 
     @staticmethod
@@ -427,9 +463,15 @@ class SettingsPage(QWidget):
         )
 
 class CategoriesDialog(QDialog):
-    def __init__(self, categories: CategoryService, parent: Optional[QWidget] = None) -> None:
+    def __init__(
+        self,
+        categories: CategoryService,
+        db: Database,
+        parent: Optional[QWidget] = None,
+    ) -> None:
         super(CategoriesDialog, self).__init__(parent)
         self.categories = categories
+        self.db = db
         self.setWindowTitle("Категории товаров")
         prepare_modal_dialog(
             self,
@@ -451,7 +493,14 @@ class CategoriesDialog(QDialog):
         v.addLayout(bar)
         self.cat_table = QTableWidget(0, 2)
         self.cat_table.setHorizontalHeaderLabels(["Название", "Коробов на палете"])
-        self.cat_table.horizontalHeader().setStretchLastSection(True)
+        self._cat_col_widths = PersistentColumnWidths(
+            self.db,
+            self.cat_table,
+            "settings_categories_table_cols",
+            _CAT_COL_DEFAULTS,
+            parent=self,
+        )
+        self._cat_col_widths.apply()
         v.addWidget(self.cat_table, 1)
         note = QLabel(
             "Используется для оценки палет после синхронизации и печати стикеров по категориям."
@@ -465,6 +514,18 @@ class CategoriesDialog(QDialog):
         close_btn.accepted.connect(self.accept)
         v.addWidget(close_btn)
         self.reload_categories_table()
+
+    def reject(self) -> None:
+        self._cat_col_widths.persist()
+        super(CategoriesDialog, self).reject()
+
+    def accept(self) -> None:
+        self._cat_col_widths.persist()
+        super(CategoriesDialog, self).accept()
+
+    def closeEvent(self, event) -> None:
+        self._cat_col_widths.persist()
+        super(CategoriesDialog, self).closeEvent(event)
 
     def reload_categories_table(self) -> None:
         rows = self.categories.list_all()

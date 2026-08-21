@@ -39,20 +39,6 @@ QFrame#topBar {
     border-bottom: 1px solid #d9e8f7;
     min-height: 72px;
 }
-QLabel#brandTitle {
-    font-family: __FONT_DISPLAY__;
-    color: #0f1f33;
-    font-size: 16px;
-    font-weight: 700;
-    letter-spacing: -0.02em;
-    padding: 0;
-}
-QLabel#brandSub {
-    color: #8aa0b8;
-    font-size: 11px;
-    letter-spacing: 0.02em;
-    padding: 0;
-}
 QPushButton#navBtn {
     background: transparent;
     color: #5f7691;

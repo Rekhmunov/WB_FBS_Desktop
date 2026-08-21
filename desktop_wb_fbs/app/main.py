@@ -17,7 +17,6 @@ from PyQt5.QtWidgets import (
     QApplication,
     QFrame,
     QHBoxLayout,
-    QLabel,
     QMainWindow,
     QPushButton,
     QSizePolicy,
@@ -33,7 +32,7 @@ from app.services import SourceService
 from app.services.catalog import CategoryService, ProductService
 from app.services.orders import OrdersService
 from app.ui.fbs_page import FbsPage
-from app.ui.fonts import body_font, display_font, load_app_fonts
+from app.ui.fonts import body_font, load_app_fonts
 from app.ui.layout_utils import fit_tab_button
 from app.ui.settings_page import SettingsPage
 from app.ui.styles import get_app_qss
@@ -62,14 +61,8 @@ class MainWindow(QMainWindow):
         top = QFrame()
         top.setObjectName("topBar")
         top_l = QHBoxLayout(top)
-        top_l.setContentsMargins(24, 0, 24, 0)
+        top_l.setContentsMargins(16, 0, 24, 0)
         top_l.setSpacing(8)
-
-        self.page_title = QLabel("Поставки — ВБ ФБС")
-        self.page_title.setObjectName("brandTitle")
-        self.page_title.setFont(display_font(16))
-        top_l.addWidget(self.page_title)
-        top_l.addSpacing(12)
 
         self.btn_fbs = QPushButton("Поставки — ВБ ФБС")
         self.btn_fbs.setCheckable(True)
@@ -111,10 +104,7 @@ class MainWindow(QMainWindow):
         self.btn_settings.setChecked(index == 1)
         self.fbs_page.source_combo.setVisible(index == 0)
         if index == 0:
-            self.page_title.setText("Поставки — ВБ ФБС")
             self.fbs_page.reload_sources()
-        else:
-            self.page_title.setText("Настройки")
 
 
 def run() -> int:

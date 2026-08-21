@@ -27,8 +27,13 @@ from PyQt5.QtWidgets import (
 
 from app.db import Database
 from app.ui.dialog_utils import prepare_modal_dialog
+from app.ui.format_helpers import make_photo_label
 from app.services import SourceService
 from app.services.catalog import CategoryService, ProductService
+
+_PRODUCT_PHOTO_SIZE = 48
+_PRODUCT_PHOTO_COL = 0
+_PRODUCT_NAME_COL = 1
 
 
 class SettingsPage(QWidget):
@@ -198,9 +203,10 @@ class SettingsPage(QWidget):
         bar.addWidget(import_btn)
         bar.addStretch(1)
         v.addLayout(bar)
-        self.prod_table = QTableWidget(0, 8)
+        self.prod_table = QTableWidget(0, 9)
         self.prod_table.setHorizontalHeaderLabels(
             [
+                "Фото",
                 "Название",
                 "Артикул",
                 "nmID",
@@ -213,6 +219,8 @@ class SettingsPage(QWidget):
         )
         self.prod_table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.prod_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.prod_table.verticalHeader().setVisible(False)
+        self.prod_table.setColumnWidth(_PRODUCT_PHOTO_COL, _PRODUCT_PHOTO_SIZE + 16)
         self.prod_table.horizontalHeader().setStretchLastSection(True)
         v.addWidget(self.prod_table, 1)
         self.reload_products_table()
@@ -221,28 +229,43 @@ class SettingsPage(QWidget):
     def reload_products_table(self) -> None:
         rows = self.products.list_all()
         self.prod_table.setRowCount(len(rows))
+        row_h = _PRODUCT_PHOTO_SIZE + 12
         for i, p in enumerate(rows):
-            self.prod_table.setItem(i, 0, QTableWidgetItem(str(p.get("name") or "")))
-            self.prod_table.item(i, 0).setData(Qt.UserRole, int(p["id"]))
-            self.prod_table.setItem(
-                i, 1, QTableWidgetItem(str(p.get("supplier_article") or ""))
+            self.prod_table.setRowHeight(i, row_h)
+            photo_wrap = QWidget()
+            photo_lay = QHBoxLayout(photo_wrap)
+            photo_lay.setContentsMargins(4, 4, 4, 4)
+            photo_lay.setAlignment(Qt.AlignCenter)
+            photo_lay.addWidget(
+                make_photo_label(p.get("photo_path"), size=_PRODUCT_PHOTO_SIZE)
             )
-            self.prod_table.setItem(i, 2, QTableWidgetItem(str(p.get("wb_nmid") or "")))
+            self.prod_table.setCellWidget(i, _PRODUCT_PHOTO_COL, photo_wrap)
+
             self.prod_table.setItem(
-                i, 3, QTableWidgetItem(str(p.get("ozon_sku") or ""))
+                i, _PRODUCT_NAME_COL, QTableWidgetItem(str(p.get("name") or ""))
+            )
+            self.prod_table.item(i, _PRODUCT_NAME_COL).setData(
+                Qt.UserRole, int(p["id"])
             )
             self.prod_table.setItem(
-                i, 4, QTableWidgetItem(str(p.get("yandex_offer_id") or ""))
+                i, 2, QTableWidgetItem(str(p.get("supplier_article") or ""))
+            )
+            self.prod_table.setItem(i, 3, QTableWidgetItem(str(p.get("wb_nmid") or "")))
+            self.prod_table.setItem(
+                i, 4, QTableWidgetItem(str(p.get("ozon_sku") or ""))
             )
             self.prod_table.setItem(
-                i, 5, QTableWidgetItem(str(p.get("box_qty") or ""))
+                i, 5, QTableWidgetItem(str(p.get("yandex_offer_id") or ""))
             )
             self.prod_table.setItem(
-                i, 6, QTableWidgetItem(str(p.get("product_category") or ""))
+                i, 6, QTableWidgetItem(str(p.get("box_qty") or ""))
+            )
+            self.prod_table.setItem(
+                i, 7, QTableWidgetItem(str(p.get("product_category") or ""))
             )
             self.prod_table.setItem(
                 i,
-                7,
+                8,
                 QTableWidgetItem("да" if p.get("skip_kiz_gtin_check") else ""),
             )
 
@@ -250,7 +273,7 @@ class SettingsPage(QWidget):
         row = self.prod_table.currentRow()
         if row < 0:
             return None
-        item = self.prod_table.item(row, 0)
+        item = self.prod_table.item(row, _PRODUCT_NAME_COL)
         return int(item.data(Qt.UserRole)) if item else None
 
     def add_product(self) -> None:

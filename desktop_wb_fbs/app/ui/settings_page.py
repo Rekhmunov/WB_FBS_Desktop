@@ -185,14 +185,31 @@ class SettingsPage(QWidget):
         delete = QPushButton("Удалить")
         delete.setObjectName("danger")
         delete.clicked.connect(self.delete_product)
+        import_btn = QPushButton("Импорт")
+        import_btn.setObjectName("secondary")
+        import_btn.setToolTip(
+            "Импорт товаров из CSV "
+            "(название, артикулы WB/Ozon/ЯМ, кратность, категория, GTIN)"
+        )
+        import_btn.clicked.connect(self.import_products)
         bar.addWidget(add)
         bar.addWidget(edit)
         bar.addWidget(delete)
+        bar.addWidget(import_btn)
         bar.addStretch(1)
         v.addLayout(bar)
-        self.prod_table = QTableWidget(0, 6)
+        self.prod_table = QTableWidget(0, 8)
         self.prod_table.setHorizontalHeaderLabels(
-            ["Название", "Артикул", "nmID", "В коробе", "Категория", "Без GTIN"]
+            [
+                "Название",
+                "Артикул",
+                "nmID",
+                "Ozon",
+                "Яндекс",
+                "В коробе",
+                "Категория",
+                "Без GTIN",
+            ]
         )
         self.prod_table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.prod_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
@@ -212,14 +229,20 @@ class SettingsPage(QWidget):
             )
             self.prod_table.setItem(i, 2, QTableWidgetItem(str(p.get("wb_nmid") or "")))
             self.prod_table.setItem(
-                i, 3, QTableWidgetItem(str(p.get("box_qty") or ""))
+                i, 3, QTableWidgetItem(str(p.get("ozon_sku") or ""))
             )
             self.prod_table.setItem(
-                i, 4, QTableWidgetItem(str(p.get("product_category") or ""))
+                i, 4, QTableWidgetItem(str(p.get("yandex_offer_id") or ""))
+            )
+            self.prod_table.setItem(
+                i, 5, QTableWidgetItem(str(p.get("box_qty") or ""))
+            )
+            self.prod_table.setItem(
+                i, 6, QTableWidgetItem(str(p.get("product_category") or ""))
             )
             self.prod_table.setItem(
                 i,
-                5,
+                7,
                 QTableWidgetItem("да" if p.get("skip_kiz_gtin_check") else ""),
             )
 
@@ -243,6 +266,8 @@ class SettingsPage(QWidget):
                     dlg.category,
                     dlg.skip_gtin,
                     dlg.photo_path,
+                    ozon_sku=dlg.ozon_sku,
+                    yandex_offer_id=dlg.yandex_offer_id,
                 )
                 self.reload_products_table()
             except Exception as exc:
@@ -267,6 +292,8 @@ class SettingsPage(QWidget):
                     dlg.category,
                     dlg.skip_gtin,
                     dlg.photo_path,
+                    ozon_sku=dlg.ozon_sku,
+                    yandex_offer_id=dlg.yandex_offer_id,
                 )
                 self.reload_products_table()
             except Exception as exc:
@@ -280,6 +307,31 @@ class SettingsPage(QWidget):
             return
         self.products.delete(pid)
         self.reload_products_table()
+
+    def import_products(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Импорт товаров CSV",
+            "",
+            "CSV (*.csv);;Все файлы (*.*)",
+        )
+        if not path:
+            return
+        try:
+            stats = self.products.import_csv(path)
+        except Exception as exc:
+            QMessageBox.warning(self, "Импорт", str(exc))
+            return
+        self.reload_products_table()
+        QMessageBox.information(
+            self,
+            "Импорт",
+            "Готово: добавлено {}, обновлено {}, пропущено {}.".format(
+                int(stats.get("created") or 0),
+                int(stats.get("updated") or 0),
+                int(stats.get("skipped") or 0),
+            ),
+        )
 
     # --- Categories ---
     def _build_categories_tab(self) -> QWidget:
@@ -414,6 +466,8 @@ class ProductEditDialog(QDialog):
         self.name_edit = QLineEdit(str(p.get("name") or ""))
         self.article_edit = QLineEdit(str(p.get("supplier_article") or ""))
         self.nmid_edit = QLineEdit(str(p.get("wb_nmid") or ""))
+        self.ozon_edit = QLineEdit(str(p.get("ozon_sku") or ""))
+        self.yandex_edit = QLineEdit(str(p.get("yandex_offer_id") or ""))
         self.box_spin = QSpinBox()
         self.box_spin.setRange(0, 100000)
         if p.get("box_qty"):
@@ -436,8 +490,10 @@ class ProductEditDialog(QDialog):
         self.photo_label = QLabel(str(p.get("photo_path") or "—"))
         form.addRow("Название", self.name_edit)
         form.addRow("Артикул продавца", self.article_edit)
-        form.addRow("nmID WB", self.nmid_edit)
-        form.addRow("Штук в коробе", self.box_spin)
+        form.addRow("Артикул WB (nmId)", self.nmid_edit)
+        form.addRow("SKU Ozon", self.ozon_edit)
+        form.addRow("Артикул Яндекс Маркет (offerId)", self.yandex_edit)
+        form.addRow("Кратность в коробе", self.box_spin)
         form.addRow("Категория", self.cat_combo)
         form.addRow("", self.skip_chk)
         form.addRow(photo_btn, self.photo_label)
@@ -459,6 +515,8 @@ class ProductEditDialog(QDialog):
         self.name = self.name_edit.text().strip()
         self.article = self.article_edit.text().strip()
         self.nmid = self.nmid_edit.text().strip()
+        self.ozon_sku = self.ozon_edit.text().strip()
+        self.yandex_offer_id = self.yandex_edit.text().strip()
         bq = int(self.box_spin.value())
         self.box_qty = bq if bq > 0 else None
         self.category = self.cat_combo.currentText().strip()

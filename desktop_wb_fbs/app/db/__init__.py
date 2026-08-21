@@ -39,6 +39,8 @@ CREATE TABLE IF NOT EXISTS product_photos (
     name TEXT NOT NULL DEFAULT '',
     supplier_article TEXT NOT NULL DEFAULT '',
     wb_nmid TEXT NOT NULL DEFAULT '',
+    ozon_sku TEXT NOT NULL DEFAULT '',
+    yandex_offer_id TEXT NOT NULL DEFAULT '',
     box_qty INTEGER,
     product_category TEXT NOT NULL DEFAULT '',
     skip_kiz_gtin_check INTEGER NOT NULL DEFAULT 0,
@@ -142,7 +144,24 @@ class Database:
     def init_schema(self) -> None:
         with self.connect() as conn:
             conn.executescript(SCHEMA_SQL)
+            self._migrate_product_photos(conn)
             conn.commit()
+
+    @staticmethod
+    def _migrate_product_photos(conn: sqlite3.Connection) -> None:
+        """Add newer product_photos columns on existing SQLite databases."""
+        cols = {
+            str(r[1])
+            for r in conn.execute("PRAGMA table_info(product_photos)").fetchall()
+        }
+        for name, decl in (
+            ("ozon_sku", "TEXT NOT NULL DEFAULT ''"),
+            ("yandex_offer_id", "TEXT NOT NULL DEFAULT ''"),
+        ):
+            if name not in cols:
+                conn.execute(
+                    "ALTER TABLE product_photos ADD COLUMN {} {}".format(name, decl)
+                )
 
     @contextmanager
     def cursor(self) -> Iterator[sqlite3.Cursor]:

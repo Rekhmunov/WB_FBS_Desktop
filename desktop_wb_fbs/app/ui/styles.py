@@ -140,7 +140,7 @@ QPushButton#mgtBtn {
     border: 1px solid #9810fa;
     background: #9810fa;
     border-radius: 10px;
-    min-height: 36px;
+    min-height: 40px;
     padding: 0 16px;
     font-size: 14px;
     font-weight: 600;
@@ -157,6 +157,14 @@ QPushButton#mgtBtn:pressed {
 }
 QPushButton#mgtBtn:disabled {
     opacity: 0.55;
+}
+QPushButton#mgtBtn[loading="true"],
+QPushButton#mgtBtn[loading="true"]:disabled {
+    background: #c084fc;
+    border-color: #c084fc;
+    color: #ffffff;
+    opacity: 1;
+    padding: 0 18px;
 }
 QPushButton#bottomPrimary {
     color: #ffffff;

@@ -3,8 +3,8 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional, Tuple
 
-from PyQt5.QtCore import QRect, Qt
-from PyQt5.QtGui import QFontMetrics, QPainter, QPen, QPixmap
+from PyQt5.QtCore import QRect, QRectF, QSize, Qt, QThread, QTimer, pyqtSignal
+from PyQt5.QtGui import QColor, QFontMetrics, QPainter, QPen, QPixmap
 from PyQt5.QtPrintSupport import QPrintDialog, QPrinter
 from PyQt5.QtWidgets import (
     QButtonGroup,
@@ -19,6 +19,9 @@ from PyQt5.QtWidgets import (
     QPushButton,
     QRadioButton,
     QScrollArea,
+    QSizePolicy,
+    QStyle,
+    QStyleOptionButton,
     QVBoxLayout,
     QWidget,
 )
@@ -28,6 +31,128 @@ from app.services.orders import OrdersService
 from app.services.trbx_stickers import StickersService
 from app.ui.dialog_utils import prepare_modal_dialog, standard_window_flags
 from app.wb import default_mgt_supply_name
+
+
+class MgtCollectButton(QPushButton):
+    """Purple МГТ action — idle «Собрать», busy spinner + status text."""
+
+    IDLE_TEXT = "Собрать"
+    BUSY_TEXT = "Собираем заказы в поставку"
+
+    def __init__(self, parent: Optional[QWidget] = None) -> None:
+        super(MgtCollectButton, self).__init__(self.IDLE_TEXT, parent)
+        self.setObjectName("mgtBtn")
+        self.setCursor(Qt.PointingHandCursor)
+        self.setMinimumHeight(40)
+        self.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Fixed)
+        self._loading = False
+        self._angle = 0
+        self._timer = QTimer(self)
+        self._timer.timeout.connect(self._on_tick)
+
+    def is_loading(self) -> bool:
+        return bool(self._loading)
+
+    def set_loading(self, on: bool) -> None:
+        self._loading = bool(on)
+        self.setProperty("loading", self._loading)
+        self.setEnabled(not self._loading)
+        if self._loading:
+            self.setText(self.BUSY_TEXT)
+            self.setCursor(Qt.ArrowCursor)
+            if not self._timer.isActive():
+                self._timer.start(40)
+        else:
+            self._timer.stop()
+            self._angle = 0
+            self.setText(self.IDLE_TEXT)
+            self.setCursor(Qt.PointingHandCursor)
+        self.style().unpolish(self)
+        self.style().polish(self)
+        self.update()
+        self.updateGeometry()
+
+    def sizeHint(self):  # type: ignore[override]
+        hint = super(MgtCollectButton, self).sizeHint()
+        if not self._loading:
+            return hint
+        fm = QFontMetrics(self.font())
+        text_w = fm.horizontalAdvance(self.BUSY_TEXT)
+        # Spinner (16) + gap (8) + text + horizontal padding.
+        return hint.expandedTo(
+            QSize(text_w + 16 + 8 + 32, max(40, hint.height()))
+        )
+
+    def _on_tick(self) -> None:
+        self._angle = (self._angle + 24) % 360
+        self.update()
+
+    def paintEvent(self, event) -> None:  # noqa: N802
+        if not self._loading:
+            super(MgtCollectButton, self).paintEvent(event)
+            return
+        opt = QStyleOptionButton()
+        self.initStyleOption(opt)
+        opt.text = ""
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing, True)
+        self.style().drawControl(QStyle.CE_PushButton, opt, painter, self)
+
+        fm = QFontMetrics(self.font())
+        text = self.BUSY_TEXT
+        text_w = fm.horizontalAdvance(text)
+        gap = 8
+        spin = 16
+        total = spin + gap + text_w
+        x0 = (self.width() - total) / 2.0
+        cy = self.height() / 2.0
+
+        # Arc spinner (light purple on lighter fill).
+        painter.save()
+        painter.translate(x0 + spin / 2.0, cy)
+        painter.rotate(self._angle)
+        pen = QPen(QColor("#ffffff"))
+        pen.setWidth(2)
+        pen.setCapStyle(Qt.RoundCap)
+        painter.setPen(pen)
+        painter.drawArc(QRectF(-spin / 2.0, -spin / 2.0, spin, spin), 0, 270 * 16)
+        painter.restore()
+
+        painter.setPen(QColor("#ffffff"))
+        painter.drawText(
+            QRect(int(x0 + spin + gap), 0, text_w + 4, self.height()),
+            Qt.AlignVCenter | Qt.AlignLeft,
+            text,
+        )
+        painter.end()
+
+
+class _CollectMgtWorker(QThread):
+    finished_ok = pyqtSignal(object)
+    failed = pyqtSignal(str)
+
+    def __init__(
+        self,
+        svc: Any,
+        source_id: int,
+        api_key: str,
+        decisions: List[Dict[str, Any]],
+        parent: Optional[QWidget] = None,
+    ) -> None:
+        super(_CollectMgtWorker, self).__init__(parent)
+        self._svc = svc
+        self._source_id = int(source_id)
+        self._api_key = str(api_key or "")
+        self._decisions = list(decisions or [])
+
+    def run(self) -> None:  # noqa: N802
+        try:
+            result = self._svc.execute(
+                self._source_id, self._api_key, self._decisions
+            )
+            self.finished_ok.emit(result)
+        except Exception as exc:
+            self.failed.emit(str(exc))
 
 
 def _print_pixmaps(parent: QWidget, pixmaps: List[QPixmap]) -> None:
@@ -815,17 +940,22 @@ class CollectMgtDialog(QDialog):
         scroll_area.setWidget(self.scroll)
         root.addWidget(scroll_area, 1)
 
-        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        ok = buttons.button(QDialogButtonBox.Ok)
-        ok.setText("Собрать")
-        ok.setObjectName("mgtBtn")
-        cancel = buttons.button(QDialogButtonBox.Cancel)
-        cancel.setText("Отмена")
+        buttons = QHBoxLayout()
+        buttons.setSpacing(8)
+        cancel = QPushButton("Отмена")
         cancel.setObjectName("secondary")
-        buttons.accepted.connect(self.do_collect)
-        buttons.rejected.connect(self.reject)
-        root.addWidget(buttons)
+        cancel.setMinimumHeight(40)
+        cancel.clicked.connect(self.reject)
+        ok = MgtCollectButton()
+        ok.clicked.connect(self.do_collect)
+        buttons.addWidget(cancel)
+        buttons.addStretch(1)
+        buttons.addWidget(ok)
+        root.addLayout(buttons)
         self._ok_btn = ok
+        self._cancel_btn = cancel
+        self._collect_worker = None  # type: Optional[_CollectMgtWorker]
+        self._busy = False
         self._group_widgets = []  # type: List[Dict[str, Any]]
         self._existing_names = set()  # type: set
         self._load()
@@ -1116,27 +1246,67 @@ class CollectMgtDialog(QDialog):
         return decisions, errors
 
     def do_collect(self) -> None:
+        if self._busy:
+            return
         decisions, errors = self._collect_decisions()
         if errors:
             self.err.setText("\n".join(errors))
             self.err.show()
             return
         self.err.hide()
-        if self._ok_btn:
-            self._ok_btn.setEnabled(False)
-        try:
-            result = self.svc.execute(
-                int(self.source["id"]),
-                str(self.source["api_key"]),
-                decisions,
-            )
-            self.result_payload = result
-            self.accept()
-        except Exception as exc:
-            self.err.setText(str(exc))
-            self.err.show()
-            if self._ok_btn:
-                self._ok_btn.setEnabled(True)
+        self._set_collect_busy(True)
+        worker = _CollectMgtWorker(
+            self.svc,
+            int(self.source["id"]),
+            str(self.source["api_key"]),
+            decisions,
+            self,
+        )
+        self._collect_worker = worker
+        worker.finished_ok.connect(self._on_collect_ok)
+        worker.failed.connect(self._on_collect_failed)
+        worker.finished.connect(worker.deleteLater)
+        worker.start()
+
+    def _set_collect_busy(self, busy: bool) -> None:
+        self._busy = bool(busy)
+        if isinstance(self._ok_btn, MgtCollectButton):
+            self._ok_btn.set_loading(self._busy)
+        elif self._ok_btn is not None:
+            self._ok_btn.setEnabled(not self._busy)
+        if self._cancel_btn is not None:
+            self._cancel_btn.setEnabled(not self._busy)
+        for item in self._group_widgets:
+            name_edit = item.get("name_edit")
+            if name_edit is not None:
+                name_edit.setEnabled(not self._busy)
+            radio_group = item.get("radio_group")
+            if radio_group is not None:
+                for btn in radio_group.buttons():
+                    btn.setEnabled(not self._busy)
+
+    def _on_collect_ok(self, result: object) -> None:
+        self._collect_worker = None
+        self.result_payload = result if isinstance(result, dict) else None
+        self._set_collect_busy(False)
+        self.accept()
+
+    def _on_collect_failed(self, message: str) -> None:
+        self._collect_worker = None
+        self.err.setText(str(message or "Ошибка сбора МГТ"))
+        self.err.show()
+        self._set_collect_busy(False)
+
+    def reject(self) -> None:  # type: ignore[override]
+        if self._busy:
+            return
+        super(CollectMgtDialog, self).reject()
+
+    def closeEvent(self, event) -> None:  # noqa: N802
+        if self._busy:
+            event.ignore()
+            return
+        super(CollectMgtDialog, self).closeEvent(event)
 
 
 class SelectionSupplyDialog(QDialog):

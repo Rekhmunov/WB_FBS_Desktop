@@ -838,6 +838,7 @@ class KizDialog(QDialog):
             line.setSpacing(8)
             inp = GsAwareLineEdit(str(code or ""))
             inp.setObjectName("kizCodeInput")
+            inp.setFixedHeight(40)
             if err and str(code or "").strip():
                 inp.setProperty("state", "error")
             inp.editingFinished.connect(partial(self._on_code_edited, oid))
@@ -848,7 +849,7 @@ class KizDialog(QDialog):
             clear_btn.setToolTip(
                 "Удалить строку КИЗ" if can_remove else "Очистить маркировку"
             )
-            clear_btn.setFixedSize(36, 36)
+            clear_btn.setFixedSize(40, 40)
             clear_btn.clicked.connect(partial(self._clear_code, oid, idx))
             # Status under the input only — same width when column is resized.
             mid = QVBoxLayout()
@@ -887,7 +888,7 @@ class KizDialog(QDialog):
         btn.setText("⋮")
         btn.setToolTip("Действия")
         btn.setPopupMode(QToolButton.InstantPopup)
-        btn.setFixedSize(36, 36)
+        btn.setFixedSize(40, 40)
         menu = style_app_menu(QMenu(btn))
         menu.addAction(
             "Напечатать стикер", partial(self._print_sticker, oid)

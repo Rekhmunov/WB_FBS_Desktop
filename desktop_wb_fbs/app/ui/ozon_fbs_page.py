@@ -257,14 +257,6 @@ class OzonFbsPage(QWidget):
         pager.addWidget(self.page_size)
         root.addWidget(pager_frame)
 
-        hint = QLabel(
-            "Новые: выберите отправления и добавьте в отгрузку или соберите (ship). "
-            "На сборке: двойной клик — карточка отгрузки или отправления."
-        )
-        hint.setObjectName("hint")
-        hint.setWordWrap(True)
-        root.addWidget(hint)
-
         self.source_combo = QComboBox()
         self.source_combo.setObjectName("sourceCombo")
         self.source_combo.currentIndexChanged.connect(self.reload_table)

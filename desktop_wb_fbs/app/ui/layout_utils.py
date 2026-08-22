@@ -2,6 +2,8 @@
 """Flow layout — wraps widgets to the next row (natural modal/action bars)."""
 from __future__ import annotations
 
+from typing import Optional
+
 from PyQt5.QtCore import QPoint, QRect, QSize, Qt
 from PyQt5.QtWidgets import QLayout, QLayoutItem, QPushButton, QSizePolicy, QWidget
 
@@ -190,10 +192,12 @@ def fit_tab_button(btn, h_pad: int = 56) -> None:
 class FbsTabButton(QPushButton):
     """Tab with label + count pill (web `.wb-fbs-tab` / `.wb-fbs-tab-count`)."""
 
-    def __init__(self, title: str, parent: QWidget = None) -> None:
+    def __init__(self, title: str, parent: Optional[QWidget] = None) -> None:
         from PyQt5.QtWidgets import QHBoxLayout, QLabel
 
-        super(FbsTabButton, self).__init__(parent)
+        # Ignore mistaken ``FbsTabButton("Title", 0)`` — 0 is not a QWidget parent.
+        safe_parent = parent if isinstance(parent, QWidget) else None
+        super(FbsTabButton, self).__init__(safe_parent)
         self._title_text = title
         self._count_text = "0"
         self.setObjectName("tabBtn")

@@ -249,10 +249,13 @@ class OzonFbsPage(QWidget):
             return
 
         carriages = self.orders.list_open_carriages(sid)
-        self.table.setHorizontalHeaderLabels(["Отгрузка", "Статус", "Отправлений"])
-        self.table.setRowCount(len(carriages))
-        for i, c in enumerate(carriages):
-            self.table.setItem(i, 0, QTableWidgetItem(str(c.get("carriage_id") or "")))
+        orphans = self.orders.list_assembly_postings(sid, search=search)
+        self.table.setHorizontalHeaderLabels(["Отгрузка / отправление", "Статус / товар", "Отправлений"])
+        total_rows = len(carriages) + len(orphans)
+        self.table.setRowCount(total_rows)
+        row_i = 0
+        for c in carriages:
+            self.table.setItem(row_i, 0, QTableWidgetItem(str(c.get("carriage_id") or "")))
             pill = make_status_pill(
                 str(c.get("status_label") or "—"),
                 str(c.get("status_kind") or "assembly"),
@@ -262,11 +265,25 @@ class OzonFbsPage(QWidget):
             lay.setContentsMargins(8, 8, 8, 8)
             lay.addWidget(pill, 0, Qt.AlignLeft)
             lay.addStretch(1)
-            self.table.setCellWidget(i, 1, wrap)
+            self.table.setCellWidget(row_i, 1, wrap)
             self.table.setItem(
-                i, 2, QTableWidgetItem(str(int(c.get("posting_count") or 0)))
+                row_i, 2, QTableWidgetItem(str(int(c.get("posting_count") or 0)))
             )
-            self.table.setRowHeight(i, 56)
+            self.table.setRowHeight(row_i, 56)
+            row_i += 1
+        for r in orphans:
+            label = str(r.get("posting_number") or "")
+            if not label.startswith("·"):
+                label = "· {}".format(label)
+            self.table.setItem(row_i, 0, QTableWidgetItem(label))
+            self.table.setCellWidget(row_i, 1, self._product_cell(r))
+            self.table.setItem(
+                row_i,
+                2,
+                QTableWidgetItem(str(r.get("status_label") or "—")),
+            )
+            self.table.setRowHeight(row_i, 120)
+            row_i += 1
 
     def _product_cell(self, row: Dict[str, Any]) -> QWidget:
         wrap = QWidget()

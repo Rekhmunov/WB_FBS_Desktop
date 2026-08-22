@@ -30,6 +30,21 @@ class OzonOrdersService:
     def __init__(self, db: Database) -> None:
         self.db = db
         self._photo_by_offer = None  # type: Optional[Dict[str, str]]
+        self._catalog_by_offer = None  # type: Optional[Dict[str, Dict[str, Any]]]
+
+    def _catalog_maps(self) -> Dict[str, Dict[str, Any]]:
+        if self._catalog_by_offer is not None:
+            return self._catalog_by_offer
+        out = {}  # type: Dict[str, Dict[str, Any]]
+        for p in ProductService(self.db).list_all():
+            art = str(p.get("supplier_article") or "").strip().lower()
+            oz = str(p.get("ozon_sku") or "").strip().lower()
+            if art:
+                out[art] = p
+            if oz and oz not in out:
+                out[oz] = p
+        self._catalog_by_offer = out
+        return out
 
     def _photo_map(self) -> Dict[str, str]:
         if self._photo_by_offer is not None:
@@ -48,6 +63,36 @@ class OzonOrdersService:
         self._photo_by_offer = out
         return out
 
+    def list_assembly_postings(
+        self, source_id: int, *, search: str = "", limit: int = 200
+    ) -> List[Dict[str, Any]]:
+        """Postings on assembly without carriage (awaiting_deliver, etc.)."""
+        cond = [
+            "source_id = ?",
+            "tab = 'assembly'",
+            "(carriage_id IS NULL OR carriage_id = '')",
+        ]
+        params = [source_id]  # type: List[Any]
+        q = str(search or "").strip().lower()
+        if q:
+            like = "%{}%".format(q)
+            cond.append(
+                "(LOWER(posting_number) LIKE ? OR LOWER(offer_id) LIKE ?"
+                " OR LOWER(sku) LIKE ? OR LOWER(product_name) LIKE ?"
+                " OR LOWER(barcodes_json) LIKE ?)"
+            )
+            params.extend([like, like, like, like, like])
+        sql = """
+            SELECT * FROM ozon_fbs_postings
+            WHERE {}
+            ORDER BY datetime(created_at_wb) DESC, posting_number DESC
+            LIMIT ?
+        """.format(" AND ".join(cond))
+        params.append(max(1, int(limit)))
+        with self.db.connect() as conn:
+            rows = conn.execute(sql, params).fetchall()
+        return [self._enrich_posting(Database.row_to_dict(r)) for r in rows]
+
     def tab_counts(self, source_id: int) -> Dict[str, int]:
         out = {"new": 0, "assembly": 0, "delivery": 0}
         with self.db.connect() as conn:
@@ -65,6 +110,14 @@ class OzonOrdersService:
                 """,
                 (source_id,),
             ).fetchone()
+            orphan = conn.execute(
+                """
+                SELECT COUNT(*) AS c FROM ozon_fbs_postings
+                WHERE source_id = ? AND tab = 'assembly'
+                  AND (carriage_id IS NULL OR carriage_id = '')
+                """,
+                (source_id,),
+            ).fetchone()
             d = conn.execute(
                 """
                 SELECT COUNT(*) AS c FROM ozon_fbs_carriages
@@ -73,7 +126,7 @@ class OzonOrdersService:
                 (source_id,),
             ).fetchone()
         out["new"] = int(n["c"] if n else 0)
-        out["assembly"] = int(a["c"] if a else 0)
+        out["assembly"] = int(a["c"] if a else 0) + int(orphan["c"] if orphan else 0)
         out["delivery"] = int(d["c"] if d else 0)
         return out
 
@@ -124,16 +177,11 @@ class OzonOrdersService:
 
     def _enrich_posting(self, row: Dict[str, Any]) -> Dict[str, Any]:
         photos = self._photo_map()
+        catalog = self._catalog_maps()
         offer = str(row.get("offer_id") or "").strip().lower()
         sku = str(row.get("sku") or "").strip().lower()
-        catalog_name = ""
-        for p in ProductService(self.db).list_all():
-            if offer and str(p.get("supplier_article") or "").strip().lower() == offer:
-                catalog_name = str(p.get("name") or "")
-                break
-            if sku and str(p.get("ozon_sku") or "").strip().lower() == sku:
-                catalog_name = str(p.get("name") or "")
-                break
+        prod = catalog.get(offer) or catalog.get(sku)
+        catalog_name = str(prod.get("name") or "") if prod else ""
         row["product_name_display"] = (
             catalog_name or str(row.get("product_name") or "") or offer or sku or "—"
         )

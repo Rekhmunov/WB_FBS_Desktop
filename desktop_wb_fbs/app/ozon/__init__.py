@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+
 from typing import Optional, Tuple
 
 TAB_NEW = "new"
@@ -23,6 +24,8 @@ STATUS_DELIVERED = "delivered"
 STATUS_CANCELLED = "cancelled"
 STATUS_NOT_ACCEPTED = "not_accepted"
 STATUS_SENT_BY_SELLER = "sent_by_seller"
+STATUS_CLIENT_ARBITRATION = "client_arbitration"
+STATUS_DRIVER_PICKUP = "driver_pickup"
 
 _NEW_STATUSES = {
     STATUS_AWAITING_REGISTRATION,
@@ -33,7 +36,9 @@ _NEW_STATUSES = {
 _ASSEMBLY_STATUSES = {
     STATUS_AWAITING_DELIVER,
     STATUS_ARBITRATION,
+    STATUS_CLIENT_ARBITRATION,
     STATUS_SENT_BY_SELLER,
+    STATUS_DRIVER_PICKUP,
 }
 _FINISHED_STATUSES = {STATUS_DELIVERED, STATUS_DELIVERING}
 _CANCELLED_STATUSES = {STATUS_CANCELLED, STATUS_NOT_ACCEPTED}
@@ -93,13 +98,31 @@ def status_label(status: str) -> str:
         STATUS_AWAITING_PACKAGING: "Ожидает упаковки",
         STATUS_AWAITING_DELIVER: "Готов к отгрузке",
         STATUS_ARBITRATION: "Арбитраж",
+        STATUS_CLIENT_ARBITRATION: "Арбитраж (клиент)",
         STATUS_DELIVERING: "Доставляется",
+        STATUS_DRIVER_PICKUP: "У водителя",
         STATUS_DELIVERED: "Доставлено",
         STATUS_CANCELLED: "Отменено",
         STATUS_NOT_ACCEPTED: "Не принято",
         STATUS_SENT_BY_SELLER: "Передано продавцом",
     }
     return labels.get(str(status or "").strip().lower(), str(status or "—"))
+
+
+# Carriage statuses that no longer belong on «На сборке».
+_CARRIAGE_DONE_STATUSES = frozenset(
+    {
+        "approved",
+        "cancelled",
+        "completed",
+        "shipped",
+        "closed",
+    }
+)
+
+
+def carriage_is_done(status: str) -> bool:
+    return str(status or "").strip().lower() in _CARRIAGE_DONE_STATUSES
 
 
 def carriage_status_label(status: str) -> str:

@@ -7,7 +7,7 @@ import logging
 from typing import Any, Callable, Dict, List, Optional
 
 from app.db import Database
-from app.ozon import compute_tab, iso_z, lookback_window, utc_now
+from app.ozon import compute_tab, carriage_is_done, iso_z, lookback_window, utc_now
 from app.ozon.client import OzonFbsClient
 
 _log = logging.getLogger(__name__)
@@ -122,12 +122,20 @@ def upsert_posting(
         conn.commit()
 
 
-def upsert_carriage(db: Database, source_id: int, carriage: Dict[str, Any]) -> None:
-    cid = str(carriage.get("carriage_id") or carriage.get("id") or "").strip()
+def upsert_carriage(
+    db: Database,
+    source_id: int,
+    carriage: Dict[str, Any],
+    *,
+    delivery_method_id: Optional[int] = None,
+) -> None:
+    cid = str(
+        carriage.get("carriage_id") or carriage.get("id") or ""
+    ).strip()
     if not cid:
         return
     status = str(carriage.get("status") or "")
-    done = 1 if status.lower() in ("confirmed", "approved", "cancelled") else 0
+    done = 1 if carriage_is_done(status) else 0
     postings = carriage.get("posting_numbers") or carriage.get("postings") or []
     if isinstance(postings, list):
         pnums = [str(x.get("posting_number") if isinstance(x, dict) else x) for x in postings]
@@ -155,7 +163,7 @@ def upsert_carriage(db: Database, source_id: int, carriage: Dict[str, Any]) -> N
                 cid,
                 status,
                 done,
-                int(carriage.get("delivery_method_id") or 0) or None,
+                int(carriage.get("delivery_method_id") or delivery_method_id or 0) or None,
                 json.dumps(pnums, ensure_ascii=False),
                 json.dumps(carriage, ensure_ascii=False),
                 now,
@@ -257,15 +265,23 @@ def sync_source(
     carriages_n = 0
     _prog(progress, "Отгрузки…", count)
     try:
-        deliveries = client.list_carriage_deliveries(limit=100, offset=0)
-        for block in deliveries:
-            if not isinstance(block, dict):
-                continue
-            for carriage in block.get("carriages") or []:
-                if not isinstance(carriage, dict):
+        for page in client.iter_carriage_delivery_methods(limit=100):
+            if stopped():
+                return {"postings": count, "carriages": 0, "errors": errors, "stopped": True}
+            for block in page:
+                if not isinstance(block, dict):
                     continue
-                upsert_carriage(db, source_id, carriage)
-                carriages_n += 1
+                dm_id = block.get("delivery_method_id")
+                for carriage in block.get("carriages") or []:
+                    if not isinstance(carriage, dict):
+                        continue
+                    upsert_carriage(
+                        db,
+                        source_id,
+                        carriage,
+                        delivery_method_id=int(dm_id) if dm_id not in (None, "") else None,
+                    )
+                    carriages_n += 1
         _prog(progress, "Готово · отправлений {}".format(count), count)
     except Exception as exc:
         errors.append("carriage: {}".format(exc))

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import time
+from datetime import timedelta
 from typing import Any, Dict, List, Optional, Tuple
 
 from urllib.error import HTTPError
@@ -148,24 +149,50 @@ class OzonFbsClient:
         result = data.get("result") if isinstance(data, dict) else {}
         return result if isinstance(result, dict) else {}
 
-    def list_carriage_deliveries(self, *, limit: int = 100, offset: int = 0) -> List[Dict[str, Any]]:
-        data = self._request(
-            "POST",
-            "/v2/carriage/delivery/list",
-            {"limit": max(1, min(int(limit), 999)), "offset": max(0, int(offset))},
-        )
-        result = data.get("result") if isinstance(data, dict) else []
-        return list(result or []) if isinstance(result, list) else []
+    def list_carriage_deliveries(
+        self, *, limit: int = 100, cursor: str = ""
+    ) -> List[Dict[str, Any]]:
+        """v2: returns delivery methods, each with nested carriages (id, status)."""
+        body = {"limit": max(1, min(int(limit), 1000))}
+        if cursor:
+            body["cursor"] = str(cursor)
+        data = self._request("POST", "/v2/carriage/delivery/list", body)
+        methods = data.get("methods") if isinstance(data, dict) else []
+        return list(methods or []) if isinstance(methods, list) else []
+
+    def iter_carriage_delivery_methods(
+        self, *, limit: int = 100, sleep_s: float = 0.25
+    ):
+        """Yield pages of delivery methods from v2/carriage/delivery/list."""
+        cursor = ""
+        while True:
+            data = self._request(
+                "POST",
+                "/v2/carriage/delivery/list",
+                {
+                    "limit": max(1, min(int(limit), 1000)),
+                    **({"cursor": cursor} if cursor else {}),
+                },
+            )
+            methods = data.get("methods") if isinstance(data, dict) else []
+            if methods:
+                yield list(methods)
+            if not isinstance(data, dict) or not data.get("has_next"):
+                break
+            cursor = str(data.get("cursor") or "")
+            if not cursor:
+                break
+            time.sleep(sleep_s)
 
     def iter_postings_window(
         self, lookback_days: int, *, status: Optional[str] = None, sleep_s: float = 0.25
     ):
-        """Yield posting pages; each API window ≤30 days (Ozon PERIOD_IS_TOO_LONG)."""
+        """Yield posting pages; API rejects periods longer than ~90 days."""
         end = lookback_window(1)[1]
         remaining = max(1, min(int(lookback_days or 2), 90))
         while remaining > 0:
-            span = min(remaining, 30)
-            start = end - __import__("datetime").timedelta(days=span)
+            span = min(remaining, 90)
+            start = end - timedelta(days=span)
             since, to = iso_z(start), iso_z(end)
             offset = 0
             while True:

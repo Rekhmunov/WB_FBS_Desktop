@@ -10,6 +10,7 @@ from app.ozon import carriage_is_done, carriage_status_label, status_label, utc_
 from app.ozon.client import OzonFbsClient
 from app.ozon.sync import upsert_carriage, upsert_posting
 from app.services.catalog import ProductService
+from app.services.ozon_act import OzonActService
 
 
 def _date_short(iso: object) -> str:
@@ -96,7 +97,7 @@ class OzonOrdersService:
         return [self._enrich_posting(Database.row_to_dict(r)) for r in rows]
 
     def tab_counts(self, source_id: int) -> Dict[str, int]:
-        out = {"new": 0, "assembly": 0, "delivery": 0}
+        out = {"new": 0, "assembly": 0, "delivery": 0, "finished": 0}
         with self.db.connect() as conn:
             n = conn.execute(
                 """
@@ -127,13 +128,45 @@ class OzonOrdersService:
                 """,
                 (source_id,),
             ).fetchone()
+            f = conn.execute(
+                """
+                SELECT COUNT(*) AS c FROM ozon_fbs_postings
+                WHERE source_id = ? AND tab = 'finished'
+                """,
+                (source_id,),
+            ).fetchone()
         out["new"] = int(n["c"] if n else 0)
         out["assembly"] = int(a["c"] if a else 0) + int(orphan["c"] if orphan else 0)
         out["delivery"] = int(d["c"] if d else 0)
+        out["finished"] = int(f["c"] if f else 0)
         return out
 
+    def count_new_postings(self, source_id: int, *, search: str = "") -> int:
+        cond = ["source_id = ?", "tab = 'new'"]
+        params = [source_id]  # type: List[Any]
+        q = str(search or "").strip().lower()
+        if q:
+            like = "%{}%".format(q)
+            cond.append(
+                "(LOWER(posting_number) LIKE ? OR LOWER(offer_id) LIKE ?"
+                " OR LOWER(sku) LIKE ? OR LOWER(product_name) LIKE ?"
+                " OR LOWER(barcodes_json) LIKE ?)"
+            )
+            params.extend([like, like, like, like, like])
+        sql = "SELECT COUNT(*) AS c FROM ozon_fbs_postings WHERE {}".format(
+            " AND ".join(cond)
+        )
+        with self.db.connect() as conn:
+            row = conn.execute(sql, params).fetchone()
+        return int(row["c"] if row else 0)
+
     def list_new_postings(
-        self, source_id: int, *, search: str = "", limit: int = 500
+        self,
+        source_id: int,
+        *,
+        search: str = "",
+        limit: int = 500,
+        offset: int = 0,
     ) -> List[Dict[str, Any]]:
         cond = ["source_id = ?", "tab = 'new'"]
         params = [source_id]  # type: List[Any]
@@ -150,12 +183,147 @@ class OzonOrdersService:
             SELECT * FROM ozon_fbs_postings
             WHERE {}
             ORDER BY datetime(created_at_wb) DESC, posting_number DESC
-            LIMIT ?
+            LIMIT ? OFFSET ?
         """.format(" AND ".join(cond))
         params.append(max(1, int(limit)))
+        params.append(max(0, int(offset)))
         with self.db.connect() as conn:
             rows = conn.execute(sql, params).fetchall()
         return [self._enrich_posting(Database.row_to_dict(r)) for r in rows]
+
+    def list_finished_postings(
+        self,
+        source_id: int,
+        *,
+        search: str = "",
+        limit: int = 200,
+        offset: int = 0,
+    ) -> List[Dict[str, Any]]:
+        cond = ["source_id = ?", "tab = 'finished'"]
+        params = [source_id]  # type: List[Any]
+        q = str(search or "").strip().lower()
+        if q:
+            like = "%{}%".format(q)
+            cond.append(
+                "(LOWER(posting_number) LIKE ? OR LOWER(offer_id) LIKE ?"
+                " OR LOWER(sku) LIKE ? OR LOWER(product_name) LIKE ?)"
+            )
+            params.extend([like, like, like, like])
+        sql = """
+            SELECT * FROM ozon_fbs_postings
+            WHERE {}
+            ORDER BY datetime(created_at_wb) DESC, posting_number DESC
+            LIMIT ? OFFSET ?
+        """.format(" AND ".join(cond))
+        params.extend([max(1, int(limit)), max(0, int(offset))])
+        with self.db.connect() as conn:
+            rows = conn.execute(sql, params).fetchall()
+        return [self._enrich_posting(Database.row_to_dict(r)) for r in rows]
+
+    def count_finished_postings(self, source_id: int, *, search: str = "") -> int:
+        cond = ["source_id = ?", "tab = 'finished'"]
+        params = [source_id]  # type: List[Any]
+        q = str(search or "").strip().lower()
+        if q:
+            like = "%{}%".format(q)
+            cond.append(
+                "(LOWER(posting_number) LIKE ? OR LOWER(offer_id) LIKE ?"
+                " OR LOWER(sku) LIKE ? OR LOWER(product_name) LIKE ?)"
+            )
+            params.extend([like, like, like, like])
+        sql = "SELECT COUNT(*) AS c FROM ozon_fbs_postings WHERE {}".format(
+            " AND ".join(cond)
+        )
+        with self.db.connect() as conn:
+            row = conn.execute(sql, params).fetchone()
+        return int(row["c"] if row else 0)
+
+    def list_delivery_carriages(self, source_id: int) -> List[Dict[str, Any]]:
+        with self.db.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM ozon_fbs_carriages
+                WHERE source_id = ? AND done = 1
+                ORDER BY datetime(synced_at) DESC, carriage_id DESC
+                """,
+                (source_id,),
+            ).fetchall()
+        out = []
+        for r in rows:
+            item = Database.row_to_dict(r)
+            pnums = json.loads(str(item.get("posting_numbers_json") or "[]"))
+            item["posting_count"] = len(pnums) if isinstance(pnums, list) else 0
+            item["status_label"] = carriage_status_label(str(item.get("status") or ""))
+            item["status_kind"] = "delivery"
+            out.append(item)
+        return out
+
+    def get_posting(
+        self, source_id: int, posting_number: str
+    ) -> Optional[Dict[str, Any]]:
+        pnum = str(posting_number or "").strip()
+        if not pnum:
+            return None
+        with self.db.connect() as conn:
+            row = conn.execute(
+                """
+                SELECT * FROM ozon_fbs_postings
+                WHERE source_id = ? AND posting_number = ?
+                """,
+                (source_id, pnum),
+            ).fetchone()
+        if not row:
+            return None
+        return self._enrich_posting(Database.row_to_dict(row))
+
+    def add_postings_to_carriage(
+        self,
+        source_id: int,
+        client: OzonFbsClient,
+        carriage_id: str,
+        posting_numbers: List[str],
+    ) -> None:
+        cid = str(carriage_id or "").strip()
+        nums = [str(p).strip() for p in posting_numbers if str(p).strip()]
+        if not cid or not nums:
+            raise ValueError("Укажите отгрузку и отправления")
+        if not client.set_carriage_postings(int(cid), nums):
+            raise RuntimeError("Ozon не принял отправления в отгрузку {}".format(cid))
+        now = utc_now()
+        with self.db.connect() as conn:
+            for pnum in nums:
+                conn.execute(
+                    """
+                    UPDATE ozon_fbs_postings
+                    SET carriage_id = ?, tab = 'assembly', synced_at = ?
+                    WHERE source_id = ? AND posting_number = ?
+                    """,
+                    (cid, now, source_id, pnum),
+                )
+            row = conn.execute(
+                """
+                SELECT posting_numbers_json FROM ozon_fbs_carriages
+                WHERE source_id = ? AND carriage_id = ?
+                """,
+                (source_id, cid),
+            ).fetchone()
+            existing = []
+            if row:
+                try:
+                    existing = json.loads(str(row["posting_numbers_json"] or "[]"))
+                except Exception:
+                    existing = []
+            merged = list(dict.fromkeys(list(existing or []) + nums))
+            conn.execute(
+                """
+                UPDATE ozon_fbs_carriages
+                SET posting_numbers_json = ?, synced_at = ?
+                WHERE source_id = ? AND carriage_id = ?
+                """,
+                (json.dumps(merged, ensure_ascii=False), now, source_id, cid),
+            )
+            conn.commit()
+        self.refresh_carriage(source_id, client, cid)
 
     def list_open_carriages(self, source_id: int) -> List[Dict[str, Any]]:
         with self.db.connect() as conn:
@@ -317,11 +485,17 @@ class OzonOrdersService:
                 )
         except Exception:
             info = {}
-        pnums = []  # type: List[str]
-        try:
-            pnums = client.act_get_postings(int(cid))
-        except Exception:
-            pnums = []
+        dm_id = info.get("delivery_method_id") if isinstance(info, dict) else None
+        carriage_row = self.get_carriage(source_id, cid) or {}
+        if dm_id in (None, "") and carriage_row.get("delivery_method_id"):
+            dm_id = carriage_row.get("delivery_method_id")
+        act_svc = OzonActService(self.db)
+        pnums = act_svc.postings_for_carriage(
+            client,
+            source_id,
+            cid,
+            delivery_method_id=int(dm_id) if dm_id not in (None, "") else None,
+        )
         if pnums:
             with self.db.connect() as conn:
                 conn.execute(
@@ -412,4 +586,13 @@ class OzonOrdersService:
             row["barcodes"] = json.loads(str(row.get("barcodes_json") or "[]"))
         except Exception:
             row["barcodes"] = []
+        try:
+            products = json.loads(str(row.get("products_json") or "[]"))
+            row["products"] = products if isinstance(products, list) else []
+        except Exception:
+            row["products"] = []
+        if row.get("products") and len(row["products"]) > 1:
+            row["product_count_label"] = "{} тов.".format(len(row["products"]))
+        else:
+            row["product_count_label"] = ""
         return row

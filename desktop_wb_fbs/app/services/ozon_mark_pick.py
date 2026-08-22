@@ -62,6 +62,24 @@ class OzonMarkService:
         self.orders = OzonOrdersService(db)
         self._pick_helper = PickVerifyService(db)
 
+    def single_marking_row(
+        self,
+        source_id: int,
+        posting_number: str,
+        *,
+        client: Optional[OzonFbsClient] = None,
+    ) -> Optional[Dict[str, Any]]:
+        row = self.orders.get_posting(source_id, posting_number)
+        if not row:
+            return None
+        if str(row.get("status") or "").lower() == "cancelled":
+            return None
+        marks = _parse_marks(row.get("marks_json"))
+        prod = _catalog_product(
+            self.db, str(row.get("offer_id") or ""), str(row.get("sku") or "")
+        )
+        return self._row_view(row, prod, marks)
+
     def marking_rows(
         self,
         source_id: int,
@@ -205,6 +223,107 @@ class OzonMarkService:
             )
             conn.commit()
 
+    def refresh_mark_status(
+        self,
+        client: OzonFbsClient,
+        source_id: int,
+        posting_number: str,
+    ) -> Dict[str, Any]:
+        """Live ↻ from Ozon exemplar/status."""
+        pnum = str(posting_number or "").strip()
+        out = {
+            "posting_number": pnum,
+            "marks": [],
+            "marks_synced": False,
+            "needs_mark": False,
+        }
+        if not pnum:
+            return out
+        try:
+            status = client.exemplar_status(pnum)
+            marks = []  # type: List[str]
+            needs = False
+            for prod in status.get("products") or []:
+                if not isinstance(prod, dict):
+                    continue
+                for ex in prod.get("exemplars") or []:
+                    if not isinstance(ex, dict):
+                        continue
+                    if ex.get("is_mandatory_mark_needed"):
+                        needs = True
+                    for mk in ex.get("marks") or []:
+                        if not isinstance(mk, dict):
+                            continue
+                        code = str(mk.get("mark") or "").strip()
+                        if code:
+                            marks.append(code)
+                        if mk.get("mark_type") == "mandatory_mark":
+                            needs = True
+            synced = bool(marks)
+            if marks:
+                self.save_local(source_id, pnum, marks, synced=synced)
+            out["marks"] = marks
+            out["marks_synced"] = synced
+            out["needs_mark"] = needs and not marks
+        except Exception:
+            pass
+        return out
+
+    def validate_on_ozon(
+        self,
+        client: OzonFbsClient,
+        posting_number: str,
+        marks: List[str],
+    ) -> Tuple[bool, str]:
+        """POST /v5/fbs/posting/product/exemplar/validate before set."""
+        pnum = str(posting_number or "").strip()
+        cleaned = [
+            kiz_code_clean(c).replace("\u2194", "\u001d")
+            for c in marks
+            if kiz_code_clean(c)
+        ]
+        if not cleaned:
+            return True, ""
+        exemplar_data = client.exemplar_create_or_get(pnum)
+        products_payload = []  # type: List[Dict[str, Any]]
+        for prod in exemplar_data.get("products") or []:
+            if not isinstance(prod, dict):
+                continue
+            product_id = prod.get("product_id") or prod.get("sku")
+            exemplars = prod.get("exemplars") or []
+            if not isinstance(exemplars, list) or not exemplars:
+                exemplars = [{}]
+            exemplars_out = []  # type: List[Dict[str, Any]]
+            for i, ex in enumerate(exemplars):
+                if not isinstance(ex, dict):
+                    ex = {}
+                mark_code = cleaned[i] if i < len(cleaned) else (cleaned[0] if cleaned else "")
+                item = {"gtd": "", "rnpt": "", "marks": []}
+                if mark_code:
+                    item["marks"] = [
+                        {"mark": mark_code, "mark_type": "mandatory_mark"}
+                    ]
+                exemplars_out.append(item)
+            if product_id is not None:
+                products_payload.append(
+                    {"product_id": int(product_id), "exemplars": exemplars_out}
+                )
+        if not products_payload:
+            return False, "Ozon не вернул exemplar для валидации"
+        result = client.exemplar_validate(pnum, products_payload)
+        for prod in result.get("products") or []:
+            if not isinstance(prod, dict):
+                continue
+            for ex in prod.get("exemplars") or []:
+                if not isinstance(ex, dict):
+                    continue
+                for mk in ex.get("marks") or []:
+                    if not isinstance(mk, dict):
+                        continue
+                    if mk.get("error_codes"):
+                        return False, "Ozon отклонил код маркировки"
+        return True, ""
+
     def save_to_ozon(
         self,
         client: OzonFbsClient,
@@ -215,6 +334,9 @@ class OzonMarkService:
         pnum = str(posting_number or "").strip()
         cleaned = [kiz_code_clean(c).replace("\u2194", "\u001d") for c in marks if kiz_code_clean(c)]
         self.save_local(source_id, pnum, cleaned, synced=False)
+        ok, err = self.validate_on_ozon(client, pnum, cleaned)
+        if not ok:
+            raise RuntimeError(err or "Валидация маркировки не пройдена")
         exemplar_data = client.exemplar_create_or_get(pnum)
         products_payload = []  # type: List[Dict[str, Any]]
         for prod in exemplar_data.get("products") or []:
@@ -280,7 +402,23 @@ class OzonPickService:
         self._wb_pick = PickVerifyService(db)
 
     def rows(self, source_id: int, carriage_id: str) -> List[Dict[str, Any]]:
+        if not str(carriage_id or "").strip():
+            return []
         return OzonMarkService(self.db).pick_rows(source_id, carriage_id)
+
+    def single_row(
+        self, source_id: int, posting_number: str
+    ) -> List[Dict[str, Any]]:
+        row = self.orders.get_posting(source_id, posting_number)
+        if not row:
+            return []
+        marks = _parse_marks(row.get("marks_json"))
+        if marks:
+            return []
+        prod = _catalog_product(
+            self.db, str(row.get("offer_id") or ""), str(row.get("sku") or "")
+        )
+        return [OzonMarkService(self.db)._row_view(row, prod, marks)]
 
     def validate_barcode(self, barcode: str, skus: List[Any]) -> Tuple[bool, str]:
         return self._wb_pick.validate_barcode(barcode, skus)

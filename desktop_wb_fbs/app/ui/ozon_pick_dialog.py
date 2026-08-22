@@ -38,17 +38,23 @@ class OzonPickDialog(QDialog):
         parent=None,
         *,
         fullscreen: bool = True,
+        posting_number: str = "",
     ) -> None:
         super(OzonPickDialog, self).__init__(fullscreen_parent(parent, fullscreen))
         self.pick = pick
         self.source_id = source_id
         self.carriage_id = str(carriage_id or "")
+        self.posting_number = str(posting_number or "").strip()
         self.rows = []  # type: List[Dict[str, Any]]
         self._pending_pnum = None  # type: Optional[str]
         self.data_changed = False
 
         self.setObjectName("kizModal")
-        self.setWindowTitle("Проверка ШК · отгрузка {}".format(carriage_id))
+        self.setWindowTitle(
+            "Проверка ШК · {}".format(
+                self.posting_number or "отгрузка {}".format(carriage_id)
+            )
+        )
         init_fullscreen_dialog(
             self,
             fullscreen=fullscreen,
@@ -110,7 +116,10 @@ class OzonPickDialog(QDialog):
         self.load_rows()
 
     def load_rows(self) -> None:
-        self.rows = self.pick.rows(self.source_id, self.carriage_id)
+        if self.posting_number:
+            self.rows = self.pick.single_row(self.source_id, self.posting_number)
+        else:
+            self.rows = self.pick.rows(self.source_id, self.carriage_id)
         self._render_table()
         self._update_counter()
 

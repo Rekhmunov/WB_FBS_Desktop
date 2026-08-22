@@ -155,6 +155,7 @@ CREATE TABLE IF NOT EXISTS ozon_fbs_postings (
     marks_json TEXT NOT NULL DEFAULT '[]',
     marks_saved_at TEXT,
     marks_synced INTEGER NOT NULL DEFAULT 0,
+    products_json TEXT NOT NULL DEFAULT '[]',
     pick_verified INTEGER NOT NULL DEFAULT 0,
     pick_barcode TEXT NOT NULL DEFAULT '',
     pick_verified_at TEXT,
@@ -173,6 +174,8 @@ CREATE TABLE IF NOT EXISTS ozon_fbs_carriages (
     status TEXT NOT NULL DEFAULT '',
     done INTEGER NOT NULL DEFAULT 0,
     delivery_method_id INTEGER,
+    act_id TEXT NOT NULL DEFAULT '',
+    act_status TEXT NOT NULL DEFAULT '',
     posting_numbers_json TEXT NOT NULL DEFAULT '[]',
     raw_json TEXT NOT NULL DEFAULT '{}',
     synced_at TEXT NOT NULL,
@@ -181,6 +184,15 @@ CREATE TABLE IF NOT EXISTS ozon_fbs_carriages (
 
 CREATE INDEX IF NOT EXISTS idx_ozon_carriages_src
     ON ozon_fbs_carriages(source_id, done, synced_at DESC);
+
+CREATE TABLE IF NOT EXISTS ozon_fbs_label_cache (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    source_id INTEGER NOT NULL,
+    cache_key TEXT NOT NULL,
+    file_path TEXT NOT NULL DEFAULT '',
+    updated_at TEXT NOT NULL,
+    UNIQUE(source_id, cache_key)
+);
 """
 
 
@@ -271,6 +283,7 @@ class Database:
                 marks_json TEXT NOT NULL DEFAULT '[]',
                 marks_saved_at TEXT,
                 marks_synced INTEGER NOT NULL DEFAULT 0,
+                products_json TEXT NOT NULL DEFAULT '[]',
                 pick_verified INTEGER NOT NULL DEFAULT 0,
                 pick_barcode TEXT NOT NULL DEFAULT '',
                 pick_verified_at TEXT,
@@ -287,6 +300,8 @@ class Database:
                 status TEXT NOT NULL DEFAULT '',
                 done INTEGER NOT NULL DEFAULT 0,
                 delivery_method_id INTEGER,
+                act_id TEXT NOT NULL DEFAULT '',
+                act_status TEXT NOT NULL DEFAULT '',
                 posting_numbers_json TEXT NOT NULL DEFAULT '[]',
                 raw_json TEXT NOT NULL DEFAULT '{}',
                 synced_at TEXT NOT NULL,
@@ -296,6 +311,14 @@ class Database:
                 ON ozon_fbs_carriages(source_id, done, synced_at DESC);
             CREATE INDEX IF NOT EXISTS idx_ozon_postings_carriage
                 ON ozon_fbs_postings(source_id, carriage_id);
+            CREATE TABLE IF NOT EXISTS ozon_fbs_label_cache (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                source_id INTEGER NOT NULL,
+                cache_key TEXT NOT NULL,
+                file_path TEXT NOT NULL DEFAULT '',
+                updated_at TEXT NOT NULL,
+                UNIQUE(source_id, cache_key)
+            );
             """
         )
         cols = {
@@ -306,6 +329,25 @@ class Database:
             conn.execute(
                 "ALTER TABLE ozon_fbs_postings ADD COLUMN marks_synced "
                 "INTEGER NOT NULL DEFAULT 0"
+            )
+        if "products_json" not in cols:
+            conn.execute(
+                "ALTER TABLE ozon_fbs_postings ADD COLUMN products_json "
+                "TEXT NOT NULL DEFAULT '[]'"
+            )
+        carriage_cols = {
+            str(r[1])
+            for r in conn.execute("PRAGMA table_info(ozon_fbs_carriages)").fetchall()
+        }
+        if "act_id" not in carriage_cols:
+            conn.execute(
+                "ALTER TABLE ozon_fbs_carriages ADD COLUMN act_id "
+                "TEXT NOT NULL DEFAULT ''"
+            )
+        if "act_status" not in carriage_cols:
+            conn.execute(
+                "ALTER TABLE ozon_fbs_carriages ADD COLUMN act_status "
+                "TEXT NOT NULL DEFAULT ''"
             )
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_ozon_postings_carriage "

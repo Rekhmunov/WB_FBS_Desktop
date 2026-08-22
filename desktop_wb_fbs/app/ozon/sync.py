@@ -19,12 +19,16 @@ def _prog(cb: ProgressCb, msg: str, n: int) -> None:
         cb(str(msg or ""), int(n or 0))
 
 
-def _first_product(posting: Dict[str, Any]) -> Dict[str, Any]:
+def _products(posting: Dict[str, Any]) -> List[Dict[str, Any]]:
     products = posting.get("products")
-    if isinstance(products, list) and products:
-        item = products[0]
-        return item if isinstance(item, dict) else {}
-    return {}
+    if isinstance(products, list):
+        return [p for p in products if isinstance(p, dict)]
+    return []
+
+
+def _first_product(posting: Dict[str, Any]) -> Dict[str, Any]:
+    products = _products(posting)
+    return products[0] if products else {}
 
 
 def _barcodes(posting: Dict[str, Any]) -> List[str]:
@@ -50,6 +54,7 @@ def upsert_posting(
     if not pnum:
         return
     prod = _first_product(posting)
+    all_products = _products(posting)
     analytics = posting.get("analytics_data") if isinstance(posting.get("analytics_data"), dict) else {}
     status = str(posting.get("status") or "")
     cid = str(carriage_id or posting.get("carriage_id") or "").strip()
@@ -71,8 +76,9 @@ def upsert_posting(
                 source_id, posting_number, order_id, order_number, status, substatus,
                 tab, carriage_id, offer_id, sku, product_name, quantity,
                 warehouse_name, warehouse_id, barcodes_json, cancel_reason,
-                shipment_date, in_process_at, created_at_wb, raw_json, synced_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                shipment_date, in_process_at, created_at_wb, products_json,
+                raw_json, synced_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(source_id, posting_number) DO UPDATE SET
                 order_id = excluded.order_id,
                 order_number = excluded.order_number,
@@ -92,6 +98,7 @@ def upsert_posting(
                 shipment_date = excluded.shipment_date,
                 in_process_at = excluded.in_process_at,
                 created_at_wb = COALESCE(excluded.created_at_wb, ozon_fbs_postings.created_at_wb),
+                products_json = excluded.products_json,
                 raw_json = excluded.raw_json,
                 synced_at = excluded.synced_at
             """,
@@ -115,6 +122,7 @@ def upsert_posting(
                 str(posting.get("shipment_date") or ""),
                 str(posting.get("in_process_at") or ""),
                 str(posting.get("in_process_at") or posting.get("shipment_date") or ""),
+                json.dumps(all_products, ensure_ascii=False),
                 json.dumps(posting, ensure_ascii=False),
                 now,
             ),

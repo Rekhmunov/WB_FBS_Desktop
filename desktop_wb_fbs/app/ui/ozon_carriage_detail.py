@@ -29,8 +29,11 @@ from PyQt5.QtWidgets import (
 from app.db import Database
 from app.ozon.client import OzonFbsClient
 from app.ozon import carriage_status_label
+from app.services.ozon_act import OzonActService
+from app.services.ozon_labels import OzonLabelService
 from app.services.ozon_mark_pick import OzonMarkService, OzonPickService
 from app.services.ozon_orders import OzonOrdersService
+from app.services.ozon_ship import OzonShipService
 from app.ui.dialog_utils import (
     fullscreen_parent,
     init_fullscreen_dialog,
@@ -77,25 +80,73 @@ class _LabelPrintWorker(QThread):
 
     def __init__(
         self,
+        labels: OzonLabelService,
         client: OzonFbsClient,
+        source_id: int,
         posting_numbers: List[str],
         parent: Optional[QWidget] = None,
     ) -> None:
         super(_LabelPrintWorker, self).__init__(parent)
+        self.labels = labels
         self.client = client
+        self.source_id = source_id
         self.posting_numbers = list(posting_numbers or [])
 
     def run(self) -> None:
         try:
-            self.client.package_label_create(self.posting_numbers)
-            data = self.client.package_label_fetch(self.posting_numbers)
-            if not data:
-                raise RuntimeError("Ozon не вернул файл этикеток")
-            suffix = ".pdf" if data[:4] == b"%PDF" else ".bin"
-            fd, path = tempfile.mkstemp(suffix=suffix, prefix="ozon-label-")
+            path = self.labels.fetch_labels(
+                self.client, self.source_id, self.posting_numbers
+            )
+            self.ready.emit(path)
+        except Exception as exc:
+            self.failed.emit(str(exc))
+
+
+class _ActFileWorker(QThread):
+    ready = pyqtSignal(str)
+    failed = pyqtSignal(str)
+
+    def __init__(
+        self,
+        act: OzonActService,
+        client: OzonFbsClient,
+        source_id: int,
+        carriage_id: str,
+        delivery_method_id: int,
+        mode: str,
+        parent: Optional[QWidget] = None,
+    ) -> None:
+        super(_ActFileWorker, self).__init__(parent)
+        self.act = act
+        self.client = client
+        self.source_id = source_id
+        self.carriage_id = carriage_id
+        self.delivery_method_id = delivery_method_id
+        self.mode = mode
+
+    def run(self) -> None:
+        try:
+            if self.mode == "barcode":
+                content, name = self.act.fetch_barcode(
+                    self.client,
+                    self.source_id,
+                    self.carriage_id,
+                    delivery_method_id=self.delivery_method_id or None,
+                )
+            else:
+                content, name = self.act.fetch_act_pdf(
+                    self.client,
+                    self.source_id,
+                    self.carriage_id,
+                    delivery_method_id=self.delivery_method_id or None,
+                )
+            suffix = ".pdf" if str(name).lower().endswith(".pdf") else ".png"
+            if content[:4] == b"%PDF":
+                suffix = ".pdf"
+            fd, path = tempfile.mkstemp(suffix=suffix, prefix="ozon-act-")
             os.close(fd)
             with open(path, "wb") as fh:
-                fh.write(data)
+                fh.write(content)
             self.ready.emit(path)
         except Exception as exc:
             self.failed.emit(str(exc))
@@ -125,10 +176,14 @@ class OzonCarriageDetailDialog(QDialog):
         self.client = OzonFbsClient(self.client_id, self.api_key)
         self.mark = OzonMarkService(db)
         self.pick = OzonPickService(db)
+        self.ship = OzonShipService(db)
+        self.act = OzonActService(db)
+        self.labels = OzonLabelService(db)
         self._rows = []  # type: List[Dict[str, Any]]
         self._carriage = None  # type: Optional[Dict[str, Any]]
         self._load_worker = None  # type: Optional[_CarriageLoadWorker]
         self._label_worker = None  # type: Optional[_LabelPrintWorker]
+        self._act_worker = None  # type: Optional[_ActFileWorker]
         self.carriage_mutated = False
 
         self.setWindowTitle("Отгрузка Ozon {}".format(self.carriage_id))
@@ -169,6 +224,15 @@ class OzonCarriageDetailDialog(QDialog):
         self.btn_labels = QPushButton("Этикетки")
         self.btn_labels.setObjectName("secondary")
         self.btn_labels.clicked.connect(self.print_labels)
+        self.btn_ship = QPushButton("Собрать (ship)")
+        self.btn_ship.setObjectName("secondary")
+        self.btn_ship.clicked.connect(self.ship_all)
+        self.btn_act_qr = QPushButton("QR отгрузки")
+        self.btn_act_qr.setObjectName("secondary")
+        self.btn_act_qr.clicked.connect(self.print_act_qr)
+        self.btn_act_pdf = QPushButton("Акт PDF")
+        self.btn_act_pdf.setObjectName("secondary")
+        self.btn_act_pdf.clicked.connect(self.print_act_pdf)
         self.btn_approve = QPushButton("Подтвердить отгрузку")
         self.btn_approve.clicked.connect(self.approve_carriage)
         self.btn_refresh = QPushButton("Обновить")
@@ -178,6 +242,9 @@ class OzonCarriageDetailDialog(QDialog):
             self.btn_mark,
             self.btn_pick,
             self.btn_labels,
+            self.btn_ship,
+            self.btn_act_qr,
+            self.btn_act_pdf,
             self.btn_approve,
             self.btn_refresh,
         ):
@@ -212,6 +279,9 @@ class OzonCarriageDetailDialog(QDialog):
             self.btn_mark,
             self.btn_pick,
             self.btn_labels,
+            self.btn_ship,
+            self.btn_act_qr,
+            self.btn_act_pdf,
             self.btn_approve,
             self.btn_refresh,
         ):
@@ -338,7 +408,9 @@ class OzonCarriageDetailDialog(QDialog):
             return
         self.btn_labels.setEnabled(False)
         self.load_info.setText("Формирование этикеток Ozon…")
-        worker = _LabelPrintWorker(self.client, pnums, self)
+        worker = _LabelPrintWorker(
+            self.labels, self.client, self.source_id, pnums, self
+        )
         self._label_worker = worker
         worker.ready.connect(self._on_labels_ready)
         worker.failed.connect(self._on_labels_failed)
@@ -351,6 +423,63 @@ class OzonCarriageDetailDialog(QDialog):
 
     def _on_labels_failed(self, message: str) -> None:
         QMessageBox.warning(self, "Этикетки", str(message or "Ошибка"))
+
+    def _delivery_method_id(self) -> int:
+        c = self._carriage or {}
+        try:
+            return int(c.get("delivery_method_id") or 0)
+        except (TypeError, ValueError):
+            return 0
+
+    def ship_all(self) -> None:
+        pnums = [str(r.get("posting_number") or "") for r in self._rows]
+        pnums = [p for p in pnums if p]
+        if not pnums:
+            QMessageBox.information(self, "Ship", "Нет отправлений.")
+            return
+        try:
+            res = self.ship.ship_postings(self.client, self.source_id, pnums)
+            errs = res.get("errors") or []
+            ok_n = len(res.get("ok") or [])
+            msg = "Собрано отправлений: {}.".format(ok_n)
+            if errs:
+                msg += "\n\nОшибки:\n" + "\n".join(str(e) for e in errs[:5])
+            QMessageBox.information(self, "Ship", msg)
+            if ok_n:
+                self.carriage_mutated = True
+                self.reload()
+        except Exception as exc:
+            QMessageBox.warning(self, "Ship", str(exc))
+
+    def print_act_qr(self) -> None:
+        self._run_act_worker("barcode")
+
+    def print_act_pdf(self) -> None:
+        self._run_act_worker("pdf")
+
+    def _run_act_worker(self, mode: str) -> None:
+        if self._act_worker and self._act_worker.isRunning():
+            return
+        self.load_info.setText(
+            "Формирование {}…".format("QR" if mode == "barcode" else "акта")
+        )
+        worker = _ActFileWorker(
+            self.act,
+            self.client,
+            self.source_id,
+            self.carriage_id,
+            self._delivery_method_id(),
+            mode,
+            self,
+        )
+        self._act_worker = worker
+        worker.ready.connect(self._on_act_file_ready)
+        worker.failed.connect(self._on_labels_failed)
+        worker.start()
+
+    def _on_act_file_ready(self, path: str) -> None:
+        self.load_info.setText("Документ сохранён: {}".format(path))
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
 
     def approve_carriage(self) -> None:
         if (

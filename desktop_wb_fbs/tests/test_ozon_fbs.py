@@ -62,6 +62,41 @@ class OzonCarriageClientParseTest(unittest.TestCase):
         self.assertEqual(str(carriage.get("id")), "99")
         self.assertEqual(carriage.get("postings_count"), 3)
 
+class OzonShipPackagesTest(unittest.TestCase):
+    def test_build_ship_packages_multi(self) -> None:
+        from app.services.ozon_ship import build_ship_packages
+
+        products = [
+            {"sku": 111, "quantity": 2},
+            {"sku": 222, "quantity": 1},
+        ]
+        pkgs = build_ship_packages(products)
+        self.assertEqual(len(pkgs), 1)
+        self.assertEqual(len(pkgs[0]["products"]), 2)
+        self.assertEqual(pkgs[0]["products"][0]["product_id"], 111)
+        self.assertEqual(pkgs[0]["products"][0]["quantity"], 2)
+
+    def test_act_get_postings_parses_objects(self) -> None:
+        payload = {
+            "result": [
+                {"posting_number": "PN-1", "status": "awaiting_deliver"},
+                {"posting_number": "PN-2", "status": "awaiting_deliver"},
+            ]
+        }
+        result = payload.get("result") or []
+        pnums = [
+            str(x.get("posting_number"))
+            for x in result
+            if isinstance(x, dict) and x.get("posting_number")
+        ]
+        self.assertEqual(pnums, ["PN-1", "PN-2"])
+
+    def test_posting_needs_ship(self) -> None:
+        from app.services.ozon_ship import posting_needs_ship
+
+        self.assertTrue(posting_needs_ship("awaiting_packaging"))
+        self.assertFalse(posting_needs_ship("awaiting_deliver"))
+
 
 class OzonPickServiceTest(unittest.TestCase):
     def test_save_pick_local(self) -> None:

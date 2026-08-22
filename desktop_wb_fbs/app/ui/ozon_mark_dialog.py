@@ -74,12 +74,14 @@ class OzonMarkDialog(QDialog):
         parent: Optional[QWidget] = None,
         *,
         fullscreen: bool = True,
+        posting_number: str = "",
     ) -> None:
         super(OzonMarkDialog, self).__init__(fullscreen_parent(parent, fullscreen))
         self.mark = mark
         self.client = client
         self.source_id = source_id
         self.carriage_id = str(carriage_id or "")
+        self.posting_number = str(posting_number or "").strip()
         self.rows = []  # type: List[Dict[str, Any]]
         self._pending_pnum = None  # type: Optional[str]
         self._inputs = {}  # type: Dict[str, QLineEdit]
@@ -87,7 +89,11 @@ class OzonMarkDialog(QDialog):
         self._save_worker = None  # type: Optional[_OzonMarkSaveWorker]
 
         self.setObjectName("kizModal")
-        self.setWindowTitle("Маркировка · отгрузка {}".format(carriage_id))
+        self.setWindowTitle(
+            "Маркировка · {}".format(
+                self.posting_number or "отгрузка {}".format(carriage_id)
+            )
+        )
         init_fullscreen_dialog(
             self,
             fullscreen=fullscreen,
@@ -117,6 +123,10 @@ class OzonMarkDialog(QDialog):
         search_box, self.search_input = make_modal_search_box()
         self.search_input.textChanged.connect(self._render_table)
         toolbar.addWidget(search_box)
+        refresh = QPushButton("↻ Статус Ozon")
+        refresh.setObjectName("secondary")
+        refresh.clicked.connect(self.refresh_live)
+        toolbar.addWidget(refresh)
         save = QPushButton("Сохранить в Ozon")
         save.setObjectName("primaryButton")
         save.clicked.connect(self.save_all)
@@ -154,9 +164,31 @@ class OzonMarkDialog(QDialog):
         self.load_rows()
 
     def load_rows(self) -> None:
-        self.rows = self.mark.marking_rows(
-            self.source_id, self.carriage_id, client=self.client
-        )
+        if self.posting_number:
+            row = self.mark.single_marking_row(
+                self.source_id, self.posting_number, client=self.client
+            )
+            self.rows = [row] if row else []
+        else:
+            self.rows = self.mark.marking_rows(
+                self.source_id, self.carriage_id, client=self.client
+            )
+        self._render_table()
+        self._update_counter()
+
+    def refresh_live(self) -> None:
+        changed = False
+        for r in self.rows:
+            pnum = str(r.get("posting_number") or "")
+            if not pnum:
+                continue
+            live = self.mark.refresh_mark_status(self.client, self.source_id, pnum)
+            if live.get("marks"):
+                r["marks"] = live.get("marks") or []
+                r["marks_synced"] = bool(live.get("marks_synced"))
+                changed = True
+        if changed:
+            self.data_changed = True
         self._render_table()
         self._update_counter()
 

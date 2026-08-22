@@ -2,6 +2,7 @@
 """Ozon Seller API FBS client (desktop)."""
 from __future__ import annotations
 
+import base64
 import json
 import logging
 import time
@@ -351,11 +352,97 @@ class OzonFbsClient:
                 "Ozon label HTTP {}: {}".format(exc.code, err_body or exc.reason)
             ) from exc
 
-    def act_get_postings(self, carriage_id: int) -> List[str]:
+    def ship_posting(
+        self,
+        posting_number: str,
+        *,
+        packages: Optional[List[Dict[str, Any]]] = None,
+    ) -> List[str]:
+        """POST /v4/posting/fbs/ship — переводит отправление в awaiting_deliver."""
+        pnum = str(posting_number or "").strip()
+        if not pnum:
+            raise ValueError("posting_number required")
+        body = {"posting_number": pnum}
+        if packages:
+            body["packages"] = packages
+        data = self._request("POST", "/v4/posting/fbs/ship", body)
+        result = data.get("result") if isinstance(data, dict) else []
+        if isinstance(result, list):
+            return [str(x) for x in result if str(x).strip()]
+        return []
+
+    def exemplar_validate(
+        self, posting_number: str, products: List[Dict[str, Any]]
+    ) -> Dict[str, Any]:
+        data = self._request(
+            "POST",
+            "/v5/fbs/posting/product/exemplar/validate",
+            {
+                "posting_number": str(posting_number or "").strip(),
+                "products": products,
+            },
+        )
+        result = data.get("result") if isinstance(data, dict) else {}
+        return result if isinstance(result, dict) else {}
+
+    def act_create(
+        self,
+        delivery_method_id: int,
+        *,
+        departure_date: str = "",
+        containers_count: int = 0,
+    ) -> int:
+        body = {"delivery_method_id": int(delivery_method_id)}
+        if departure_date:
+            body["departure_date"] = str(departure_date)
+        if containers_count > 0:
+            body["containers_count"] = int(containers_count)
+        data = self._request("POST", "/v2/posting/fbs/act/create", body)
+        result = data.get("result") if isinstance(data, dict) else {}
+        act = result.get("act") if isinstance(result, dict) else result
+        act_id = 0
+        if isinstance(act, dict):
+            act_id = int(act.get("id") or 0)
+        elif isinstance(result, dict):
+            act_id = int(result.get("id") or 0)
+        if not act_id:
+            raise RuntimeError("Ozon не вернул ID акта отгрузки")
+        return act_id
+
+    def act_check_status(self, act_id: int) -> Dict[str, Any]:
+        data = self._request(
+            "POST",
+            "/v2/posting/fbs/act/check-status",
+            {"id": int(act_id)},
+        )
+        result = data.get("result") if isinstance(data, dict) else {}
+        return result if isinstance(result, dict) else {}
+
+    def act_list(
+        self,
+        *,
+        date_from: str,
+        date_to: str,
+        limit: int = 50,
+        status: Optional[List[str]] = None,
+    ) -> List[Dict[str, Any]]:
+        filt = {"date_from": str(date_from), "date_to": str(date_to)}
+        if status:
+            filt["status"] = list(status)
+        data = self._request(
+            "POST",
+            "/v2/posting/fbs/act/list",
+            {"filter": filt, "limit": max(1, min(int(limit), 100))},
+        )
+        result = data.get("result") if isinstance(data, dict) else []
+        return list(result or []) if isinstance(result, list) else []
+
+    def act_get_postings(self, act_id: int) -> List[str]:
+        """Список отправлений в акте (id = act ID, не carriage_id)."""
         data = self._request(
             "POST",
             "/v2/posting/fbs/act/get-postings",
-            {"id": int(carriage_id)},
+            {"id": int(act_id)},
         )
         result = data.get("result") if isinstance(data, dict) else []
         if isinstance(result, list):
@@ -369,3 +456,68 @@ class OzonFbsClient:
                     out.append(str(item))
             return out
         return []
+
+    def _decode_file_payload(self, data: Any) -> Tuple[bytes, str]:
+        if not isinstance(data, dict):
+            return b"", ""
+        b64 = str(
+            data.get("file_content")
+            or (data.get("result") or {}).get("file_content")
+            or ""
+        )
+        name = str(
+            data.get("file_name")
+            or (data.get("result") or {}).get("file_name")
+            or ""
+        )
+        if b64:
+            try:
+                return base64.b64decode(b64), name
+            except Exception:
+                pass
+        return b"", name
+
+    def act_get_barcode(self, act_id: int) -> Tuple[bytes, str]:
+        data = self._request(
+            "POST",
+            "/v2/posting/fbs/act/get-barcode",
+            {"id": int(act_id)},
+        )
+        payload = data.get("result") if isinstance(data, dict) else data
+        content, name = self._decode_file_payload(
+            payload if isinstance(payload, dict) else data
+        )
+        if content:
+            return content, name or "ozon-barcode.png"
+        raise RuntimeError("Ozon не вернул штрихкод отгрузки")
+
+    def act_get_pdf(self, act_id: int) -> Tuple[bytes, str]:
+        data = self._request(
+            "POST",
+            "/v2/posting/fbs/act/get-pdf",
+            {"id": int(act_id)},
+        )
+        payload = data.get("result") if isinstance(data, dict) else data
+        content, name = self._decode_file_payload(
+            payload if isinstance(payload, dict) else data
+        )
+        if content:
+            return content, name or "ozon-act.pdf"
+        raise RuntimeError("Ozon не вернул PDF акта")
+
+    def package_label_task_status(self, task_id: int) -> Dict[str, Any]:
+        data = self._request(
+            "POST",
+            "/v1/posting/fbs/package-label/get",
+            {"task_id": int(task_id)},
+        )
+        result = data.get("result") if isinstance(data, dict) else {}
+        return result if isinstance(result, dict) else {}
+
+    def fetch_url_bytes(self, url: str) -> bytes:
+        req = Request(
+            str(url or ""),
+            headers={"User-Agent": "FeedPilot-Desktop-OzonFBS/0.1"},
+        )
+        with urlopen_https(req, timeout=60) as resp:
+            return resp.read()

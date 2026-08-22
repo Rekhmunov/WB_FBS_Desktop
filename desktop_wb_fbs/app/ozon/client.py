@@ -208,3 +208,164 @@ class OzonFbsClient:
             end = start
             remaining -= span
             time.sleep(sleep_s)
+
+    def get_carriage(self, carriage_id: int) -> Dict[str, Any]:
+        data = self._request(
+            "POST",
+            "/v1/carriage/get",
+            {"carriage_id": int(carriage_id)},
+        )
+        result = data.get("result") if isinstance(data, dict) else {}
+        return result if isinstance(result, dict) else {}
+
+    def create_carriage(
+        self,
+        delivery_method_id: int,
+        *,
+        departure_date: str = "",
+    ) -> Dict[str, Any]:
+        body = {"delivery_method_id": int(delivery_method_id)}
+        if departure_date:
+            body["departure_date"] = str(departure_date)
+        data = self._request("POST", "/v1/carriage/create", body)
+        result = data.get("result") if isinstance(data, dict) else data
+        return result if isinstance(result, dict) else {}
+
+    def approve_carriage(self, carriage_id: int) -> bool:
+        data = self._request(
+            "POST",
+            "/v1/carriage/approve",
+            {"carriage_id": int(carriage_id)},
+        )
+        if isinstance(data, dict):
+            return bool(data.get("result"))
+        return False
+
+    def set_carriage_postings(
+        self, carriage_id: int, posting_numbers: List[str]
+    ) -> bool:
+        data = self._request(
+            "POST",
+            "/v1/carriage/set-postings",
+            {
+                "carriage_id": int(carriage_id),
+                "posting_number": [str(p) for p in posting_numbers if str(p).strip()],
+            },
+        )
+        if isinstance(data, dict):
+            return bool(data.get("result"))
+        return False
+
+    def exemplar_create_or_get(self, posting_number: str) -> Dict[str, Any]:
+        data = self._request(
+            "POST",
+            "/v6/fbs/posting/product/exemplar/create-or-get",
+            {"posting_number": str(posting_number or "").strip()},
+        )
+        result = data.get("result") if isinstance(data, dict) else {}
+        return result if isinstance(result, dict) else {}
+
+    def exemplar_status(self, posting_number: str) -> Dict[str, Any]:
+        data = self._request(
+            "POST",
+            "/v5/fbs/posting/product/exemplar/status",
+            {"posting_number": str(posting_number or "").strip()},
+        )
+        result = data.get("result") if isinstance(data, dict) else {}
+        return result if isinstance(result, dict) else {}
+
+    def exemplar_set(
+        self,
+        posting_number: str,
+        products: List[Dict[str, Any]],
+        *,
+        multi_box_qty: int = 0,
+    ) -> Dict[str, Any]:
+        body = {
+            "posting_number": str(posting_number or "").strip(),
+            "products": products,
+        }
+        if multi_box_qty > 0:
+            body["multi_box_qty"] = int(multi_box_qty)
+        data = self._request(
+            "POST",
+            "/v6/fbs/posting/product/exemplar/set",
+            body,
+        )
+        result = data.get("result") if isinstance(data, dict) else {}
+        return result if isinstance(result, dict) else {}
+
+    def package_label_create(self, posting_numbers: List[str]) -> List[Dict[str, Any]]:
+        nums = [str(p).strip() for p in posting_numbers if str(p).strip()]
+        if not nums:
+            return []
+        data = self._request(
+            "POST",
+            "/v2/posting/fbs/package-label/create",
+            {"posting_number": nums},
+        )
+        result = data.get("result") if isinstance(data, dict) else {}
+        tasks = result.get("tasks") if isinstance(result, dict) else []
+        return list(tasks or []) if isinstance(tasks, list) else []
+
+    def package_label_fetch(self, posting_numbers: List[str]) -> bytes:
+        """Fetch label PDF/ZIP for postings (v2)."""
+        nums = [str(p).strip() for p in posting_numbers if str(p).strip()]
+        if not nums:
+            return b""
+        url = "{}{}".format(OZON_API, "/v2/posting/fbs/package-label")
+        data = json.dumps({"posting_number": nums}).encode("utf-8")
+        headers = {
+            "Client-Id": self.client_id,
+            "Api-Key": self.api_key,
+            "Accept": "application/pdf,application/json",
+            "Content-Type": "application/json",
+            "User-Agent": "FeedPilot-Desktop-OzonFBS/0.1",
+        }
+        req = Request(url, method="POST", headers=headers, data=data)
+        try:
+            with urlopen_https(req, timeout=60) as resp:
+                payload = resp.read()
+                ctype = str(resp.headers.get("Content-Type") or "").lower()
+                if "json" in ctype:
+                    parsed = json.loads(payload.decode("utf-8"))
+                    file_b64 = ""
+                    if isinstance(parsed, dict):
+                        file_b64 = str(
+                            parsed.get("file_content")
+                            or (parsed.get("result") or {}).get("file_content")
+                            or ""
+                        )
+                    if file_b64:
+                        import base64
+
+                        return base64.b64decode(file_b64)
+                return payload
+        except HTTPError as exc:
+            err_body = ""
+            try:
+                err_body = exc.read().decode("utf-8", errors="replace")[:500]
+            except Exception:
+                pass
+            raise RuntimeError(
+                "Ozon label HTTP {}: {}".format(exc.code, err_body or exc.reason)
+            ) from exc
+
+    def act_get_postings(self, carriage_id: int) -> List[str]:
+        data = self._request(
+            "POST",
+            "/v2/posting/fbs/act/get-postings",
+            {"id": int(carriage_id)},
+        )
+        result = data.get("result") if isinstance(data, dict) else []
+        if isinstance(result, list):
+            out = []
+            for item in result:
+                if isinstance(item, dict):
+                    pnum = str(item.get("posting_number") or "").strip()
+                    if pnum:
+                        out.append(pnum)
+                elif item:
+                    out.append(str(item))
+            return out
+        return []

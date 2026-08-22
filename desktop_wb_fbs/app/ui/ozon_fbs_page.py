@@ -142,8 +142,15 @@ class OzonFbsPage(QWidget):
         self.stop_btn.setObjectName("secondary")
         self.stop_btn.hide()
         self.stop_btn.clicked.connect(self.stop_sync)
+        self.create_carriage_btn = QPushButton("Создать отгрузку")
+        self.create_carriage_btn.setObjectName("secondary")
+        self.create_carriage_btn.clicked.connect(self.create_carriage)
+        self.open_carriage_btn = QPushButton("Открыть отгрузку")
+        self.open_carriage_btn.clicked.connect(self.open_selected_carriage)
         tb.addWidget(self.sync_btn)
         tb.addWidget(self.stop_btn)
+        tb.addWidget(self.create_carriage_btn)
+        tb.addWidget(self.open_carriage_btn)
         tb.addStretch(1)
         self.search_input = QLineEdit()
         self.search_input.setObjectName("sdSearch")
@@ -180,11 +187,12 @@ class OzonFbsPage(QWidget):
         self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.table.verticalHeader().setVisible(False)
         self.table.setShowGrid(False)
+        self.table.doubleClicked.connect(self._on_row_double_click)
         root.addWidget(self.table, 1)
 
         hint = QLabel(
-            "Карточка отгрузки, маркировка, проверка ШК и печать — следующий этап. "
-            "Синхронизация и списки уже работают на Ozon API."
+            "На сборке: двойной клик по отгрузке — карточка (маркировка, ШК, этикетки). "
+            "«Создать отгрузку» — новая FBS-отгрузка по методу доставки Ozon."
         )
         hint.setObjectName("hint")
         hint.setWordWrap(True)
@@ -255,7 +263,9 @@ class OzonFbsPage(QWidget):
         self.table.setRowCount(total_rows)
         row_i = 0
         for c in carriages:
-            self.table.setItem(row_i, 0, QTableWidgetItem(str(c.get("carriage_id") or "")))
+            item = QTableWidgetItem(str(c.get("carriage_id") or ""))
+            item.setData(Qt.UserRole, ("carriage", str(c.get("carriage_id") or "")))
+            self.table.setItem(row_i, 0, item)
             pill = make_status_pill(
                 str(c.get("status_label") or "—"),
                 str(c.get("status_kind") or "assembly"),
@@ -284,6 +294,105 @@ class OzonFbsPage(QWidget):
             )
             self.table.setRowHeight(row_i, 120)
             row_i += 1
+
+    def _on_row_double_click(self, _index) -> None:
+        if self._tab != "assembly":
+            return
+        self.open_selected_carriage()
+
+    def _selected_carriage_id(self) -> Optional[str]:
+        row = self.table.currentRow()
+        if row < 0:
+            return None
+        item = self.table.item(row, 0)
+        if not item:
+            return None
+        data = item.data(Qt.UserRole)
+        if isinstance(data, (list, tuple)) and len(data) == 2 and data[0] == "carriage":
+            return str(data[1] or "").strip() or None
+        text = str(item.text() or "").strip()
+        if text.startswith("·"):
+            return None
+        return text or None
+
+    def open_selected_carriage(self) -> None:
+        src = self.current_source()
+        cid = self._selected_carriage_id()
+        if not src or not cid:
+            QMessageBox.information(
+                self, "Ozon FBS", "Выберите отгрузку в списке «На сборке»."
+            )
+            return
+        self._open_carriage_by_id(src, cid)
+
+    def _open_carriage_by_id(self, src: Dict[str, Any], carriage_id: str) -> None:
+        from app.ui.ozon_carriage_detail import OzonCarriageDetailDialog
+
+        dlg = OzonCarriageDetailDialog(
+            self.db,
+            self.orders,
+            src,
+            carriage_id,
+            self.window(),
+            fullscreen=True,
+        )
+        dlg.exec_()
+        if dlg.carriage_mutated:
+            self.reload_table()
+
+    def create_carriage(self) -> None:
+        src = self.current_source()
+        if not src:
+            QMessageBox.information(self, "Ozon FBS", "Выберите источник Ozon FBS.")
+            return
+        from app.ozon.client import OzonFbsClient
+        from PyQt5.QtWidgets import QComboBox, QDialog, QDialogButtonBox, QFormLayout
+
+        client = OzonFbsClient(
+            str(src.get("client_id") or ""), str(src.get("api_key") or "")
+        )
+        try:
+            methods = self.orders.list_delivery_methods(client)
+        except Exception as exc:
+            QMessageBox.warning(self, "Ozon FBS", str(exc))
+            return
+        if not methods:
+            QMessageBox.information(
+                self,
+                "Ozon FBS",
+                "Нет доступных методов доставки для создания отгрузки.",
+            )
+            return
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Создать отгрузку Ozon FBS")
+        form = QFormLayout(dlg)
+        combo = QComboBox()
+        for m in methods:
+            dm_id = int(m.get("delivery_method_id") or 0)
+            if not dm_id:
+                continue
+            label = "{} (ID {})".format(m.get("name") or "Метод", dm_id)
+            combo.addItem(label, dm_id)
+        if combo.count() == 0:
+            QMessageBox.information(self, "Ozon FBS", "Нет методов доставки.")
+            return
+        form.addRow("Метод доставки", combo)
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(dlg.accept)
+        buttons.rejected.connect(dlg.reject)
+        form.addRow(buttons)
+        if dlg.exec_() != QDialog.Accepted:
+            return
+        dm_id = int(combo.currentData())
+        try:
+            cid = self.orders.create_carriage(int(src["id"]), client, dm_id)
+        except Exception as exc:
+            QMessageBox.warning(self, "Ozon FBS", str(exc))
+            return
+        QMessageBox.information(self, "Ozon FBS", "Отгрузка создана: {}.".format(cid))
+        self.on_tab_change("assembly")
+        self.reload_table()
+        self._open_carriage_by_id(src, cid)
 
     def _product_cell(self, row: Dict[str, Any]) -> QWidget:
         wrap = QWidget()

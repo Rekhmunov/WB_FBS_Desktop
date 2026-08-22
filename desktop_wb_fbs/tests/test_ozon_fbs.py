@@ -63,5 +63,54 @@ class OzonCarriageClientParseTest(unittest.TestCase):
         self.assertEqual(carriage.get("postings_count"), 3)
 
 
+class OzonPickServiceTest(unittest.TestCase):
+    def test_save_pick_local(self) -> None:
+        import os
+        import tempfile
+
+        from app.db import Database
+        from app.services.ozon_mark_pick import OzonPickService
+
+        fd, path = tempfile.mkstemp(suffix=".sqlite")
+        os.close(fd)
+        try:
+            db = Database(path)
+            db.init_schema()
+            with db.connect() as conn:
+                conn.execute(
+                    """
+                    INSERT INTO supply_sources(
+                        name, marketplace, client_id, api_key, is_enabled,
+                        lookback_days, created_at
+                    ) VALUES ('Ozon ФБС', 'ozon', '1', 'k', 1, 2, '2026-01-01')
+                    """
+                )
+                sid = int(conn.execute("SELECT last_insert_rowid()").fetchone()[0])
+                conn.execute(
+                    """
+                    INSERT INTO ozon_fbs_postings(
+                        source_id, posting_number, status, tab, synced_at
+                    ) VALUES (?, 'PN-1', 'awaiting_deliver', 'assembly', '2026-01-01')
+                    """,
+                    (sid,),
+                )
+                conn.commit()
+            svc = OzonPickService(db)
+            svc.save(sid, "PN-1", True, "4601234567890")
+            with db.connect() as conn:
+                row = conn.execute(
+                    "SELECT pick_verified, pick_barcode FROM ozon_fbs_postings "
+                    "WHERE source_id = ? AND posting_number = ?",
+                    (sid, "PN-1"),
+                ).fetchone()
+            self.assertEqual(int(row["pick_verified"]), 1)
+            self.assertEqual(str(row["pick_barcode"]), "4601234567890")
+        finally:
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+
+
 if __name__ == "__main__":
     unittest.main()

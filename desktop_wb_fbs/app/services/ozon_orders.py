@@ -6,7 +6,9 @@ import json
 from typing import Any, Dict, List, Optional
 
 from app.db import Database
-from app.ozon import carriage_status_label, status_label
+from app.ozon import carriage_is_done, carriage_status_label, status_label, utc_now
+from app.ozon.client import OzonFbsClient
+from app.ozon.sync import upsert_carriage, upsert_posting
 from app.services.catalog import ProductService
 
 
@@ -175,6 +177,223 @@ class OzonOrdersService:
             out.append(item)
         return out
 
+    def get_carriage(self, source_id: int, carriage_id: str) -> Optional[Dict[str, Any]]:
+        cid = str(carriage_id or "").strip()
+        if not cid:
+            return None
+        with self.db.connect() as conn:
+            row = conn.execute(
+                """
+                SELECT * FROM ozon_fbs_carriages
+                WHERE source_id = ? AND carriage_id = ?
+                """,
+                (source_id, cid),
+            ).fetchone()
+        if not row:
+            return None
+        item = Database.row_to_dict(row)
+        pnums = json.loads(str(item.get("posting_numbers_json") or "[]"))
+        item["posting_count"] = len(pnums) if isinstance(pnums, list) else 0
+        item["status_label"] = carriage_status_label(str(item.get("status") or ""))
+        return item
+
+    def postings_in_carriage(
+        self,
+        source_id: int,
+        carriage_id: str,
+        *,
+        search: str = "",
+    ) -> List[Dict[str, Any]]:
+        cid = str(carriage_id or "").strip()
+        cond = ["source_id = ?", "carriage_id = ?"]
+        params = [source_id, cid]  # type: List[Any]
+        q = str(search or "").strip().lower()
+        if q:
+            like = "%{}%".format(q)
+            cond.append(
+                "(LOWER(posting_number) LIKE ? OR LOWER(offer_id) LIKE ?"
+                " OR LOWER(sku) LIKE ? OR LOWER(product_name) LIKE ?)"
+            )
+            params.extend([like, like, like, like])
+        sql = """
+            SELECT * FROM ozon_fbs_postings
+            WHERE {}
+            ORDER BY datetime(created_at_wb) DESC, posting_number DESC
+        """.format(" AND ".join(cond))
+        with self.db.connect() as conn:
+            rows = conn.execute(sql, params).fetchall()
+        if rows:
+            return [self._enrich_posting(Database.row_to_dict(r)) for r in rows]
+        carriage = self.get_carriage(source_id, cid)
+        if not carriage:
+            return []
+        pnums = json.loads(str(carriage.get("posting_numbers_json") or "[]"))
+        if not isinstance(pnums, list) or not pnums:
+            return []
+        placeholders = ",".join("?" for _ in pnums)
+        with self.db.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM ozon_fbs_postings
+                WHERE source_id = ? AND posting_number IN ({})
+                ORDER BY datetime(created_at_wb) DESC, posting_number DESC
+                """.format(placeholders),
+                [source_id] + [str(p) for p in pnums],
+            ).fetchall()
+        return [self._enrich_posting(Database.row_to_dict(r)) for r in rows]
+
+    def list_delivery_methods(self, client: OzonFbsClient) -> List[Dict[str, Any]]:
+        out = []  # type: List[Dict[str, Any]]
+        for page in client.iter_carriage_delivery_methods(limit=100):
+            for method in page:
+                if not isinstance(method, dict):
+                    continue
+                dm_id = method.get("delivery_method_id")
+                name = str(
+                    method.get("delivery_method_name")
+                    or method.get("warehouse_name")
+                    or dm_id
+                    or ""
+                )
+                out.append(
+                    {
+                        "delivery_method_id": int(dm_id) if dm_id not in (None, "") else 0,
+                        "name": name,
+                        "warehouse_name": str(method.get("warehouse_name") or ""),
+                        "departure_date": str(method.get("departure_date") or ""),
+                    }
+                )
+        return out
+
+    def create_carriage(
+        self,
+        source_id: int,
+        client: OzonFbsClient,
+        delivery_method_id: int,
+    ) -> str:
+        result = client.create_carriage(int(delivery_method_id))
+        cid = str(
+            result.get("carriage_id") or result.get("id") or ""
+        ).strip()
+        if not cid:
+            raise RuntimeError("Ozon не вернул ID отгрузки")
+        upsert_carriage(
+            self.db,
+            source_id,
+            {
+                "carriage_id": cid,
+                "id": cid,
+                "status": str(result.get("status") or "new"),
+                "delivery_method_id": int(delivery_method_id),
+                "posting_numbers": [],
+            },
+            delivery_method_id=int(delivery_method_id),
+        )
+        self.refresh_carriage(source_id, client, cid)
+        return cid
+
+    def refresh_carriage(
+        self,
+        source_id: int,
+        client: OzonFbsClient,
+        carriage_id: str,
+    ) -> int:
+        cid = str(carriage_id or "").strip()
+        if not cid:
+            return 0
+        count = 0
+        try:
+            info = client.get_carriage(int(cid))
+            if info:
+                upsert_carriage(
+                    self.db,
+                    source_id,
+                    {
+                        "carriage_id": cid,
+                        "id": cid,
+                        "status": str(info.get("status") or ""),
+                        "delivery_method_id": info.get("delivery_method_id"),
+                    },
+                )
+        except Exception:
+            info = {}
+        pnums = []  # type: List[str]
+        try:
+            pnums = client.act_get_postings(int(cid))
+        except Exception:
+            pnums = []
+        if pnums:
+            with self.db.connect() as conn:
+                conn.execute(
+                    """
+                    UPDATE ozon_fbs_carriages
+                    SET posting_numbers_json = ?, synced_at = ?
+                    WHERE source_id = ? AND carriage_id = ?
+                    """,
+                    (
+                        json.dumps(pnums, ensure_ascii=False),
+                        utc_now(),
+                        source_id,
+                        cid,
+                    ),
+                )
+                conn.commit()
+        for pnum in pnums:
+            try:
+                posting = client.get_posting(pnum)
+                if posting:
+                    upsert_posting(self.db, source_id, posting, carriage_id=cid)
+                    count += 1
+            except Exception:
+                pass
+        if not pnums:
+            with self.db.connect() as conn:
+                rows = conn.execute(
+                    """
+                    SELECT posting_number FROM ozon_fbs_postings
+                    WHERE source_id = ? AND carriage_id = ?
+                    """,
+                    (source_id, cid),
+                ).fetchall()
+            for r in rows:
+                pnum = str(r["posting_number"] or "")
+                if not pnum:
+                    continue
+                try:
+                    posting = client.get_posting(pnum)
+                    if posting:
+                        upsert_posting(self.db, source_id, posting, carriage_id=cid)
+                        count += 1
+                except Exception:
+                    pass
+        return count
+
+    def approve_carriage(
+        self, source_id: int, client: OzonFbsClient, carriage_id: str
+    ) -> None:
+        cid = str(carriage_id or "").strip()
+        if not client.approve_carriage(int(cid)):
+            raise RuntimeError("Не удалось подтвердить отгрузку {}".format(cid))
+        self.refresh_carriage(source_id, client, cid)
+        carriage = self.get_carriage(source_id, cid) or {}
+        status = str(carriage.get("status") or "formed")
+        with self.db.connect() as conn:
+            conn.execute(
+                """
+                UPDATE ozon_fbs_carriages
+                SET status = ?, done = ?, synced_at = ?
+                WHERE source_id = ? AND carriage_id = ?
+                """,
+                (
+                    status,
+                    1 if carriage_is_done(status) else 0,
+                    utc_now(),
+                    source_id,
+                    cid,
+                ),
+            )
+            conn.commit()
+
     def _enrich_posting(self, row: Dict[str, Any]) -> Dict[str, Any]:
         photos = self._photo_map()
         catalog = self._catalog_maps()
@@ -185,6 +404,7 @@ class OzonOrdersService:
         row["product_name_display"] = (
             catalog_name or str(row.get("product_name") or "") or offer or sku or "—"
         )
+        row["product_name"] = row["product_name_display"]
         row["product_photo"] = photos.get(offer) or photos.get(sku) or ""
         row["status_label"] = status_label(str(row.get("status") or ""))
         row["created_date"] = _date_short(row.get("created_at_wb"))

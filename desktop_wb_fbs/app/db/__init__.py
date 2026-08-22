@@ -154,6 +154,7 @@ CREATE TABLE IF NOT EXISTS ozon_fbs_postings (
     created_at_wb TEXT,
     marks_json TEXT NOT NULL DEFAULT '[]',
     marks_saved_at TEXT,
+    marks_synced INTEGER NOT NULL DEFAULT 0,
     pick_verified INTEGER NOT NULL DEFAULT 0,
     pick_barcode TEXT NOT NULL DEFAULT '',
     pick_verified_at TEXT,
@@ -269,6 +270,7 @@ class Database:
                 created_at_wb TEXT,
                 marks_json TEXT NOT NULL DEFAULT '[]',
                 marks_saved_at TEXT,
+                marks_synced INTEGER NOT NULL DEFAULT 0,
                 pick_verified INTEGER NOT NULL DEFAULT 0,
                 pick_barcode TEXT NOT NULL DEFAULT '',
                 pick_verified_at TEXT,
@@ -292,7 +294,22 @@ class Database:
             );
             CREATE INDEX IF NOT EXISTS idx_ozon_carriages_src
                 ON ozon_fbs_carriages(source_id, done, synced_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_ozon_postings_carriage
+                ON ozon_fbs_postings(source_id, carriage_id);
             """
+        )
+        cols = {
+            str(r[1])
+            for r in conn.execute("PRAGMA table_info(ozon_fbs_postings)").fetchall()
+        }
+        if "marks_synced" not in cols:
+            conn.execute(
+                "ALTER TABLE ozon_fbs_postings ADD COLUMN marks_synced "
+                "INTEGER NOT NULL DEFAULT 0"
+            )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_ozon_postings_carriage "
+            "ON ozon_fbs_postings(source_id, carriage_id)"
         )
 
     @contextmanager

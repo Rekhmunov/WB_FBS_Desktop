@@ -119,8 +119,8 @@ class OrdersService:
             ).fetchone()
             a = conn.execute(
                 """
-                SELECT COUNT(*) AS c FROM wb_fbs_supplies
-                WHERE source_id = ? AND done = 0
+                SELECT COUNT(*) AS c FROM wb_fbs_orders
+                WHERE source_id = ? AND tab = 'assembly' AND is_archive = 0
                 """,
                 (source_id,),
             ).fetchone()

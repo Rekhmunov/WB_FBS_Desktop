@@ -76,3 +76,25 @@ class SyncDoneSupplyTests(unittest.TestCase):
         self.assertEqual(counts["delivery"], 1)
         client.get_supply_boxes.assert_called_once_with("WB-GI-1")
         client.get_supply_order_ids.assert_not_called()
+
+    def test_assembly_tab_count_is_orders_not_supplies(self) -> None:
+        with self.db.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO wb_fbs_supplies
+                (source_id, supply_id, name, done, order_ids_json, boxes_json, synced_at)
+                VALUES (1, 'WB-GI-2', 'open', 0, '[]', '[]', '2024-01-01')
+                """
+            )
+            for oid in (101, 102, 103):
+                conn.execute(
+                    """
+                    INSERT INTO wb_fbs_orders(
+                        source_id, order_id, tab, supply_id, is_archive, synced_at
+                    ) VALUES (1, ?, 'assembly', 'WB-GI-1', 0, '2024-01-01')
+                    """,
+                    (oid,),
+                )
+            conn.commit()
+        counts = OrdersService(self.db).tab_counts(1)
+        self.assertEqual(counts["assembly"], 3)

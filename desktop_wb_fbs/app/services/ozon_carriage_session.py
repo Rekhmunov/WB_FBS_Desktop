@@ -2,6 +2,7 @@
 """Per-carriage preload session (Ozon FBS, parallel to supply_session)."""
 from __future__ import annotations
 
+import copy
 import threading
 import time
 from typing import Any, Dict, List, Optional, Tuple
@@ -48,6 +49,11 @@ def invalidate(source_id: int, carriage_id: str) -> None:
         _sessions.pop(_key(source_id, carriage_id), None)
 
 
+def clear_all_sessions() -> None:
+    with _lock:
+        _sessions.clear()
+
+
 class OzonCarriageSession:
     def __init__(self, source_id: int, carriage_id: str) -> None:
         self.source_id = int(source_id)
@@ -55,6 +61,7 @@ class OzonCarriageSession:
         self.carriage = None  # type: Optional[Dict[str, Any]]
         self.rows = []  # type: List[Dict[str, Any]]
         self.mark_rows = []  # type: List[Dict[str, Any]]
+        self.core_ready = False
 
     def load(
         self,
@@ -71,3 +78,28 @@ class OzonCarriageSession:
         self.mark_rows = OzonMarkService(db).marking_rows(
             self.source_id, self.carriage_id, client=client
         )
+        self.core_ready = True
+
+
+def preload_carriage_core(
+    db: Database,
+    orders: OzonOrdersService,
+    source_id: int,
+    carriage_id: str,
+    client: OzonFbsClient,
+    *,
+    refresh: bool = True,
+) -> OzonCarriageSession:
+    """Load carriage + postings off UI thread."""
+    session = OzonCarriageSession(source_id, carriage_id)
+    session.load(db, client, refresh=refresh)
+    return session
+
+
+def snapshot_for_ui(session: OzonCarriageSession) -> Dict[str, Any]:
+    return {
+        "carriage": copy.deepcopy(session.carriage),
+        "rows": copy.deepcopy(session.rows),
+        "mark_rows": copy.deepcopy(session.mark_rows),
+        "core_ready": session.core_ready,
+    }

@@ -20,6 +20,90 @@ from app.services.ozon_orders import OzonOrdersService
 from app.wb import utc_now
 
 
+_EXEMPLAR_OK = frozenset({"ok", "passed", "success", "completed", "validated"})
+_EXEMPLAR_PENDING = frozenset(
+    {"pending", "in_process", "processing", "new", "awaiting", "in_progress"}
+)
+_EXEMPLAR_ERROR = frozenset({"error", "failed", "invalid", "rejected"})
+
+
+def _build_exemplar_products_payload(
+    exemplar_data: Dict[str, Any],
+    cleaned: List[str],
+    *,
+    for_set: bool = False,
+) -> List[Dict[str, Any]]:
+    products_payload = []  # type: List[Dict[str, Any]]
+    mark_idx = 0
+    for prod in exemplar_data.get("products") or []:
+        if not isinstance(prod, dict):
+            continue
+        product_id = prod.get("product_id") or prod.get("sku")
+        exemplars = prod.get("exemplars") or []
+        if not isinstance(exemplars, list) or not exemplars:
+            exemplars = [{}]
+        exemplars_out = []  # type: List[Dict[str, Any]]
+        for ex in exemplars:
+            if not isinstance(ex, dict):
+                ex = {}
+            mark_code = cleaned[mark_idx] if mark_idx < len(cleaned) else ""
+            if for_set:
+                item = {
+                    "exemplar_id": ex.get("exemplar_id"),
+                    "marks": [],
+                }
+            else:
+                item = {"gtd": "", "rnpt": "", "marks": []}
+            if mark_code:
+                item["marks"] = [
+                    {"mark": mark_code, "mark_type": "mandatory_mark"}
+                ]
+            exemplars_out.append(item)
+            mark_idx += 1
+        if product_id is not None:
+            products_payload.append(
+                {"product_id": int(product_id), "exemplars": exemplars_out}
+            )
+    return products_payload
+
+
+def _exemplar_sync_state(
+    status_data: Dict[str, Any],
+    expected_marks: List[str],
+) -> Tuple[bool, bool, str]:
+    """Return (synced, pending, error_message)."""
+    mark_statuses = []  # type: List[str]
+    found_marks = []  # type: List[str]
+    for prod in status_data.get("products") or []:
+        if not isinstance(prod, dict):
+            continue
+        for ex in prod.get("exemplars") or []:
+            if not isinstance(ex, dict):
+                continue
+            for mk in ex.get("marks") or []:
+                if not isinstance(mk, dict):
+                    continue
+                cs = str(mk.get("check_status") or "").strip().lower()
+                if cs:
+                    mark_statuses.append(cs)
+                code = str(mk.get("mark") or "").strip()
+                if code:
+                    found_marks.append(code)
+    if any(s in _EXEMPLAR_ERROR for s in mark_statuses):
+        return False, False, "Ozon отклонил код маркировки"
+    if any(s in _EXEMPLAR_PENDING for s in mark_statuses):
+        return False, True, ""
+    if mark_statuses and all(s in _EXEMPLAR_OK for s in mark_statuses):
+        return True, False, ""
+    exp = [m for m in expected_marks if m]
+    if exp and found_marks:
+        if set(exp).issubset(set(found_marks)) and not any(
+            s in _EXEMPLAR_ERROR for s in mark_statuses
+        ):
+            return True, False, ""
+    return False, bool(mark_statuses), ""
+
+
 def _parse_marks(raw: object) -> List[str]:
     if isinstance(raw, list):
         return [str(x).strip() for x in raw if str(x).strip()]
@@ -259,7 +343,7 @@ class OzonMarkService:
                             marks.append(code)
                         if mk.get("mark_type") == "mandatory_mark":
                             needs = True
-            synced = bool(marks)
+            synced, _, _err = _exemplar_sync_state(status, marks)
             if marks:
                 self.save_local(source_id, pnum, marks, synced=synced)
             out["marks"] = marks
@@ -285,29 +369,9 @@ class OzonMarkService:
         if not cleaned:
             return True, ""
         exemplar_data = client.exemplar_create_or_get(pnum)
-        products_payload = []  # type: List[Dict[str, Any]]
-        for prod in exemplar_data.get("products") or []:
-            if not isinstance(prod, dict):
-                continue
-            product_id = prod.get("product_id") or prod.get("sku")
-            exemplars = prod.get("exemplars") or []
-            if not isinstance(exemplars, list) or not exemplars:
-                exemplars = [{}]
-            exemplars_out = []  # type: List[Dict[str, Any]]
-            for i, ex in enumerate(exemplars):
-                if not isinstance(ex, dict):
-                    ex = {}
-                mark_code = cleaned[i] if i < len(cleaned) else (cleaned[0] if cleaned else "")
-                item = {"gtd": "", "rnpt": "", "marks": []}
-                if mark_code:
-                    item["marks"] = [
-                        {"mark": mark_code, "mark_type": "mandatory_mark"}
-                    ]
-                exemplars_out.append(item)
-            if product_id is not None:
-                products_payload.append(
-                    {"product_id": int(product_id), "exemplars": exemplars_out}
-                )
+        products_payload = _build_exemplar_products_payload(
+            exemplar_data, cleaned, for_set=False
+        )
         if not products_payload:
             return False, "Ozon не вернул exemplar для валидации"
         result = client.exemplar_validate(pnum, products_payload)
@@ -324,6 +388,40 @@ class OzonMarkService:
                         return False, "Ozon отклонил код маркировки"
         return True, ""
 
+    def wait_exemplar_synced(
+        self,
+        client: OzonFbsClient,
+        posting_number: str,
+        marks: List[str],
+        *,
+        timeout_s: float = 90.0,
+        poll_s: float = 2.0,
+    ) -> Dict[str, Any]:
+        pnum = str(posting_number or "").strip()
+        cleaned = [
+            kiz_code_clean(c).replace("\u2194", "\u001d")
+            for c in marks
+            if kiz_code_clean(c)
+        ]
+        deadline = time.monotonic() + max(5.0, float(timeout_s))
+        last = {}  # type: Dict[str, Any]
+        while time.monotonic() < deadline:
+            last = client.exemplar_status(pnum)
+            synced, pending, err = _exemplar_sync_state(last, cleaned)
+            if err:
+                raise RuntimeError(err)
+            if synced:
+                return last
+            if not pending and cleaned:
+                break
+            time.sleep(max(0.5, float(poll_s)))
+        synced, _, err = _exemplar_sync_state(last, cleaned)
+        if err:
+            raise RuntimeError(err)
+        if synced:
+            return last
+        raise RuntimeError("Таймаут ожидания проверки маркировки в Ozon")
+
     def save_to_ozon(
         self,
         client: OzonFbsClient,
@@ -338,37 +436,15 @@ class OzonMarkService:
         if not ok:
             raise RuntimeError(err or "Валидация маркировки не пройдена")
         exemplar_data = client.exemplar_create_or_get(pnum)
-        products_payload = []  # type: List[Dict[str, Any]]
-        for prod in exemplar_data.get("products") or []:
-            if not isinstance(prod, dict):
-                continue
-            product_id = prod.get("product_id") or prod.get("sku")
-            exemplars_out = []  # type: List[Dict[str, Any]]
-            exemplars = prod.get("exemplars") or []
-            if not isinstance(exemplars, list) or not exemplars:
-                exemplars = [{}]
-            for i, ex in enumerate(exemplars):
-                if not isinstance(ex, dict):
-                    ex = {}
-                mark_code = cleaned[i] if i < len(cleaned) else (cleaned[0] if cleaned else "")
-                item = {
-                    "exemplar_id": ex.get("exemplar_id"),
-                    "marks": [],
-                }
-                if mark_code:
-                    item["marks"] = [
-                        {"mark": mark_code, "mark_type": "mandatory_mark"}
-                    ]
-                exemplars_out.append(item)
-            if product_id is not None:
-                products_payload.append(
-                    {"product_id": int(product_id), "exemplars": exemplars_out}
-                )
+        products_payload = _build_exemplar_products_payload(
+            exemplar_data, cleaned, for_set=True
+        )
         if not products_payload:
             raise RuntimeError(
                 "Ozon не вернул exemplar для отправления {} — проверьте статус.".format(pnum)
             )
         client.exemplar_set(pnum, products_payload)
+        self.wait_exemplar_synced(client, pnum, cleaned)
         self.save_local(source_id, pnum, cleaned, synced=True)
 
     def check_carriage_status(

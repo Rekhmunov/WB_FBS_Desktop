@@ -283,10 +283,23 @@ class OzonOrdersService:
         carriage_id: str,
         posting_numbers: List[str],
     ) -> None:
+        from app.services.ozon_ship import OzonShipService, posting_needs_ship
+
         cid = str(carriage_id or "").strip()
         nums = [str(p).strip() for p in posting_numbers if str(p).strip()]
         if not cid or not nums:
             raise ValueError("Укажите отгрузку и отправления")
+        ship_svc = OzonShipService(self.db)
+        for pnum in nums:
+            row = self.get_posting(source_id, pnum)
+            status = str((row or {}).get("status") or "")
+            if posting_needs_ship(status):
+                ship_svc.ship_posting(
+                    client,
+                    source_id,
+                    pnum,
+                    posting=row,
+                )
         if not client.set_carriage_postings(int(cid), nums):
             raise RuntimeError("Ozon не принял отправления в отгрузку {}".format(cid))
         now = utc_now()
@@ -483,6 +496,12 @@ class OzonOrdersService:
                         "delivery_method_id": info.get("delivery_method_id"),
                     },
                 )
+                OzonActService(self.db).capture_act_from_carriage(
+                    client,
+                    source_id,
+                    cid,
+                    carriage_info=info,
+                )
         except Exception:
             info = {}
         dm_id = info.get("delivery_method_id") if isinstance(info, dict) else None
@@ -548,6 +567,17 @@ class OzonOrdersService:
         cid = str(carriage_id or "").strip()
         if not client.approve_carriage(int(cid)):
             raise RuntimeError("Не удалось подтвердить отгрузку {}".format(cid))
+        carriage_info = {}
+        try:
+            carriage_info = client.get_carriage(int(cid))
+        except Exception:
+            carriage_info = {}
+        OzonActService(self.db).capture_act_from_carriage(
+            client,
+            source_id,
+            cid,
+            carriage_info=carriage_info,
+        )
         self.refresh_carriage(source_id, client, cid)
         carriage = self.get_carriage(source_id, cid) or {}
         status = str(carriage.get("status") or "formed")

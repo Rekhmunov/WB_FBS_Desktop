@@ -147,5 +147,79 @@ class OzonPickServiceTest(unittest.TestCase):
                 pass
 
 
+class OzonExemplarPayloadTest(unittest.TestCase):
+    def test_build_exemplar_products_payload_multi_product(self) -> None:
+        from app.services.ozon_mark_pick import _build_exemplar_products_payload
+
+        exemplar_data = {
+            "products": [
+                {
+                    "product_id": 111,
+                    "exemplars": [{"exemplar_id": 1}, {"exemplar_id": 2}],
+                },
+                {
+                    "product_id": 222,
+                    "exemplars": [{"exemplar_id": 3}],
+                },
+            ]
+        }
+        payload = _build_exemplar_products_payload(
+            exemplar_data, ["M1", "M2", "M3"], for_set=True
+        )
+        self.assertEqual(len(payload), 2)
+        self.assertEqual(len(payload[0]["exemplars"]), 2)
+        self.assertEqual(
+            payload[0]["exemplars"][0]["marks"][0]["mark"],
+            "M1",
+        )
+        self.assertEqual(
+            payload[0]["exemplars"][1]["marks"][0]["mark"],
+            "M2",
+        )
+        self.assertEqual(
+            payload[1]["exemplars"][0]["marks"][0]["mark"],
+            "M3",
+        )
+
+    def test_exemplar_sync_state_ok(self) -> None:
+        from app.services.ozon_mark_pick import _exemplar_sync_state
+
+        status = {
+            "products": [
+                {
+                    "exemplars": [
+                        {
+                            "marks": [
+                                {
+                                    "mark": "CODE1",
+                                    "check_status": "ok",
+                                }
+                            ]
+                        }
+                    ]
+                }
+            ]
+        }
+        synced, pending, err = _exemplar_sync_state(status, ["CODE1"])
+        self.assertTrue(synced)
+        self.assertFalse(pending)
+        self.assertEqual(err, "")
+
+
+class OzonActResolveTest(unittest.TestCase):
+    def test_extract_act_id_from_carriage(self) -> None:
+        from app.services.ozon_act import _extract_act_id_from_carriage
+
+        self.assertEqual(
+            _extract_act_id_from_carriage({"act_id": 55}),
+            "55",
+        )
+        self.assertEqual(
+            _extract_act_id_from_carriage({"act": {"id": 77}}),
+            "77",
+        )
+        self.assertEqual(_extract_act_id_from_carriage({"id": 99}), "")
+
+
 if __name__ == "__main__":
     unittest.main()

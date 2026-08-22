@@ -30,6 +30,7 @@ from app.db import Database
 from app.ozon.client import OzonFbsClient
 from app.ozon import carriage_status_label
 from app.services.ozon_act import OzonActService
+from app.services import ozon_carriage_session
 from app.services.ozon_labels import OzonLabelService
 from app.services.ozon_mark_pick import OzonMarkService, OzonPickService
 from app.services.ozon_orders import OzonOrdersService
@@ -62,14 +63,23 @@ class _CarriageLoadWorker(QThread):
 
     def run(self) -> None:
         try:
-            self.orders.refresh_carriage(
-                self.source_id, self.client, self.carriage_id
-            )
-            carriage = self.orders.get_carriage(self.source_id, self.carriage_id)
-            rows = self.orders.postings_in_carriage(
+            cached = ozon_carriage_session.get_session(
                 self.source_id, self.carriage_id
             )
-            self.ready.emit({"carriage": carriage, "rows": rows})
+            if cached and cached.core_ready:
+                payload = ozon_carriage_session.snapshot_for_ui(cached)
+            else:
+                session = ozon_carriage_session.preload_carriage_core(
+                    self.orders.db,
+                    self.orders,
+                    self.source_id,
+                    self.carriage_id,
+                    self.client,
+                    refresh=True,
+                )
+                ozon_carriage_session.put_session(session)
+                payload = ozon_carriage_session.snapshot_for_ui(session)
+            self.ready.emit(payload)
         except Exception as exc:
             self.failed.emit(str(exc))
 
@@ -301,6 +311,7 @@ class OzonCarriageDetailDialog(QDialog):
         worker.start()
 
     def reload(self) -> None:
+        ozon_carriage_session.invalidate(self.source_id, self.carriage_id)
         self._begin_load()
 
     def _on_load_failed(self, message: str) -> None:
@@ -381,6 +392,7 @@ class OzonCarriageDetailDialog(QDialog):
         dlg.exec_()
         if dlg.data_changed:
             self.carriage_mutated = True
+            ozon_carriage_session.invalidate(self.source_id, self.carriage_id)
             self.reload()
 
     def open_pick(self) -> None:
@@ -396,6 +408,7 @@ class OzonCarriageDetailDialog(QDialog):
         dlg.exec_()
         if dlg.data_changed:
             self.carriage_mutated = True
+            ozon_carriage_session.invalidate(self.source_id, self.carriage_id)
             self.reload()
 
     def print_labels(self) -> None:
@@ -447,6 +460,7 @@ class OzonCarriageDetailDialog(QDialog):
             QMessageBox.information(self, "Ship", msg)
             if ok_n:
                 self.carriage_mutated = True
+                ozon_carriage_session.invalidate(self.source_id, self.carriage_id)
                 self.reload()
         except Exception as exc:
             QMessageBox.warning(self, "Ship", str(exc))
@@ -496,6 +510,7 @@ class OzonCarriageDetailDialog(QDialog):
                 self.source_id, self.client, self.carriage_id
             )
             self.carriage_mutated = True
+            ozon_carriage_session.invalidate(self.source_id, self.carriage_id)
             QMessageBox.information(self, "Отгрузка", "Отгрузка подтверждена.")
             self.reload()
         except Exception as exc:

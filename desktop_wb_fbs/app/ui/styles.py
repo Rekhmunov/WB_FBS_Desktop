@@ -233,6 +233,17 @@ QPushButton#tabBtn:checked QLabel#tabCount {
     background: #ddf1ff;
     color: #2495ee;
 }
+QLabel#tabCountCancelled {
+    color: #dc2626;
+    font-size: 12px;
+    font-weight: 600;
+    background: transparent;
+    border: none;
+    padding: 0 2px 0 0;
+}
+QPushButton#tabBtn:checked QLabel#tabCountCancelled {
+    color: #dc2626;
+}
 QPushButton#linkBtn {
     background: transparent;
     border: none;

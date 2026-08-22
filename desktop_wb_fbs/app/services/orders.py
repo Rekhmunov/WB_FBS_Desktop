@@ -99,8 +99,63 @@ class OrdersService:
         it["product_photo"] = photos.get(art) or photos.get(nm) or ""
         return it
 
+    def assembly_order_stats(self, source_id: int) -> Dict[str, int]:
+        """Active vs cancelled orders across all open supplies (На сборке tab)."""
+        from app.wb import is_cancelled_status
+
+        seen = set()  # type: set
+        all_oids = []  # type: List[int]
+        with self.db.connect() as conn:
+            supplies = conn.execute(
+                """
+                SELECT order_ids_json FROM wb_fbs_supplies
+                WHERE source_id = ? AND done = 0
+                """,
+                (source_id,),
+            ).fetchall()
+        for row in supplies:
+            for raw in parse_json_list(row["order_ids_json"]):
+                try:
+                    oid = int(raw)
+                except (TypeError, ValueError):
+                    continue
+                if oid in seen:
+                    continue
+                seen.add(oid)
+                all_oids.append(oid)
+        if not all_oids:
+            return {"active": 0, "cancelled": 0}
+        placeholders = ",".join("?" for _ in all_oids)
+        with self.db.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT order_id, tab, supplier_status, wb_status
+                FROM wb_fbs_orders
+                WHERE source_id = ? AND order_id IN ({})
+                """.format(
+                    placeholders
+                ),
+                [source_id] + all_oids,
+            ).fetchall()
+        by_id = {int(r["order_id"]): Database.row_to_dict(r) for r in rows}
+        active = 0
+        cancelled = 0
+        for oid in all_oids:
+            order = by_id.get(oid)
+            if order and (
+                str(order.get("tab") or "") == "cancelled"
+                or is_cancelled_status(
+                    supplier_status=order.get("supplier_status"),
+                    wb_status=order.get("wb_status"),
+                )
+            ):
+                cancelled += 1
+            else:
+                active += 1
+        return {"active": active, "cancelled": cancelled}
+
     def tab_counts(self, source_id: int) -> Dict[str, int]:
-        out = {"new": 0, "assembly": 0, "delivery": 0, "mgt_new": 0}
+        out = {"new": 0, "assembly": 0, "assembly_cancelled": 0, "delivery": 0, "mgt_new": 0}
         with self.db.connect() as conn:
             n = conn.execute(
                 """
@@ -117,13 +172,6 @@ class OrdersService:
                 """,
                 (source_id,),
             ).fetchone()
-            a = conn.execute(
-                """
-                SELECT COUNT(*) AS c FROM wb_fbs_orders
-                WHERE source_id = ? AND tab = 'assembly' AND is_archive = 0
-                """,
-                (source_id,),
-            ).fetchone()
             d = conn.execute(
                 """
                 SELECT COUNT(*) AS c FROM wb_fbs_supplies
@@ -131,9 +179,11 @@ class OrdersService:
                 """,
                 (source_id,),
             ).fetchone()
+        asm = self.assembly_order_stats(source_id)
         out["new"] = int(n["c"] if n else 0)
         out["mgt_new"] = int(mgt["c"] if mgt else 0)
-        out["assembly"] = int(a["c"] if a else 0)
+        out["assembly"] = int(asm.get("active") or 0)
+        out["assembly_cancelled"] = int(asm.get("cancelled") or 0)
         out["delivery"] = int(d["c"] if d else 0)
         return out
 

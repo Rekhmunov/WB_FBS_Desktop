@@ -572,15 +572,15 @@ class FbsPage(QWidget):
             self.sel_label.setText("Поставка {}".format(sid))
 
     def _update_tab_labels(self, counts: Dict[str, int]) -> None:
-        mapping = (
-            ("new", counts.get("new", 0)),
-            ("assembly", counts.get("assembly", 0)),
-        )
-        for key, n in mapping:
+        for key in ("new", "assembly"):
             btn = self.tab_btns.get(key)
             if not btn:
                 continue
-            btn.set_count(int(n))
+            n = int(counts.get(key, 0) or 0)
+            if key == "assembly":
+                btn.set_count(n, cancelled=int(counts.get("assembly_cancelled") or 0))
+            else:
+                btn.set_count(n)
             btn.setChecked(key == self._tab)
 
         mgt_new = int(counts.get("mgt_new") or 0)

@@ -77,24 +77,40 @@ class SyncDoneSupplyTests(unittest.TestCase):
         client.get_supply_boxes.assert_called_once_with("WB-GI-1")
         client.get_supply_order_ids.assert_not_called()
 
-    def test_assembly_tab_count_is_orders_not_supplies(self) -> None:
+    def test_assembly_tab_count_active_and_cancelled(self) -> None:
+        import json
+
         with self.db.connect() as conn:
             conn.execute(
                 """
-                INSERT INTO wb_fbs_supplies
-                (source_id, supply_id, name, done, order_ids_json, boxes_json, synced_at)
-                VALUES (1, 'WB-GI-2', 'open', 0, '[]', '[]', '2024-01-01')
-                """
+                UPDATE wb_fbs_supplies
+                SET order_ids_json = ?
+                WHERE source_id = 1 AND supply_id = 'WB-GI-1'
+                """,
+                (json.dumps([101, 102, 103]),),
             )
             for oid in (101, 102, 103):
                 conn.execute(
                     """
                     INSERT INTO wb_fbs_orders(
-                        source_id, order_id, tab, supply_id, is_archive, synced_at
-                    ) VALUES (1, ?, 'assembly', 'WB-GI-1', 0, '2024-01-01')
+                        source_id, order_id, tab, supply_id, supplier_status,
+                        wb_status, is_archive, synced_at
+                    ) VALUES (1, ?, 'assembly', 'WB-GI-1', 'confirm', 'waiting', 0, '2024-01-01')
                     """,
                     (oid,),
                 )
+            conn.execute(
+                """
+                UPDATE wb_fbs_orders
+                SET tab = 'cancelled', wb_status = 'canceled_by_client'
+                WHERE source_id = 1 AND order_id = 103
+                """
+            )
             conn.commit()
-        counts = OrdersService(self.db).tab_counts(1)
-        self.assertEqual(counts["assembly"], 3)
+        svc = OrdersService(self.db)
+        stats = svc.assembly_order_stats(1)
+        self.assertEqual(stats["active"], 2)
+        self.assertEqual(stats["cancelled"], 1)
+        counts = svc.tab_counts(1)
+        self.assertEqual(counts["assembly"], 2)
+        self.assertEqual(counts["assembly_cancelled"], 1)

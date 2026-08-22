@@ -120,6 +120,19 @@ class FlowLayout(QLayout):
         return y + line_height - rect.y() + m.bottom()
 
 
+def _cancelled_orders_label(n: int) -> str:
+    n = int(n or 0)
+    if n <= 0:
+        return ""
+    if n % 10 == 1 and n % 100 != 11:
+        word = "отменён"
+    elif n % 10 in (2, 3, 4) and n % 100 not in (12, 13, 14):
+        word = "отменено"
+    else:
+        word = "отменено"
+    return "({} {})".format(n, word)
+
+
 def fit_tab_button(btn, h_pad: int = 56) -> None:
     """Reserve width so bold title + count pill are never clipped."""
     from PyQt5.QtGui import QFontMetrics
@@ -131,6 +144,7 @@ def fit_tab_button(btn, h_pad: int = 56) -> None:
     # Prefer measuring nested title/count widgets (FbsTabButton).
     title_lab = getattr(btn, "_title_lab", None)
     count_lab = getattr(btn, "_count_lab", None)
+    cancel_lab = getattr(btn, "_cancel_lab", None)
     if title_lab is not None and count_lab is not None:
         title_font = title_lab.font()
         title_font.setBold(True)
@@ -142,17 +156,22 @@ def fit_tab_button(btn, h_pad: int = 56) -> None:
         count_font.setBold(True)
         count_metrics = QFontMetrics(count_font)
         count = str(getattr(btn, "_count_text", None) or count_lab.text() or "0")
-        # Match QLabel#tabCount: min-width 22 + horizontal padding ~12.
         count_w = max(28, count_metrics.horizontalAdvance(count) + 16)
+
+        cancel_w = 0
+        if cancel_lab is not None and cancel_lab.isVisible():
+            cancel_font = cancel_lab.font()
+            cancel_font.setBold(True)
+            cancel_metrics = QFontMetrics(cancel_font)
+            cancel_w = cancel_metrics.horizontalAdvance(cancel_lab.text() or "") + 8
 
         lay = btn.layout()
         if lay is not None:
             m = lay.contentsMargins()
-            side = m.left() + m.right() + lay.spacing()
+            side = m.left() + m.right() + lay.spacing() * 2
         else:
             side = 28
-        # Extra room for bold active state and DPI rounding.
-        btn.setMinimumWidth(title_w + count_w + side + max(12, h_pad - 36))
+        btn.setMinimumWidth(title_w + count_w + cancel_w + side + max(12, h_pad - 36))
         btn.updateGeometry()
         return
 
@@ -191,8 +210,13 @@ class FbsTabButton(QPushButton):
         self._count_lab.setObjectName("tabCount")
         self._count_lab.setAlignment(Qt.AlignCenter)
         self._count_lab.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        self._cancel_lab = QLabel("")
+        self._cancel_lab.setObjectName("tabCountCancelled")
+        self._cancel_lab.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        self._cancel_lab.hide()
         lay.addWidget(self._title_lab)
         lay.addWidget(self._count_lab)
+        lay.addWidget(self._cancel_lab)
         # Keep accessible name without duplicating "· N" in the button text.
         self.setText("")
         self.setAccessibleName(title)
@@ -208,14 +232,22 @@ class FbsTabButton(QPushButton):
     def minimumSizeHint(self) -> QSize:  # type: ignore[override]
         return self.sizeHint()
 
-    def set_count(self, n: int) -> None:
+    def set_count(self, n: int, cancelled: int = 0) -> None:
         self._count_text = str(int(n))
         self._count_lab.setText(self._count_text)
+        c = int(cancelled or 0)
+        label = _cancelled_orders_label(c)
+        if label:
+            self._cancel_lab.setText(label)
+            self._cancel_lab.show()
+        else:
+            self._cancel_lab.clear()
+            self._cancel_lab.hide()
         fit_tab_button(self)
 
     def setChecked(self, checked: bool) -> None:  # type: ignore[override]
         super(FbsTabButton, self).setChecked(checked)
-        for w in (self, self._title_lab, self._count_lab):
+        for w in (self, self._title_lab, self._count_lab, self._cancel_lab):
             w.style().unpolish(w)
             w.style().polish(w)
             w.update()

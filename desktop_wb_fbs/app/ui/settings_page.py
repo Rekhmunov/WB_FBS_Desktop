@@ -26,11 +26,11 @@ from PyQt5.QtWidgets import (
 )
 
 from app.db import Database
-from app.ui.dialog_utils import prepare_modal_dialog
+from app.ui.dialog_utils import make_modal_search_box, prepare_modal_dialog
 from app.ui.format_helpers import make_photo_label
 from app.ui.table_col_widths import PersistentColumnWidths
 from app.services import SourceService
-from app.services.catalog import CategoryService, ProductService
+from app.services.catalog import CategoryService, ProductService, product_matches_search
 
 _PRODUCT_PHOTO_SIZE = 48
 _PRODUCT_PHOTO_COL = 0
@@ -86,7 +86,21 @@ class SettingsPage(QWidget):
         self._settings_tabs = tabs
         tabs.addTab(self._build_sources_tab(), "Источники")
         tabs.addTab(self._build_products_tab(), "Товары")
+        search_box, self.prod_search_input = make_modal_search_box(
+            placeholder="🔍 Поиск…",
+            tooltip=(
+                "Поиск по названию, артикулу продавца, WB, Ozon, Яндекс Маркет, "
+                "категории и кратности"
+            ),
+            min_width=240,
+            max_width=360,
+        )
+        self._products_search_box = search_box
+        self.prod_search_input.textChanged.connect(self._on_products_search)
+        tabs.setCornerWidget(search_box, Qt.TopRightCorner)
+        tabs.currentChanged.connect(self._on_settings_tab_changed)
         layout.addWidget(tabs, 1)
+        self._on_settings_tab_changed(tabs.currentIndex())
 
     def hideEvent(self, event) -> None:
         # Flush pending column-width saves when leaving Settings (app exit / tab switch).
@@ -268,6 +282,25 @@ class SettingsPage(QWidget):
         self.reload_sources_table()
         self.sources_changed.emit()
 
+    def _on_settings_tab_changed(self, index: int) -> None:
+        box = getattr(self, "_products_search_box", None)
+        if box is not None:
+            box.setVisible(int(index) == 1)
+
+    def _on_products_search(self, _text: str = "") -> None:
+        self.reload_products_table()
+
+    def _filtered_products(
+        self, rows: Optional[List[Dict[str, Any]]] = None
+    ) -> List[Dict[str, Any]]:
+        items = list(rows) if rows is not None else self.products.list_all()
+        query = ""
+        if hasattr(self, "prod_search_input") and self.prod_search_input is not None:
+            query = self.prod_search_input.text()
+        if not str(query or "").strip():
+            return items
+        return [p for p in items if product_matches_search(p, query)]
+
     # --- Products (web: Обратная связь → Настройки → Товары) ---
     def _build_products_tab(self) -> QWidget:
         w = QWidget()
@@ -342,9 +375,18 @@ class SettingsPage(QWidget):
         return text if text else "—"
 
     def reload_products_table(self) -> None:
-        rows = self.products.list_all()
+        all_rows = self.products.list_all()
+        rows = self._filtered_products(all_rows)
         if hasattr(self, "prod_info") and self.prod_info is not None:
-            self.prod_info.setText("Товаров: {}".format(len(rows)))
+            q = ""
+            if hasattr(self, "prod_search_input") and self.prod_search_input is not None:
+                q = str(self.prod_search_input.text() or "").strip()
+            if q:
+                self.prod_info.setText(
+                    "Товаров: {} из {}".format(len(rows), len(all_rows))
+                )
+            else:
+                self.prod_info.setText("Товаров: {}".format(len(all_rows)))
         self.prod_table.setRowCount(len(rows))
         row_h = _PRODUCT_PHOTO_SIZE + 12
         for i, p in enumerate(rows):

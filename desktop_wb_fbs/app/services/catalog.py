@@ -30,6 +30,28 @@ def _norm_header(value: object) -> str:
     return " ".join(str(value or "").strip().lower().replace("ё", "е").split())
 
 
+def product_matches_search(product: Dict[str, Any], query: str) -> bool:
+    """Case-insensitive substring match across catalog fields."""
+    q = str(query or "").strip().lower()
+    if not q:
+        return True
+    p = product if isinstance(product, dict) else {}
+    parts = [
+        p.get("name"),
+        p.get("supplier_article"),
+        p.get("wb_nmid"),
+        p.get("ozon_sku"),
+        p.get("yandex_offer_id"),
+        p.get("product_category"),
+        p.get("box_qty"),
+        p.get("photo_path"),
+    ]
+    if bool(int(p.get("skip_kiz_gtin_check") or 0)):
+        parts.extend(("gtin", "маркировк"))
+    haystack = " ".join(str(x or "") for x in parts).lower()
+    return q in haystack
+
+
 class ProductService:
     def __init__(self, db: Database) -> None:
         self.db = db

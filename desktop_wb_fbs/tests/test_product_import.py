@@ -74,6 +74,29 @@ class ProductImportTests(unittest.TestCase):
         self.assertEqual(a2["box_qty"], 20)
         self.assertFalse(a2["skip_kiz_gtin_check"])
 
+    def test_product_matches_search(self) -> None:
+        from app.services.catalog import product_matches_search
+
+        row = {
+            "name": "Куртка зимняя",
+            "supplier_article": "ART-RED",
+            "wb_nmid": "266846035",
+            "ozon_sku": "OZ-999",
+            "yandex_offer_id": "YM-777",
+            "product_category": "Одежда",
+            "box_qty": 12,
+            "skip_kiz_gtin_check": 0,
+        }
+        self.assertTrue(product_matches_search(row, "куртка"))
+        self.assertTrue(product_matches_search(row, "ART-RED"))
+        self.assertTrue(product_matches_search(row, "266846"))
+        self.assertTrue(product_matches_search(row, "OZ-999"))
+        self.assertTrue(product_matches_search(row, "YM-777"))
+        self.assertTrue(product_matches_search(row, "Одежда"))
+        self.assertTrue(product_matches_search(row, "12"))
+        self.assertFalse(product_matches_search(row, "неттакого"))
+        self.assertTrue(product_matches_search(row, ""))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -221,5 +221,16 @@ class OzonActResolveTest(unittest.TestCase):
         self.assertEqual(_extract_act_id_from_carriage({"id": 99}), "")
 
 
+class RunStartupGuardTest(unittest.TestCase):
+    def test_friendly_hint_missing_module(self) -> None:
+        import run as run_mod
+
+        exc = ModuleNotFoundError("PyQt5")
+        exc.name = "PyQt5"
+        hint = run_mod._friendly_hint(exc)
+        self.assertIn("PyQt5", hint)
+        self.assertIn("pip install", hint)
+
+
 if __name__ == "__main__":
     unittest.main()

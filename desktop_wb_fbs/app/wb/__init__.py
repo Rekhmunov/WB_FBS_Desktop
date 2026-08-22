@@ -12,7 +12,10 @@ try:
 except ImportError:  # Python 3.8
     from backports.zoneinfo import ZoneInfo  # type: ignore
 
-MSK = ZoneInfo("Europe/Moscow")
+try:
+    MSK = ZoneInfo("Europe/Moscow")
+except Exception:
+    MSK = timezone(timedelta(hours=3))
 
 TAB_NEW = "new"
 TAB_ASSEMBLY = "assembly"

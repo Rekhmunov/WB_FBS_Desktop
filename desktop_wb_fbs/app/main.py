@@ -31,7 +31,9 @@ from app.db import Database
 from app.services import SourceService
 from app.services.catalog import CategoryService, ProductService
 from app.services.orders import OrdersService
+from app.services.ozon_orders import OzonOrdersService
 from app.ui.fbs_page import FbsPage
+from app.ui.ozon_fbs_page import OzonFbsPage
 from app.ui.fonts import body_font, load_app_fonts
 from app.ui.layout_utils import fit_tab_button
 from app.ui.settings_page import SettingsPage
@@ -48,7 +50,7 @@ class MainWindow(QMainWindow):
         self.categories = CategoryService(db)
         self.orders = OrdersService(db)
 
-        self.setWindowTitle("{} — Поставки ВБ ФБС".format(APP_NAME))
+        self.setWindowTitle("{} — ВБ / Ozon FBS".format(APP_NAME))
         self.resize(1280, 800)
         self.setMinimumSize(960, 600)
 
@@ -64,47 +66,69 @@ class MainWindow(QMainWindow):
         top_l.setContentsMargins(16, 0, 24, 0)
         top_l.setSpacing(8)
 
-        self.btn_fbs = QPushButton("Поставки — ВБ ФБС")
+        self.btn_fbs = QPushButton("ВБ ФБС")
         self.btn_fbs.setCheckable(True)
         self.btn_fbs.setObjectName("navBtn")
         self.btn_fbs.setCursor(Qt.PointingHandCursor)
         self.btn_fbs.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Preferred)
+        self.btn_ozon = QPushButton("ОЗОН ФБС")
+        self.btn_ozon.setCheckable(True)
+        self.btn_ozon.setObjectName("navBtn")
+        self.btn_ozon.setCursor(Qt.PointingHandCursor)
+        self.btn_ozon.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Preferred)
         self.btn_settings = QPushButton("Настройки")
         self.btn_settings.setCheckable(True)
         self.btn_settings.setObjectName("navBtn")
         self.btn_settings.setCursor(Qt.PointingHandCursor)
         self.btn_settings.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Preferred)
         top_l.addWidget(self.btn_fbs)
+        top_l.addWidget(self.btn_ozon)
         top_l.addWidget(self.btn_settings)
-        fit_tab_button(self.btn_fbs, h_pad=52)
+        fit_tab_button(self.btn_fbs, h_pad=40)
+        fit_tab_button(self.btn_ozon, h_pad=40)
         fit_tab_button(self.btn_settings, h_pad=52)
         top_l.addStretch(1)
         layout.addWidget(top)
 
         self.stack = QStackedWidget()
         self.fbs_page = FbsPage(db, self.sources, self.orders)
+        self.ozon_orders = OzonOrdersService(db)
+        self.ozon_fbs_page = OzonFbsPage(db, self.sources, self.ozon_orders)
         self.settings_page = SettingsPage(
             db, self.sources, self.products, self.categories
         )
-        # Source select sits in the top bar, opposite «Настройки».
         top_l.addWidget(self.fbs_page.source_combo, 0, Qt.AlignVCenter)
+        top_l.addWidget(self.ozon_fbs_page.source_combo, 0, Qt.AlignVCenter)
+        self.ozon_fbs_page.source_combo.hide()
         self.stack.addWidget(self.fbs_page)
+        self.stack.addWidget(self.ozon_fbs_page)
         self.stack.addWidget(self.settings_page)
         layout.addWidget(self.stack, 1)
 
         self.btn_fbs.clicked.connect(lambda: self._show(0))
-        self.btn_settings.clicked.connect(lambda: self._show(1))
-        self.settings_page.sources_changed.connect(self.fbs_page.reload_sources)
+        self.btn_ozon.clicked.connect(lambda: self._show(1))
+        self.btn_settings.clicked.connect(lambda: self._show(2))
+        self.settings_page.sources_changed.connect(self._on_sources_changed)
         self._show(0)
-        self.statusBar().showMessage("Готово · данные локально · только API Wildberries")
+        self.statusBar().showMessage(
+            "Готово · данные локально · API Wildberries и Ozon"
+        )
+
+    def _on_sources_changed(self) -> None:
+        self.fbs_page.reload_sources()
+        self.ozon_fbs_page.reload_sources()
 
     def _show(self, index: int) -> None:
         self.stack.setCurrentIndex(index)
         self.btn_fbs.setChecked(index == 0)
-        self.btn_settings.setChecked(index == 1)
+        self.btn_ozon.setChecked(index == 1)
+        self.btn_settings.setChecked(index == 2)
         self.fbs_page.source_combo.setVisible(index == 0)
+        self.ozon_fbs_page.source_combo.setVisible(index == 1)
         if index == 0:
             self.fbs_page.reload_sources()
+        elif index == 1:
+            self.ozon_fbs_page.reload_sources()
 
 
 def run() -> int:

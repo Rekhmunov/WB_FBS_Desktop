@@ -19,6 +19,7 @@ CREATE TABLE IF NOT EXISTS supply_sources (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT NOT NULL,
     marketplace TEXT NOT NULL DEFAULT 'wb',
+    client_id TEXT NOT NULL DEFAULT '',
     api_key TEXT NOT NULL DEFAULT '',
     is_enabled INTEGER NOT NULL DEFAULT 1,
     lookback_days INTEGER NOT NULL DEFAULT 2,
@@ -129,6 +130,56 @@ CREATE TABLE IF NOT EXISTS wb_fbs_order_open_cache (
 
 CREATE INDEX IF NOT EXISTS idx_order_open_cache_src
     ON wb_fbs_order_open_cache(source_id);
+
+CREATE TABLE IF NOT EXISTS ozon_fbs_postings (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    source_id INTEGER NOT NULL,
+    posting_number TEXT NOT NULL,
+    order_id TEXT NOT NULL DEFAULT '',
+    order_number TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT '',
+    substatus TEXT NOT NULL DEFAULT '',
+    tab TEXT NOT NULL DEFAULT 'new',
+    carriage_id TEXT NOT NULL DEFAULT '',
+    offer_id TEXT NOT NULL DEFAULT '',
+    sku TEXT NOT NULL DEFAULT '',
+    product_name TEXT NOT NULL DEFAULT '',
+    quantity INTEGER NOT NULL DEFAULT 1,
+    warehouse_name TEXT NOT NULL DEFAULT '',
+    warehouse_id INTEGER,
+    barcodes_json TEXT NOT NULL DEFAULT '[]',
+    cancel_reason TEXT NOT NULL DEFAULT '',
+    shipment_date TEXT,
+    in_process_at TEXT,
+    created_at_wb TEXT,
+    marks_json TEXT NOT NULL DEFAULT '[]',
+    marks_saved_at TEXT,
+    pick_verified INTEGER NOT NULL DEFAULT 0,
+    pick_barcode TEXT NOT NULL DEFAULT '',
+    pick_verified_at TEXT,
+    raw_json TEXT NOT NULL DEFAULT '{}',
+    synced_at TEXT NOT NULL,
+    UNIQUE(source_id, posting_number)
+);
+
+CREATE INDEX IF NOT EXISTS idx_ozon_postings_src_tab
+    ON ozon_fbs_postings(source_id, tab, created_at_wb DESC);
+
+CREATE TABLE IF NOT EXISTS ozon_fbs_carriages (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    source_id INTEGER NOT NULL,
+    carriage_id TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT '',
+    done INTEGER NOT NULL DEFAULT 0,
+    delivery_method_id INTEGER,
+    posting_numbers_json TEXT NOT NULL DEFAULT '[]',
+    raw_json TEXT NOT NULL DEFAULT '{}',
+    synced_at TEXT NOT NULL,
+    UNIQUE(source_id, carriage_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_ozon_carriages_src
+    ON ozon_fbs_carriages(source_id, done, synced_at DESC);
 """
 
 
@@ -153,6 +204,7 @@ class Database:
             conn.executescript(SCHEMA_SQL)
             self._migrate_product_photos(conn)
             self._migrate_supply_sources(conn)
+            self._migrate_ozon_schema(conn)
             conn.commit()
 
     @staticmethod
@@ -183,6 +235,65 @@ class Database:
                 "ALTER TABLE supply_sources ADD COLUMN lookback_days "
                 "INTEGER NOT NULL DEFAULT 2"
             )
+        if "client_id" not in cols:
+            conn.execute(
+                "ALTER TABLE supply_sources ADD COLUMN client_id "
+                "TEXT NOT NULL DEFAULT ''"
+            )
+
+    @staticmethod
+    def _migrate_ozon_schema(conn: sqlite3.Connection) -> None:
+        """Ensure Ozon FBS tables exist on older DB files (CREATE IF NOT EXISTS)."""
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS ozon_fbs_postings (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                source_id INTEGER NOT NULL,
+                posting_number TEXT NOT NULL,
+                order_id TEXT NOT NULL DEFAULT '',
+                order_number TEXT NOT NULL DEFAULT '',
+                status TEXT NOT NULL DEFAULT '',
+                substatus TEXT NOT NULL DEFAULT '',
+                tab TEXT NOT NULL DEFAULT 'new',
+                carriage_id TEXT NOT NULL DEFAULT '',
+                offer_id TEXT NOT NULL DEFAULT '',
+                sku TEXT NOT NULL DEFAULT '',
+                product_name TEXT NOT NULL DEFAULT '',
+                quantity INTEGER NOT NULL DEFAULT 1,
+                warehouse_name TEXT NOT NULL DEFAULT '',
+                warehouse_id INTEGER,
+                barcodes_json TEXT NOT NULL DEFAULT '[]',
+                cancel_reason TEXT NOT NULL DEFAULT '',
+                shipment_date TEXT,
+                in_process_at TEXT,
+                created_at_wb TEXT,
+                marks_json TEXT NOT NULL DEFAULT '[]',
+                marks_saved_at TEXT,
+                pick_verified INTEGER NOT NULL DEFAULT 0,
+                pick_barcode TEXT NOT NULL DEFAULT '',
+                pick_verified_at TEXT,
+                raw_json TEXT NOT NULL DEFAULT '{}',
+                synced_at TEXT NOT NULL,
+                UNIQUE(source_id, posting_number)
+            );
+            CREATE INDEX IF NOT EXISTS idx_ozon_postings_src_tab
+                ON ozon_fbs_postings(source_id, tab, created_at_wb DESC);
+            CREATE TABLE IF NOT EXISTS ozon_fbs_carriages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                source_id INTEGER NOT NULL,
+                carriage_id TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT '',
+                done INTEGER NOT NULL DEFAULT 0,
+                delivery_method_id INTEGER,
+                posting_numbers_json TEXT NOT NULL DEFAULT '[]',
+                raw_json TEXT NOT NULL DEFAULT '{}',
+                synced_at TEXT NOT NULL,
+                UNIQUE(source_id, carriage_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_ozon_carriages_src
+                ON ozon_fbs_carriages(source_id, done, synced_at DESC);
+            """
+        )
 
     @contextmanager
     def cursor(self) -> Iterator[sqlite3.Cursor]:

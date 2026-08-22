@@ -35,7 +35,7 @@ from app.services.catalog import CategoryService, ProductService
 _PRODUCT_PHOTO_SIZE = 48
 _PRODUCT_PHOTO_COL = 0
 _PRODUCT_NAME_COL = 1
-_SRC_COL_DEFAULTS = [220, 80, 64, 160, 180]
+_SRC_COL_DEFAULTS = [200, 56, 80, 64, 180, 180]
 _PROD_COL_DEFAULTS = [
     _PRODUCT_PHOTO_SIZE + 16,
     220,
@@ -70,9 +70,9 @@ class SettingsPage(QWidget):
         layout.setContentsMargins(24, 20, 24, 16)
         layout.setSpacing(12)
         hint = QLabel(
-            "Нужны для работы ВБ ФБС: источники (токен Marketplace, глубина "
-            "синхронизации), товары (фото, короба, пропуск GTIN). Категории — "
-            "кнопка «Категории товаров» на вкладке Товары."
+            "Источники ВБ и ОЗОН ФБС: токен Marketplace (ВБ) или Client-Id + Api-Key "
+            "(Ozon), глубина синхронизации. Товары — фото, короба, пропуск GTIN. "
+            "Категории — кнопка «Категории товаров» на вкладке Товары."
         )
         hint.setWordWrap(True)
         hint.setObjectName("hint")
@@ -103,22 +103,26 @@ class SettingsPage(QWidget):
         w = QWidget()
         v = QVBoxLayout(w)
         bar = QHBoxLayout()
-        add = QPushButton("Добавить")
-        add.clicked.connect(self.add_source)
+        add_wb = QPushButton("Добавить ВБ ФБС")
+        add_wb.clicked.connect(lambda: self.add_source("wb"))
+        add_ozon = QPushButton("Добавить ОЗОН ФБС")
+        add_ozon.setObjectName("secondary")
+        add_ozon.clicked.connect(lambda: self.add_source("ozon"))
         edit = QPushButton("Изменить")
         edit.setObjectName("secondary")
         edit.clicked.connect(self.edit_source)
         delete = QPushButton("Удалить")
         delete.setObjectName("danger")
         delete.clicked.connect(self.delete_source)
-        bar.addWidget(add)
+        bar.addWidget(add_wb)
+        bar.addWidget(add_ozon)
         bar.addWidget(edit)
         bar.addWidget(delete)
         bar.addStretch(1)
         v.addLayout(bar)
-        self.src_table = QTableWidget(0, 5)
+        self.src_table = QTableWidget(0, 6)
         self.src_table.setHorizontalHeaderLabels(
-            ["Название", "Включён", "Дней", "Ключ", "Последняя синхр."]
+            ["Название", "МП", "Включён", "Дней", "Ключ", "Последняя синхр."]
         )
         self.src_table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.src_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
@@ -132,9 +136,9 @@ class SettingsPage(QWidget):
         self._src_col_widths.apply()
         v.addWidget(self.src_table, 1)
         note = QLabel(
-            "В названии обязательно «ФБС» или FBS. Токен — категория Marketplace "
-            "(и Контент для названий товаров). «Дней» — глубина синхронизации "
-            "заказов/поставок (по умолчанию 2)."
+            "В названии обязательно «ФБС» или FBS. ВБ: токен категории Marketplace "
+            "(и Контент для названий товаров). Ozon: Client-Id и Api-Key из Seller API. "
+            "«Дней» — глубина синхронизации заказов/отгрузок (по умолчанию 2, Ozon ≤30)."
         )
         note.setWordWrap(True)
         note.setObjectName("hint")
@@ -148,20 +152,30 @@ class SettingsPage(QWidget):
         for i, s in enumerate(rows):
             self.src_table.setItem(i, 0, QTableWidgetItem(str(s.get("name") or "")))
             self.src_table.item(i, 0).setData(Qt.UserRole, int(s["id"]))
+            mp = str(s.get("marketplace") or "wb").lower()
+            mp_label = "ОЗОН" if mp == "ozon" else "ВБ"
+            self.src_table.setItem(i, 1, QTableWidgetItem(mp_label))
             self.src_table.setItem(
-                i, 1, QTableWidgetItem("да" if int(s.get("is_enabled") or 0) else "нет")
+                i, 2, QTableWidgetItem("да" if int(s.get("is_enabled") or 0) else "нет")
             )
             lookback = s.get("lookback_days")
             try:
                 lookback_text = str(int(lookback)) if lookback is not None else "2"
             except (TypeError, ValueError):
                 lookback_text = "2"
-            self.src_table.setItem(i, 2, QTableWidgetItem(lookback_text))
+            self.src_table.setItem(i, 3, QTableWidgetItem(lookback_text))
             key = str(s.get("api_key") or "")
-            masked = (key[:4] + "…" + key[-4:]) if len(key) > 10 else ("*" * len(key))
-            self.src_table.setItem(i, 3, QTableWidgetItem(masked))
+            client_id = str(s.get("client_id") or "")
+            if mp == "ozon" and client_id:
+                masked = "{} / {}".format(
+                    client_id,
+                    (key[:4] + "…" + key[-4:]) if len(key) > 10 else ("*" * len(key)),
+                )
+            else:
+                masked = (key[:4] + "…" + key[-4:]) if len(key) > 10 else ("*" * len(key))
+            self.src_table.setItem(i, 4, QTableWidgetItem(masked))
             self.src_table.setItem(
-                i, 4, QTableWidgetItem(str(s.get("last_synced_at") or "—"))
+                i, 5, QTableWidgetItem(str(s.get("last_synced_at") or "—"))
             )
 
     def _selected_source_id(self) -> Optional[int]:
@@ -173,7 +187,23 @@ class SettingsPage(QWidget):
             return None
         return int(item.data(Qt.UserRole))
 
-    def add_source(self) -> None:
+    def add_source(self, marketplace: str = "wb") -> None:
+        if marketplace == "ozon":
+            dlg = OzonSourceEditDialog(self)
+            if dlg.exec_():
+                try:
+                    self.sources.create_ozon(
+                        dlg.name,
+                        dlg.client_id,
+                        dlg.api_key,
+                        dlg.enabled,
+                        dlg.lookback_days,
+                    )
+                    self.reload_sources_table()
+                    self.sources_changed.emit()
+                except Exception as exc:
+                    QMessageBox.warning(self, "Источник Ozon", str(exc))
+            return
         dlg = SourceEditDialog(self)
         if dlg.exec_():
             try:
@@ -191,6 +221,24 @@ class SettingsPage(QWidget):
             return
         src = self.sources.get(sid)
         if not src:
+            return
+        mp = str(src.get("marketplace") or "wb").lower()
+        if mp == "ozon":
+            dlg = OzonSourceEditDialog(self, src)
+            if dlg.exec_():
+                try:
+                    self.sources.update_ozon(
+                        sid,
+                        dlg.name,
+                        dlg.client_id,
+                        dlg.api_key,
+                        dlg.enabled,
+                        dlg.lookback_days,
+                    )
+                    self.reload_sources_table()
+                    self.sources_changed.emit()
+                except Exception as exc:
+                    QMessageBox.warning(self, "Источник Ozon", str(exc))
             return
         dlg = SourceEditDialog(self, src)
         if dlg.exec_():
@@ -625,6 +673,76 @@ class SourceEditDialog(QDialog):
         self.enabled = self.enabled_chk.isChecked()
         self.lookback_days = int(self.lookback_spin.value())
         super(SourceEditDialog, self).accept()
+
+
+class OzonSourceEditDialog(QDialog):
+    def __init__(
+        self, parent: Optional[QWidget] = None, src: Optional[Dict] = None
+    ) -> None:
+        super(OzonSourceEditDialog, self).__init__(parent)
+        self.setWindowTitle("Источник Ozon FBS")
+        prepare_modal_dialog(
+            self,
+            maximized=True,
+            default_size=(480, 400),
+            minimum_size=(420, 340),
+        )
+        self.name = ""
+        self.client_id = ""
+        self.api_key = ""
+        self.enabled = True
+        self.lookback_days = 2
+        form = QFormLayout(self)
+        form.setContentsMargins(24, 24, 24, 24)
+        form.setHorizontalSpacing(16)
+        form.setVerticalSpacing(16)
+        self.name_edit = QLineEdit(str((src or {}).get("name") or "Кабинет Ozon ФБС"))
+        self.client_id_edit = QLineEdit(str((src or {}).get("client_id") or ""))
+        self.client_id_edit.setPlaceholderText("Client-Id из личного кабинета Ozon Seller")
+        self.key_edit = QLineEdit()
+        self.key_edit.setEchoMode(QLineEdit.Password)
+        self.key_edit.setPlaceholderText(
+            "Оставьте пустым, чтобы не менять" if src else "Api-Key Seller API"
+        )
+        if src and src.get("api_key"):
+            self.key_edit.setText("")
+        self.lookback_spin = QSpinBox()
+        self.lookback_spin.setRange(1, 30)
+        self.lookback_spin.setSuffix(" дн.")
+        try:
+            initial_lookback = int((src or {}).get("lookback_days") or 2)
+        except (TypeError, ValueError):
+            initial_lookback = 2
+        self.lookback_spin.setValue(max(1, min(initial_lookback, 30)))
+        self.lookback_spin.setToolTip(
+            "За сколько дней назад подтягивать отправления и отгрузки (Ozon ≤30 за запрос)"
+        )
+        self.enabled_chk = QCheckBox("Включён")
+        self.enabled_chk.setChecked(bool(int((src or {}).get("is_enabled", 1))))
+        form.addRow("Название", self.name_edit)
+        form.addRow("Client-Id", self.client_id_edit)
+        form.addRow("Api-Key", self.key_edit)
+        form.addRow("Глубина синхр.", self.lookback_spin)
+        form.addRow("", self.enabled_chk)
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.button(QDialogButtonBox.Cancel).setObjectName("secondary")
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        form.addRow(buttons)
+        self._src = src
+
+    def accept(self) -> None:
+        self.name = self.name_edit.text().strip()
+        self.client_id = self.client_id_edit.text().strip()
+        self.api_key = self.key_edit.text().strip()
+        if self._src:
+            if not self.client_id:
+                self.client_id = str(self._src.get("client_id") or "")
+            if not self.api_key:
+                self.api_key = str(self._src.get("api_key") or "")
+        self.enabled = self.enabled_chk.isChecked()
+        self.lookback_days = int(self.lookback_spin.value())
+        super(OzonSourceEditDialog, self).accept()
 
 
 class ProductEditDialog(QDialog):

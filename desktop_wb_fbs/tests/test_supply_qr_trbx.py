@@ -27,6 +27,28 @@ class SupplyQrTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             render_supply_qr_sticker_png("")
 
+    def test_resolve_prefers_wb_barcode(self):
+        from app.services.supply_qr import resolve_supply_qr_png
+
+        png = b"\x89PNG\r\n\x1a\n" + b"x" * 300
+        with patch(
+            "app.services.supply_qr.fetch_supply_barcode_png", return_value=png
+        ):
+            out, source = resolve_supply_qr_png("token", "WB-GI-1", order_count=2)
+        self.assertEqual(source, "wb")
+        self.assertEqual(out, png)
+
+    def test_resolve_falls_back_local(self):
+        from app.services.supply_qr import resolve_supply_qr_png
+
+        with patch(
+            "app.services.supply_qr.fetch_supply_barcode_png",
+            side_effect=RuntimeError("fail"),
+        ):
+            out, source = resolve_supply_qr_png("token", "WB-GI-1", order_count=1)
+        self.assertEqual(source, "local")
+        self.assertTrue(out.startswith(b"\x89PNG"))
+
 
 class TrbxDoneGuardTests(unittest.TestCase):
     @patch("app.services.orders.OrdersService")

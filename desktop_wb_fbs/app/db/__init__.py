@@ -166,10 +166,24 @@ CREATE TABLE IF NOT EXISTS ozon_fbs_postings (
     pick_verified_at TEXT,
     sticker_barcode TEXT NOT NULL DEFAULT '',
     sticker_lower_barcode TEXT NOT NULL DEFAULT '',
+    container_id INTEGER,
+    container_barcode TEXT NOT NULL DEFAULT '',
+    container_synced INTEGER NOT NULL DEFAULT 0,
+    container_sync_error TEXT NOT NULL DEFAULT '',
     raw_json TEXT NOT NULL DEFAULT '{}',
     synced_at TEXT NOT NULL,
     UNIQUE(source_id, posting_number)
 );
+
+CREATE TABLE IF NOT EXISTS ozon_fbs_container_local_archive (
+    source_id INTEGER NOT NULL,
+    container_id INTEGER NOT NULL,
+    archived_at TEXT NOT NULL,
+    PRIMARY KEY (source_id, container_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_ozon_container_archive_src
+    ON ozon_fbs_container_local_archive(source_id);
 
 CREATE INDEX IF NOT EXISTS idx_ozon_postings_src_tab
     ON ozon_fbs_postings(source_id, tab, created_at_wb DESC);
@@ -422,6 +436,39 @@ class Database:
                 "ALTER TABLE ozon_fbs_postings ADD COLUMN sticker_lower_barcode "
                 "TEXT NOT NULL DEFAULT ''"
             )
+        if "container_id" not in cols:
+            conn.execute(
+                "ALTER TABLE ozon_fbs_postings ADD COLUMN container_id INTEGER"
+            )
+        if "container_barcode" not in cols:
+            conn.execute(
+                "ALTER TABLE ozon_fbs_postings ADD COLUMN container_barcode "
+                "TEXT NOT NULL DEFAULT ''"
+            )
+        if "container_synced" not in cols:
+            conn.execute(
+                "ALTER TABLE ozon_fbs_postings ADD COLUMN container_synced "
+                "INTEGER NOT NULL DEFAULT 0"
+            )
+        if "container_sync_error" not in cols:
+            conn.execute(
+                "ALTER TABLE ozon_fbs_postings ADD COLUMN container_sync_error "
+                "TEXT NOT NULL DEFAULT ''"
+            )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS ozon_fbs_container_local_archive (
+                source_id INTEGER NOT NULL,
+                container_id INTEGER NOT NULL,
+                archived_at TEXT NOT NULL,
+                PRIMARY KEY (source_id, container_id)
+            )
+            """
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_ozon_container_archive_src "
+            "ON ozon_fbs_container_local_archive(source_id)"
+        )
         carriage_cols = {
             str(r[1])
             for r in conn.execute("PRAGMA table_info(ozon_fbs_carriages)").fetchall()

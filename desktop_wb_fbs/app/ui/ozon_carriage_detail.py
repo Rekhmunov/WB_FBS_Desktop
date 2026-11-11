@@ -536,6 +536,7 @@ class OzonCarriageDetailDialog(QDialog):
             posting_numbers=pnums,
             selected_posting=self._selected_posting_number(),
             warehouse_id=wh,
+            db=self.db,
             parent=self,
         )
         dlg.exec_()

@@ -307,8 +307,11 @@ def make_status_pill(text: str, kind: str = "assembly") -> QLabel:
     lab.setProperty("kind", kind)
     colors = {
         "assembly": ("#eff6ff", "#1d4ed8", "#93c5fd"),
+        "awaiting_deliver": ("#eff6ff", "#1d4ed8", "#93c5fd"),
         "ship": ("#fff7ed", "#c2410c", "#fdba74"),
         "scanned": ("#eff6ff", "#1d4ed8", "#93c5fd"),
+        "delivery": ("#fff7ed", "#c2410c", "#fdba74"),
+        "delivering": ("#fff7ed", "#c2410c", "#fdba74"),
         "done": ("#f0fdf4", "#166534", "#86efac"),
     }
     bg, fg, border = colors.get(kind, colors["assembly"])

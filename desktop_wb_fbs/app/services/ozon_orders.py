@@ -72,7 +72,7 @@ class OzonOrdersService:
         """Postings on assembly without carriage (awaiting_deliver, etc.)."""
         cond = [
             "source_id = ?",
-            "tab = 'assembly'",
+            "tab IN ('assembly', 'awaiting_deliver')",
             "(carriage_id IS NULL OR carriage_id = '')",
         ]
         params = [source_id]  # type: List[Any]
@@ -97,52 +97,99 @@ class OzonOrdersService:
         return [self._enrich_posting(Database.row_to_dict(r)) for r in rows]
 
     def tab_counts(self, source_id: int) -> Dict[str, int]:
-        out = {"new": 0, "assembly": 0, "delivery": 0, "finished": 0}
+        out = {
+            "awaiting_packaging": 0,
+            "awaiting_deliver": 0,
+            "delivering": 0,
+            "delivered": 0,
+            "cancelled": 0,
+            "arbitration": 0,
+            # legacy aliases
+            "new": 0,
+            "assembly": 0,
+            "delivery": 0,
+            "finished": 0,
+        }
+        from app.services.ozon_supplies import OzonSuppliesService
+
         with self.db.connect() as conn:
             n = conn.execute(
                 """
                 SELECT COUNT(*) AS c FROM ozon_fbs_postings
-                WHERE source_id = ? AND tab = 'new'
-                """,
-                (source_id,),
-            ).fetchone()
-            a = conn.execute(
-                """
-                SELECT COUNT(*) AS c FROM ozon_fbs_carriages
-                WHERE source_id = ? AND done = 0
+                WHERE source_id = ?
+                  AND tab IN ('new', 'awaiting_packaging')
                 """,
                 (source_id,),
             ).fetchone()
             orphan = conn.execute(
                 """
                 SELECT COUNT(*) AS c FROM ozon_fbs_postings
-                WHERE source_id = ? AND tab = 'assembly'
+                WHERE source_id = ?
+                  AND tab IN ('assembly', 'awaiting_deliver')
+                  AND COALESCE(supply_id, '') = ''
                   AND (carriage_id IS NULL OR carriage_id = '')
-                """,
-                (source_id,),
-            ).fetchone()
-            d = conn.execute(
-                """
-                SELECT COUNT(*) AS c FROM ozon_fbs_carriages
-                WHERE source_id = ? AND done = 1
                 """,
                 (source_id,),
             ).fetchone()
             f = conn.execute(
                 """
                 SELECT COUNT(*) AS c FROM ozon_fbs_postings
-                WHERE source_id = ? AND tab = 'finished'
+                WHERE source_id = ?
+                  AND tab IN ('finished', 'delivered')
                 """,
                 (source_id,),
             ).fetchone()
-        out["new"] = int(n["c"] if n else 0)
-        out["assembly"] = int(a["c"] if a else 0) + int(orphan["c"] if orphan else 0)
-        out["delivery"] = int(d["c"] if d else 0)
-        out["finished"] = int(f["c"] if f else 0)
+            c = conn.execute(
+                """
+                SELECT COUNT(*) AS c FROM ozon_fbs_postings
+                WHERE source_id = ? AND tab = 'cancelled'
+                """,
+                (source_id,),
+            ).fetchone()
+            arb = conn.execute(
+                """
+                SELECT COUNT(*) AS c FROM ozon_fbs_postings
+                WHERE source_id = ? AND tab = 'arbitration'
+                """,
+                (source_id,),
+            ).fetchone()
+        supplies = OzonSuppliesService(self.db).tab_supply_counts(source_id)
+        # Fallback to API carriages when no local supplies yet.
+        with self.db.connect() as conn:
+            open_c = conn.execute(
+                """
+                SELECT COUNT(*) AS c FROM ozon_fbs_carriages
+                WHERE source_id = ? AND done = 0
+                """,
+                (source_id,),
+            ).fetchone()
+            done_c = conn.execute(
+                """
+                SELECT COUNT(*) AS c FROM ozon_fbs_carriages
+                WHERE source_id = ? AND done = 1
+                """,
+                (source_id,),
+            ).fetchone()
+        pack = int(n["c"] if n else 0)
+        asm = int(supplies.get("awaiting_deliver") or 0) + int(
+            orphan["c"] if orphan else 0
+        )
+        if asm == 0:
+            asm = int(open_c["c"] if open_c else 0)
+        deliv = int(supplies.get("delivering") or 0)
+        if deliv == 0:
+            deliv = int(done_c["c"] if done_c else 0)
+        done = int(f["c"] if f else 0)
+        out["awaiting_packaging"] = out["new"] = pack
+        out["awaiting_deliver"] = out["assembly"] = asm
+        out["delivering"] = out["delivery"] = deliv
+        out["delivered"] = out["finished"] = done
+        out["cancelled"] = int(c["c"] if c else 0)
+        out["arbitration"] = int(arb["c"] if arb else 0)
         return out
 
     def count_new_postings(self, source_id: int, *, search: str = "") -> int:
-        cond = ["source_id = ?", "tab = 'new'"]
+        cond = ["source_id = ?", "tab IN ('new', 'awaiting_packaging')"]
         params = [source_id]  # type: List[Any]
         q = str(search or "").strip().lower()
         if q:
@@ -168,7 +215,7 @@ class OzonOrdersService:
         limit: int = 500,
         offset: int = 0,
     ) -> List[Dict[str, Any]]:
-        cond = ["source_id = ?", "tab = 'new'"]
+        cond = ["source_id = ?", "tab IN ('new', 'awaiting_packaging')"]
         params = [source_id]  # type: List[Any]
         q = str(search or "").strip().lower()
         if q:
@@ -199,7 +246,7 @@ class OzonOrdersService:
         limit: int = 200,
         offset: int = 0,
     ) -> List[Dict[str, Any]]:
-        cond = ["source_id = ?", "tab = 'finished'"]
+        cond = ["source_id = ?", "tab IN ('finished', 'delivered')"]
         params = [source_id]  # type: List[Any]
         q = str(search or "").strip().lower()
         if q:
@@ -221,8 +268,55 @@ class OzonOrdersService:
         return [self._enrich_posting(Database.row_to_dict(r)) for r in rows]
 
     def count_finished_postings(self, source_id: int, *, search: str = "") -> int:
-        cond = ["source_id = ?", "tab = 'finished'"]
+        return self.count_tab_postings(
+            source_id, tabs=("finished", "delivered"), search=search
+        )
+
+    def list_tab_postings(
+        self,
+        source_id: int,
+        *,
+        tabs: Any,
+        search: str = "",
+        limit: int = 200,
+        offset: int = 0,
+    ) -> List[Dict[str, Any]]:
+        tab_list = [str(t).strip() for t in (tabs or ()) if str(t).strip()]
+        if not tab_list:
+            return []
+        placeholders = ", ".join("?" for _ in tab_list)
+        cond = ["source_id = ?", "tab IN ({})".format(placeholders)]
         params = [source_id]  # type: List[Any]
+        params.extend(tab_list)
+        q = str(search or "").strip().lower()
+        if q:
+            like = "%{}%".format(q)
+            cond.append(
+                "(LOWER(posting_number) LIKE ? OR LOWER(offer_id) LIKE ?"
+                " OR LOWER(sku) LIKE ? OR LOWER(product_name) LIKE ?)"
+            )
+            params.extend([like, like, like, like])
+        sql = """
+            SELECT * FROM ozon_fbs_postings
+            WHERE {}
+            ORDER BY datetime(created_at_wb) DESC, posting_number DESC
+            LIMIT ? OFFSET ?
+        """.format(" AND ".join(cond))
+        params.extend([max(1, int(limit)), max(0, int(offset))])
+        with self.db.connect() as conn:
+            rows = conn.execute(sql, params).fetchall()
+        return [self._enrich_posting(Database.row_to_dict(r)) for r in rows]
+
+    def count_tab_postings(
+        self, source_id: int, *, tabs: Any, search: str = ""
+    ) -> int:
+        tab_list = [str(t).strip() for t in (tabs or ()) if str(t).strip()]
+        if not tab_list:
+            return 0
+        placeholders = ", ".join("?" for _ in tab_list)
+        cond = ["source_id = ?", "tab IN ({})".format(placeholders)]
+        params = [source_id]  # type: List[Any]
+        params.extend(tab_list)
         q = str(search or "").strip().lower()
         if q:
             like = "%{}%".format(q)
@@ -308,7 +402,7 @@ class OzonOrdersService:
                 conn.execute(
                     """
                     UPDATE ozon_fbs_postings
-                    SET carriage_id = ?, tab = 'assembly', synced_at = ?
+                    SET carriage_id = ?, tab = 'awaiting_deliver', synced_at = ?
                     WHERE source_id = ? AND posting_number = ?
                     """,
                     (cid, now, source_id, pnum),

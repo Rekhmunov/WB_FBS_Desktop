@@ -6,11 +6,28 @@ from datetime import datetime, timedelta, timezone
 
 from typing import Optional, Tuple
 
-TAB_NEW = "new"
-TAB_ASSEMBLY = "assembly"
-TAB_DELIVERY = "delivery"
-TAB_FINISHED = "finished"
+# UI tabs — portal-aligned (web FeedPilot Ozon FBS).
+TAB_AWAITING_PACKAGING = "awaiting_packaging"
+TAB_AWAITING_DELIVER = "awaiting_deliver"
+TAB_DELIVERING = "delivering"
+TAB_DELIVERED = "delivered"
 TAB_CANCELLED = "cancelled"
+TAB_ARBITRATION = "arbitration"
+
+TAB_LABELS = {
+    TAB_AWAITING_PACKAGING: "Ожидают сборки",
+    TAB_AWAITING_DELIVER: "Ожидают отгрузки",
+    TAB_DELIVERING: "Доставляются",
+    TAB_DELIVERED: "Доставлены",
+    TAB_CANCELLED: "Отменены",
+    TAB_ARBITRATION: "Спорные",
+}
+
+# Backward-compatible aliases (older desktop used WB-style keys).
+TAB_NEW = TAB_AWAITING_PACKAGING
+TAB_ASSEMBLY = TAB_AWAITING_DELIVER
+TAB_DELIVERY = TAB_DELIVERING
+TAB_FINISHED = TAB_DELIVERED
 
 # Ozon posting.status (Seller API FBS).
 STATUS_AWAITING_REGISTRATION = "awaiting_registration"
@@ -27,21 +44,32 @@ STATUS_SENT_BY_SELLER = "sent_by_seller"
 STATUS_CLIENT_ARBITRATION = "client_arbitration"
 STATUS_DRIVER_PICKUP = "driver_pickup"
 
-_NEW_STATUSES = {
+_PACKAGING_STATUSES = {
     STATUS_AWAITING_REGISTRATION,
     STATUS_ACCEPTANCE_IN_PROGRESS,
     STATUS_AWAITING_APPROVE,
     STATUS_AWAITING_PACKAGING,
 }
-_ASSEMBLY_STATUSES = {
+_AWAITING_DELIVER_STATUSES = {
     STATUS_AWAITING_DELIVER,
-    STATUS_ARBITRATION,
-    STATUS_CLIENT_ARBITRATION,
     STATUS_SENT_BY_SELLER,
     STATUS_DRIVER_PICKUP,
 }
-_FINISHED_STATUSES = {STATUS_DELIVERED, STATUS_DELIVERING}
+_ARBITRATION_STATUSES = {STATUS_ARBITRATION, STATUS_CLIENT_ARBITRATION}
 _CANCELLED_STATUSES = {STATUS_CANCELLED, STATUS_NOT_ACCEPTED}
+
+_LEGACY_TAB_MAP = {
+    "new": TAB_AWAITING_PACKAGING,
+    "assembly": TAB_AWAITING_DELIVER,
+    "delivery": TAB_DELIVERING,
+    "finished": TAB_DELIVERED,
+}
+
+
+def normalize_tab(tab: object) -> str:
+    """Map legacy desktop tab keys to portal-aligned keys."""
+    key = str(tab or "").strip().lower()
+    return _LEGACY_TAB_MAP.get(key, key or TAB_AWAITING_PACKAGING)
 
 
 def is_fbs_source_name(name: object) -> bool:
@@ -76,18 +104,27 @@ def iso_z(dt: datetime) -> str:
 
 
 def compute_tab(*, status: str, carriage_id: str = "") -> str:
-    """Map Ozon posting.status (+ carriage) to desktop tabs (WB parity)."""
+    """Map Ozon posting.status to portal tabs (web parity).
+
+    ``carriage_id`` is accepted for call-site compatibility but does not
+    change the tab — web FeedPilot keys only off status.
+    """
+    del carriage_id  # unused; kept for API compatibility
     st = str(status or "").strip().lower()
-    cid = str(carriage_id or "").strip()
+    if st in _ARBITRATION_STATUSES:
+        return TAB_ARBITRATION
     if st in _CANCELLED_STATUSES:
         return TAB_CANCELLED
-    if st in _FINISHED_STATUSES:
-        return TAB_FINISHED
-    if st in _ASSEMBLY_STATUSES or cid:
-        return TAB_ASSEMBLY
-    if st in _NEW_STATUSES or not st:
-        return TAB_NEW
-    return TAB_ASSEMBLY
+    if st == STATUS_DELIVERED:
+        return TAB_DELIVERED
+    if st == STATUS_DELIVERING:
+        return TAB_DELIVERING
+    if st in _AWAITING_DELIVER_STATUSES:
+        return TAB_AWAITING_DELIVER
+    if st in _PACKAGING_STATUSES or not st:
+        return TAB_AWAITING_PACKAGING
+    # Unknown statuses: treat like packaging (web default).
+    return TAB_AWAITING_PACKAGING
 
 
 def status_label(status: str) -> str:
@@ -109,7 +146,7 @@ def status_label(status: str) -> str:
     return labels.get(str(status or "").strip().lower(), str(status or "—"))
 
 
-# Carriage statuses that no longer belong on «На сборке».
+# Carriage statuses that no longer belong on «Ожидают отгрузки».
 _CARRIAGE_DONE_STATUSES = frozenset(
     {
         "approved",

@@ -10,6 +10,8 @@ from PyQt5.QtCore import Qt, QThread, pyqtSignal
 from PyQt5.QtWidgets import (
     QAbstractItemView,
     QComboBox,
+    QDialog,
+    QDialogButtonBox,
     QFrame,
     QHBoxLayout,
     QLabel,
@@ -18,6 +20,7 @@ from PyQt5.QtWidgets import (
     QPushButton,
     QTableWidget,
     QTableWidgetItem,
+    QTextEdit,
     QVBoxLayout,
     QWidget,
     QSizePolicy,
@@ -124,7 +127,7 @@ class OzonFbsPage(QWidget):
         self.db = db
         self.sources = sources
         self.orders = orders
-        self._tab = "new"
+        self._tab = "awaiting_packaging"
         self._page = 0
         self._sync_worker = None  # type: Optional[OzonSyncWorker]
         self._selected_postings = set()  # type: set
@@ -144,6 +147,13 @@ class OzonFbsPage(QWidget):
         self.stop_btn.setObjectName("secondary")
         self.stop_btn.hide()
         self.stop_btn.clicked.connect(self.stop_sync)
+        self.ship_all_btn = QPushButton("Собрать все заказы")
+        self.ship_all_btn.setObjectName("mgtBtn")
+        self.ship_all_btn.setCursor(Qt.PointingHandCursor)
+        self.ship_all_btn.setToolTip(
+            "Собрать все отправления «Ожидают сборки» в локальные поставки"
+        )
+        self.ship_all_btn.clicked.connect(self.ship_all_collect)
         self.create_carriage_btn = QPushButton("Создать отгрузку")
         self.create_carriage_btn.setObjectName("secondary")
         self.create_carriage_btn.clicked.connect(self.create_carriage)
@@ -151,6 +161,7 @@ class OzonFbsPage(QWidget):
         self.open_carriage_btn.clicked.connect(self.open_selected_carriage)
         tb.addWidget(self.sync_btn)
         tb.addWidget(self.stop_btn)
+        tb.addWidget(self.ship_all_btn)
         tb.addWidget(self.create_carriage_btn)
         tb.addWidget(self.open_carriage_btn)
         tb.addStretch(1)
@@ -173,19 +184,30 @@ class OzonFbsPage(QWidget):
         tabs_lay = QHBoxLayout(tabs_row)
         tabs_lay.setContentsMargins(8, 0, 8, 0)
         tabs_lay.setSpacing(4)
-        self.tab_new = FbsTabButton("Новые")
-        self.tab_assembly = FbsTabButton("На сборке")
-        self.tab_delivery = FbsTabButton("В доставке")
-        self.tab_finished = FbsTabButton("Завершённые")
-        self.tab_new.clicked.connect(lambda: self.on_tab_change("new"))
-        self.tab_assembly.clicked.connect(lambda: self.on_tab_change("assembly"))
-        self.tab_delivery.clicked.connect(lambda: self.on_tab_change("delivery"))
-        self.tab_finished.clicked.connect(lambda: self.on_tab_change("finished"))
+        # Web portal tabs (FeedPilot ОЗОН ФБС).
+        self.tab_new = FbsTabButton("Ожидают сборки")
+        self.tab_assembly = FbsTabButton("Ожидают отгрузки")
+        self.tab_delivery = FbsTabButton("Доставляются")
+        self.tab_arbitration = FbsTabButton("Спорные")
+        self.tab_finished = FbsTabButton("Доставлены")
+        self.tab_cancelled = FbsTabButton("Отменены")
+        self.tab_new.clicked.connect(lambda: self.on_tab_change("awaiting_packaging"))
+        self.tab_assembly.clicked.connect(lambda: self.on_tab_change("awaiting_deliver"))
+        self.tab_delivery.clicked.connect(lambda: self.on_tab_change("delivering"))
+        self.tab_arbitration.clicked.connect(lambda: self.on_tab_change("arbitration"))
+        self.tab_finished.clicked.connect(lambda: self.on_tab_change("delivered"))
+        self.tab_cancelled.clicked.connect(lambda: self.on_tab_change("cancelled"))
         self.tab_new.setChecked(True)
-        tabs_lay.addWidget(self.tab_new)
-        tabs_lay.addWidget(self.tab_assembly)
-        tabs_lay.addWidget(self.tab_delivery)
-        tabs_lay.addWidget(self.tab_finished)
+        for btn in (
+            self.tab_new,
+            self.tab_assembly,
+            self.tab_delivery,
+            self.tab_arbitration,
+            self.tab_finished,
+            self.tab_cancelled,
+        ):
+            tabs_lay.addWidget(btn)
+            fit_tab_button(btn)
         tabs_lay.addStretch(1)
         root.addWidget(tabs_row)
 
@@ -286,11 +308,14 @@ class OzonFbsPage(QWidget):
         self._tab = tab
         self._page = 0
         self._selected_postings.clear()
-        self.tab_new.setChecked(tab == "new")
-        self.tab_assembly.setChecked(tab == "assembly")
-        self.tab_delivery.setChecked(tab == "delivery")
-        self.tab_finished.setChecked(tab == "finished")
-        self.bottom_bar.setVisible(tab == "new")
+        self.tab_new.setChecked(tab == "awaiting_packaging")
+        self.tab_assembly.setChecked(tab == "awaiting_deliver")
+        self.tab_delivery.setChecked(tab == "delivering")
+        self.tab_arbitration.setChecked(tab == "arbitration")
+        self.tab_finished.setChecked(tab == "delivered")
+        self.tab_cancelled.setChecked(tab == "cancelled")
+        self.bottom_bar.setVisible(tab == "awaiting_packaging")
+        self.ship_all_btn.setVisible(tab in ("awaiting_packaging", "awaiting_deliver"))
         self.reload_table()
 
     def _on_page_size_change(self) -> None:
@@ -318,7 +343,7 @@ class OzonFbsPage(QWidget):
         self.table.selectAll()
 
     def _on_selection_changed(self) -> None:
-        if self._tab != "new":
+        if self._tab != "awaiting_packaging":
             return
         for idx in self.table.selectionModel().selectedRows():
             item = self.table.item(idx.row(), 0)
@@ -331,7 +356,7 @@ class OzonFbsPage(QWidget):
         )
 
     def _selected_posting_numbers(self) -> List[str]:
-        if self._tab == "new":
+        if self._tab == "awaiting_packaging":
             out = set(self._selected_postings)
             for idx in self.table.selectionModel().selectedRows():
                 item = self.table.item(idx.row(), 0)
@@ -344,13 +369,22 @@ class OzonFbsPage(QWidget):
 
     def _update_tab_counts(self) -> None:
         src = self.current_source()
-        counts = {"new": 0, "assembly": 0, "delivery": 0, "finished": 0}
+        counts = {
+            "awaiting_packaging": 0,
+            "awaiting_deliver": 0,
+            "delivering": 0,
+            "delivered": 0,
+            "cancelled": 0,
+            "arbitration": 0,
+        }
         if src:
             counts = self.orders.tab_counts(int(src["id"]))
-        self.tab_new.set_count(int(counts.get("new") or 0))
-        self.tab_assembly.set_count(int(counts.get("assembly") or 0))
-        self.tab_delivery.set_count(int(counts.get("delivery") or 0))
-        self.tab_finished.set_count(int(counts.get("finished") or 0))
+        self.tab_new.set_count(int(counts.get("awaiting_packaging") or 0))
+        self.tab_assembly.set_count(int(counts.get("awaiting_deliver") or 0))
+        self.tab_delivery.set_count(int(counts.get("delivering") or 0))
+        self.tab_arbitration.set_count(int(counts.get("arbitration") or 0))
+        self.tab_finished.set_count(int(counts.get("delivered") or 0))
+        self.tab_cancelled.set_count(int(counts.get("cancelled") or 0))
 
     def reload_table(self) -> None:
         src = self.current_source()
@@ -363,7 +397,7 @@ class OzonFbsPage(QWidget):
         limit = int(self.page_size.currentData() or 50)
         offset = self._page * limit
 
-        if self._tab == "new":
+        if self._tab == "awaiting_packaging":
             total = self.orders.count_new_postings(sid, search=search)
             rows = self.orders.list_new_postings(
                 sid, search=search, limit=limit, offset=offset
@@ -372,10 +406,13 @@ class OzonFbsPage(QWidget):
             self._update_pager(total, limit)
             return
 
-        if self._tab == "finished":
-            total = self.orders.count_finished_postings(sid, search=search)
-            rows = self.orders.list_finished_postings(
-                sid, search=search, limit=limit, offset=offset
+        if self._tab in ("delivered", "cancelled", "arbitration"):
+            tabs = (self._tab,)
+            if self._tab == "delivered":
+                tabs = ("finished", "delivered")
+            total = self.orders.count_tab_postings(sid, tabs=tabs, search=search)
+            rows = self.orders.list_tab_postings(
+                sid, tabs=tabs, search=search, limit=limit, offset=offset
             )
             self._fill_posting_rows(
                 rows, ["Отправление", "Товар", "Статус"], status_col=True
@@ -383,17 +420,78 @@ class OzonFbsPage(QWidget):
             self._update_pager(total, limit)
             return
 
-        if self._tab == "delivery":
-            carriages = self.orders.list_delivery_carriages(sid)
-            self._fill_carriage_rows(carriages)
-            self.pager_total.setText("Отгрузок: {}".format(len(carriages)))
+        from app.services.ozon_supplies import OzonSuppliesService
+
+        supplies_svc = OzonSuppliesService(self.db)
+        if self._tab == "delivering":
+            supplies = supplies_svc.list_delivering_supplies(sid)
+            if supplies:
+                self._fill_supply_rows(supplies)
+                self.pager_total.setText("Поставок: {}".format(len(supplies)))
+            else:
+                carriages = self.orders.list_delivery_carriages(sid)
+                self._fill_carriage_rows(carriages)
+                self.pager_total.setText("Отгрузок: {}".format(len(carriages)))
+            self.page_label.setText("1 / 1")
+            self.prev_btn.setEnabled(False)
+            self.next_btn.setEnabled(False)
+            return
+
+        # awaiting_deliver — local supplies (web parity), fallback to API carriages.
+        supplies = supplies_svc.list_awaiting_deliver_supplies(sid)
+        orphans = self.orders.list_assembly_postings(sid, search=search)
+        if supplies or not self.orders.list_open_carriages(sid):
+            self.table.setHorizontalHeaderLabels(
+                ["Поставка / отправление", "Статус / товар", "Отправлений"]
+            )
+            total_rows = len(supplies) + len(orphans)
+            self.table.setRowCount(total_rows)
+            row_i = 0
+            for s in supplies:
+                name = str(s.get("name") or s.get("supply_id") or "")
+                item = QTableWidgetItem(name)
+                item.setData(
+                    Qt.UserRole, ("supply", str(s.get("supply_id") or ""))
+                )
+                self.table.setItem(row_i, 0, item)
+                pill = make_status_pill(
+                    str(s.get("status_label") or "Сборка заказов"),
+                    str(s.get("status_kind") or "awaiting_deliver"),
+                )
+                wrap = QWidget()
+                lay = QHBoxLayout(wrap)
+                lay.setContentsMargins(8, 8, 8, 8)
+                lay.addWidget(pill, 0, Qt.AlignLeft)
+                lay.addStretch(1)
+                self.table.setCellWidget(row_i, 1, wrap)
+                self.table.setItem(
+                    row_i,
+                    2,
+                    QTableWidgetItem(str(int(s.get("posting_count") or 0))),
+                )
+                self.table.setRowHeight(row_i, 56)
+                row_i += 1
+            for r in orphans:
+                pnum = str(r.get("posting_number") or "")
+                label = "· {}".format(pnum) if pnum else "· —"
+                item = QTableWidgetItem(label)
+                item.setData(Qt.UserRole, ("posting", pnum))
+                self.table.setItem(row_i, 0, item)
+                self.table.setCellWidget(row_i, 1, self._product_cell(r))
+                self.table.setItem(
+                    row_i,
+                    2,
+                    QTableWidgetItem(str(r.get("status_label") or "—")),
+                )
+                self.table.setRowHeight(row_i, 120)
+                row_i += 1
+            self.pager_total.setText("Ожидают отгрузки: {}".format(total_rows))
             self.page_label.setText("1 / 1")
             self.prev_btn.setEnabled(False)
             self.next_btn.setEnabled(False)
             return
 
         carriages = self.orders.list_open_carriages(sid)
-        orphans = self.orders.list_assembly_postings(sid, search=search)
         self.table.setHorizontalHeaderLabels(
             ["Отгрузка / отправление", "Статус / товар", "Отправлений"]
         )
@@ -433,7 +531,7 @@ class OzonFbsPage(QWidget):
             )
             self.table.setRowHeight(row_i, 120)
             row_i += 1
-        self.pager_total.setText("На сборке: {}".format(total_rows))
+        self.pager_total.setText("Ожидают отгрузки: {}".format(total_rows))
         self.page_label.setText("1 / 1")
         self.prev_btn.setEnabled(False)
         self.next_btn.setEnabled(False)
@@ -487,6 +585,31 @@ class OzonFbsPage(QWidget):
             )
             self.table.setRowHeight(i, 56)
 
+    def _fill_supply_rows(self, supplies: List[Dict[str, Any]]) -> None:
+        self.table.setHorizontalHeaderLabels(
+            ["Поставка", "Статус", "Отправлений"]
+        )
+        self.table.setRowCount(len(supplies))
+        for i, s in enumerate(supplies):
+            name = str(s.get("name") or s.get("supply_id") or "")
+            item = QTableWidgetItem(name)
+            item.setData(Qt.UserRole, ("supply", str(s.get("supply_id") or "")))
+            self.table.setItem(i, 0, item)
+            pill = make_status_pill(
+                str(s.get("status_label") or "—"),
+                str(s.get("status_kind") or "delivering"),
+            )
+            wrap = QWidget()
+            lay = QHBoxLayout(wrap)
+            lay.setContentsMargins(8, 8, 8, 8)
+            lay.addWidget(pill, 0, Qt.AlignLeft)
+            lay.addStretch(1)
+            self.table.setCellWidget(i, 1, wrap)
+            self.table.setItem(
+                i, 2, QTableWidgetItem(str(int(s.get("posting_count") or 0)))
+            )
+            self.table.setRowHeight(i, 56)
+
     def _update_pager(self, total: int, limit: int) -> None:
         pages = max(1, (int(total) + limit - 1) // limit)
         if self._page >= pages:
@@ -507,17 +630,27 @@ class OzonFbsPage(QWidget):
         if not item:
             return
         data = item.data(Qt.UserRole)
-        if self._tab == "new" or self._tab == "finished":
+        if self._tab in (
+            "awaiting_packaging",
+            "delivered",
+            "cancelled",
+            "arbitration",
+        ):
             pnum = str(data or item.text() or "").strip()
             if pnum:
                 self._open_posting_by_id(src, pnum)
             return
-        if self._tab == "delivery":
-            if isinstance(data, (list, tuple)) and data[0] == "carriage":
-                self._open_carriage_by_id(src, str(data[1]))
+        if self._tab == "delivering":
+            if isinstance(data, (list, tuple)):
+                if data[0] == "supply":
+                    self._open_supply_by_id(src, str(data[1]))
+                elif data[0] == "carriage":
+                    self._open_carriage_by_id(src, str(data[1]))
             return
         if isinstance(data, (list, tuple)):
-            if data[0] == "carriage":
+            if data[0] == "supply":
+                self._open_supply_by_id(src, str(data[1]))
+            elif data[0] == "carriage":
                 self._open_carriage_by_id(src, str(data[1]))
             elif data[0] == "posting":
                 self._open_posting_by_id(src, str(data[1]))
@@ -579,6 +712,180 @@ class OzonFbsPage(QWidget):
         if dlg.carriage_mutated:
             self.reload_table()
 
+    def _open_supply_by_id(self, src: Dict[str, Any], supply_id: str) -> None:
+        """Open local supply via carriage-detail-like posting list (phase 1)."""
+        from app.services.ozon_supplies import OzonSuppliesService
+
+        svc = OzonSuppliesService(self.db)
+        supply = svc.get_supply(int(src["id"]), supply_id)
+        if not supply:
+            QMessageBox.information(self, "Ozon FBS", "Поставка не найдена.")
+            return
+        postings = svc.list_supply_postings(int(src["id"]), supply_id)
+        dlg = QDialog(self.window())
+        dlg.setWindowTitle(str(supply.get("name") or supply_id))
+        dlg.resize(720, 480)
+        lay = QVBoxLayout(dlg)
+        info = QLabel(
+            "Локальная поставка {} · {} отправлений · {}".format(
+                supply_id,
+                len(postings),
+                supply.get("warehouse_name") or "склад —",
+            )
+        )
+        info.setWordWrap(True)
+        lay.addWidget(info)
+        body = QTextEdit()
+        body.setReadOnly(True)
+        lines = []
+        for p in postings:
+            lines.append(
+                "{}  {}  ×{}  [{}]".format(
+                    p.get("posting_number") or "",
+                    p.get("product_name") or p.get("offer_id") or "",
+                    int(p.get("quantity") or 1),
+                    p.get("status") or p.get("tab") or "",
+                )
+            )
+        body.setPlainText("\n".join(lines) if lines else "Нет отправлений")
+        lay.addWidget(body, 1)
+        btns = QHBoxLayout()
+        move_btn = QPushButton("Перенести в доставку")
+        move_btn.setVisible(self._tab == "awaiting_deliver")
+
+        def _move() -> None:
+            try:
+                svc.mark_delivering(int(src["id"]), supply_id)
+            except Exception as exc:
+                QMessageBox.warning(self, "Ozon FBS", str(exc))
+                return
+            dlg.accept()
+            self.on_tab_change("delivering")
+
+        move_btn.clicked.connect(_move)
+        btns.addWidget(move_btn)
+        open_first = QPushButton("Открыть первое отправление")
+        open_first.setEnabled(bool(postings))
+
+        def _open_first() -> None:
+            pnum = str((postings[0] or {}).get("posting_number") or "")
+            if pnum:
+                dlg.accept()
+                self._open_posting_by_id(src, pnum)
+
+        open_first.clicked.connect(_open_first)
+        btns.addWidget(open_first)
+        box = QDialogButtonBox(QDialogButtonBox.Close)
+        box.rejected.connect(dlg.reject)
+        box.accepted.connect(dlg.accept)
+        btns.addWidget(box)
+        lay.addLayout(btns)
+        dlg.exec_()
+        self.reload_table()
+
+    def ship_all_collect(self) -> None:
+        src = self.current_source()
+        if not src:
+            QMessageBox.information(self, "Ozon FBS", "Выберите источник Ozon FBS.")
+            return
+        from app.ozon.client import OzonFbsClient
+        from app.services.ozon_supplies import OzonSuppliesService
+        from PyQt5.QtWidgets import QProgressDialog
+
+        sid = int(src["id"])
+        svc = OzonSuppliesService(self.db)
+        preview = svc.preview_ship_all(sid)
+        if preview.get("block_collect"):
+            QMessageBox.warning(
+                self,
+                "Собрать все заказы",
+                str(preview.get("message") or "Сначала разделите мультизаказы"),
+            )
+            return
+        groups = preview.get("groups") or []
+        if not groups:
+            QMessageBox.information(
+                self,
+                "Собрать все заказы",
+                "Нет отправлений в «Ожидают сборки».",
+            )
+            return
+        lines = [
+            "Будет собрано {} отправлений в {} поставок:".format(
+                int(preview.get("posting_count") or 0), len(groups)
+            )
+        ]
+        for g in groups:
+            lines.append(
+                "· {} — {} шт. → «{}»".format(
+                    g.get("label") or "склад",
+                    int(g.get("order_count") or 0),
+                    g.get("suggested_name") or "новая поставка",
+                )
+            )
+        reply = QMessageBox.question(
+            self,
+            "Собрать все заказы",
+            "\n".join(lines),
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.Yes,
+        )
+        if reply != QMessageBox.Yes:
+            return
+        decisions = [
+            {
+                "group_key": g.get("group_key"),
+                "action": "create",
+                "name": g.get("suggested_name"),
+            }
+            for g in groups
+        ]
+        client = OzonFbsClient(
+            str(src.get("client_id") or ""), str(src.get("api_key") or "")
+        )
+        progress = QProgressDialog(
+            "Сборка заказов…", "Стоп", 0, max(1, int(preview.get("posting_count") or 1)), self
+        )
+        progress.setWindowModality(Qt.WindowModal)
+        progress.setMinimumDuration(0)
+        stop = {"v": False}
+
+        def _stop() -> bool:
+            return bool(stop["v"] or progress.wasCanceled())
+
+        def _prog(done: int, total: int, msg: str) -> None:
+            progress.setMaximum(max(1, int(total) or 1))
+            progress.setValue(int(done))
+            progress.setLabelText(str(msg or ""))
+
+        progress.canceled.connect(lambda: stop.__setitem__("v", True))
+        try:
+            result = svc.execute_ship_all(
+                sid,
+                client,
+                decisions=decisions,
+                progress=_prog,
+                stop_requested=_stop,
+            )
+        except Exception as exc:
+            progress.close()
+            QMessageBox.warning(self, "Собрать все заказы", str(exc))
+            return
+        progress.close()
+        errs = result.get("errors") or []
+        msg = str(result.get("message") or "")
+        if errs:
+            msg += "\n" + "\n".join(
+                "{}: {}".format(e.get("posting_number"), e.get("error"))
+                for e in errs[:8]
+                if isinstance(e, dict)
+            )
+        QMessageBox.information(self, "Собрать все заказы", msg or "Готово")
+        if result.get("goto_awaiting_deliver"):
+            self.on_tab_change("awaiting_deliver")
+        else:
+            self.reload_table()
+
     def add_to_carriage(self) -> None:
         src = self.current_source()
         pnums = self._selected_posting_numbers()
@@ -633,7 +940,7 @@ class OzonFbsPage(QWidget):
             "Ozon FBS",
             "Добавлено {} отправлений в отгрузку {}.".format(len(pnums), cid),
         )
-        self.on_tab_change("assembly")
+        self.on_tab_change("awaiting_deliver")
 
     def ship_selected(self) -> None:
         src = self.current_source()
@@ -711,7 +1018,7 @@ class OzonFbsPage(QWidget):
             QMessageBox.warning(self, "Ozon FBS", str(exc))
             return
         QMessageBox.information(self, "Ozon FBS", "Отгрузка создана: {}.".format(cid))
-        self.on_tab_change("assembly")
+        self.on_tab_change("awaiting_deliver")
         self.reload_table()
         self._open_carriage_by_id(src, cid)
 

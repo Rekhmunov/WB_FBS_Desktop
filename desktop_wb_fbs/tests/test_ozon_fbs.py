@@ -4,6 +4,7 @@ from __future__ import annotations
 import unittest
 
 from app.ozon import (
+    TAB_ARBITRATION,
     TAB_ASSEMBLY,
     TAB_CANCELLED,
     TAB_FINISHED,
@@ -20,10 +21,11 @@ class OzonFbsHelpersTest(unittest.TestCase):
     def test_compute_tab_assembly_deliver(self) -> None:
         self.assertEqual(compute_tab(status="awaiting_deliver"), TAB_ASSEMBLY)
 
-    def test_compute_tab_carriage_forces_assembly(self) -> None:
+    def test_compute_tab_carriage_ignored_like_web(self) -> None:
+        # Web compute_tab is status-only; carriage does not force awaiting_deliver.
         self.assertEqual(
             compute_tab(status="awaiting_packaging", carriage_id="123"),
-            TAB_ASSEMBLY,
+            TAB_NEW,
         )
 
     def test_compute_tab_cancelled(self) -> None:
@@ -33,7 +35,7 @@ class OzonFbsHelpersTest(unittest.TestCase):
         self.assertEqual(compute_tab(status="delivered"), TAB_FINISHED)
 
     def test_compute_tab_client_arbitration(self) -> None:
-        self.assertEqual(compute_tab(status="client_arbitration"), TAB_ASSEMBLY)
+        self.assertEqual(compute_tab(status="client_arbitration"), TAB_ARBITRATION)
 
     def test_carriage_is_done(self) -> None:
         self.assertTrue(carriage_is_done("approved"))
@@ -125,7 +127,7 @@ class OzonPickServiceTest(unittest.TestCase):
                     """
                     INSERT INTO ozon_fbs_postings(
                         source_id, posting_number, status, tab, synced_at
-                    ) VALUES (?, 'PN-1', 'awaiting_deliver', 'assembly', '2026-01-01')
+                    ) VALUES (?, 'PN-1', 'awaiting_deliver', 'awaiting_deliver', '2026-01-01')
                     """,
                     (sid,),
                 )
@@ -234,3 +236,82 @@ class RunStartupGuardTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class OzonLocalSuppliesTest(unittest.TestCase):
+    def test_create_and_list_awaiting_deliver(self) -> None:
+        import os
+        import tempfile
+
+        from app.db import Database
+        from app.services.ozon_supplies import (
+            OzonSuppliesService,
+            default_supply_name,
+        )
+
+        fd, path = tempfile.mkstemp(suffix=".sqlite")
+        os.close(fd)
+        try:
+            db = Database(path)
+            db.init_schema()
+            with db.connect() as conn:
+                conn.execute(
+                    """
+                    INSERT INTO supply_sources(
+                        name, marketplace, client_id, api_key, is_enabled,
+                        lookback_days, created_at
+                    ) VALUES ('Озон ФБС', 'ozon', '1', 'k', 1, 2, '2026-01-01')
+                    """
+                )
+                sid = int(conn.execute("SELECT last_insert_rowid()").fetchone()[0])
+                conn.execute(
+                    """
+                    INSERT INTO ozon_fbs_postings(
+                        source_id, posting_number, status, tab, warehouse_id,
+                        warehouse_name, synced_at
+                    ) VALUES
+                    (?, 'PN-A', 'awaiting_packaging', 'awaiting_packaging',
+                     10, 'WH-A', '2026-01-01'),
+                    (?, 'PN-B', 'awaiting_packaging', 'awaiting_packaging',
+                     10, 'WH-A', '2026-01-01')
+                    """,
+                    (sid, sid),
+                )
+                conn.commit()
+            svc = OzonSuppliesService(db)
+            preview = svc.preview_ship_all(sid)
+            self.assertTrue(preview.get("ok"))
+            self.assertEqual(int(preview.get("posting_count") or 0), 2)
+            self.assertEqual(len(preview.get("groups") or []), 1)
+            name = default_supply_name(source_name="Озон ФБС")
+            self.assertIn("Озон ФБС", name)
+            supply_id = svc.create_supply(
+                sid,
+                name=name,
+                warehouse_id=10,
+                warehouse_name="WH-A",
+                posting_numbers=["PN-A", "PN-B"],
+            )
+            self.assertTrue(str(supply_id).startswith("OZ-FBS-"))
+            listed = svc.list_awaiting_deliver_supplies(sid)
+            self.assertEqual(len(listed), 1)
+            self.assertEqual(int(listed[0].get("posting_count") or 0), 2)
+            with db.connect() as conn:
+                tabs = {
+                    str(r["posting_number"]): str(r["tab"])
+                    for r in conn.execute(
+                        "SELECT posting_number, tab FROM ozon_fbs_postings "
+                        "WHERE source_id = ?",
+                        (sid,),
+                    ).fetchall()
+                }
+            self.assertEqual(tabs["PN-A"], "awaiting_deliver")
+            self.assertEqual(tabs["PN-B"], "awaiting_deliver")
+            svc.mark_delivering(sid, supply_id)
+            delivering = svc.list_delivering_supplies(sid)
+            self.assertTrue(any(s.get("supply_id") == supply_id for s in delivering))
+        finally:
+            try:
+                os.unlink(path)
+            except OSError:
+                pass

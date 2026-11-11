@@ -143,8 +143,9 @@ CREATE TABLE IF NOT EXISTS ozon_fbs_postings (
     order_number TEXT NOT NULL DEFAULT '',
     status TEXT NOT NULL DEFAULT '',
     substatus TEXT NOT NULL DEFAULT '',
-    tab TEXT NOT NULL DEFAULT 'new',
+    tab TEXT NOT NULL DEFAULT 'awaiting_packaging',
     carriage_id TEXT NOT NULL DEFAULT '',
+    supply_id TEXT NOT NULL DEFAULT '',
     offer_id TEXT NOT NULL DEFAULT '',
     sku TEXT NOT NULL DEFAULT '',
     product_name TEXT NOT NULL DEFAULT '',
@@ -171,6 +172,9 @@ CREATE TABLE IF NOT EXISTS ozon_fbs_postings (
 CREATE INDEX IF NOT EXISTS idx_ozon_postings_src_tab
     ON ozon_fbs_postings(source_id, tab, created_at_wb DESC);
 
+CREATE INDEX IF NOT EXISTS idx_ozon_postings_supply
+    ON ozon_fbs_postings(source_id, supply_id);
+
 CREATE TABLE IF NOT EXISTS ozon_fbs_carriages (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     source_id INTEGER NOT NULL,
@@ -188,6 +192,24 @@ CREATE TABLE IF NOT EXISTS ozon_fbs_carriages (
 
 CREATE INDEX IF NOT EXISTS idx_ozon_carriages_src
     ON ozon_fbs_carriages(source_id, done, synced_at DESC);
+
+CREATE TABLE IF NOT EXISTS ozon_fbs_supplies (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    source_id INTEGER NOT NULL,
+    supply_id TEXT NOT NULL,
+    name TEXT NOT NULL DEFAULT '',
+    warehouse_id INTEGER,
+    warehouse_name TEXT NOT NULL DEFAULT '',
+    done INTEGER NOT NULL DEFAULT 0,
+    delivering_listed INTEGER NOT NULL DEFAULT 0,
+    posting_numbers_json TEXT NOT NULL DEFAULT '[]',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(source_id, supply_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_ozon_supplies_src
+    ON ozon_fbs_supplies(source_id, done, created_at DESC);
 
 CREATE TABLE IF NOT EXISTS ozon_fbs_label_cache (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -343,6 +365,22 @@ class Database:
                 ON ozon_fbs_carriages(source_id, done, synced_at DESC);
             CREATE INDEX IF NOT EXISTS idx_ozon_postings_carriage
                 ON ozon_fbs_postings(source_id, carriage_id);
+            CREATE TABLE IF NOT EXISTS ozon_fbs_supplies (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                source_id INTEGER NOT NULL,
+                supply_id TEXT NOT NULL,
+                name TEXT NOT NULL DEFAULT '',
+                warehouse_id INTEGER,
+                warehouse_name TEXT NOT NULL DEFAULT '',
+                done INTEGER NOT NULL DEFAULT 0,
+                delivering_listed INTEGER NOT NULL DEFAULT 0,
+                posting_numbers_json TEXT NOT NULL DEFAULT '[]',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(source_id, supply_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_ozon_supplies_src
+                ON ozon_fbs_supplies(source_id, done, created_at DESC);
             CREATE TABLE IF NOT EXISTS ozon_fbs_label_cache (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 source_id INTEGER NOT NULL,
@@ -367,6 +405,11 @@ class Database:
                 "ALTER TABLE ozon_fbs_postings ADD COLUMN products_json "
                 "TEXT NOT NULL DEFAULT '[]'"
             )
+        if "supply_id" not in cols:
+            conn.execute(
+                "ALTER TABLE ozon_fbs_postings ADD COLUMN supply_id "
+                "TEXT NOT NULL DEFAULT ''"
+            )
         carriage_cols = {
             str(r[1])
             for r in conn.execute("PRAGMA table_info(ozon_fbs_carriages)").fetchall()
@@ -381,10 +424,34 @@ class Database:
                 "ALTER TABLE ozon_fbs_carriages ADD COLUMN act_status "
                 "TEXT NOT NULL DEFAULT ''"
             )
+        supply_cols = {
+            str(r[1])
+            for r in conn.execute("PRAGMA table_info(ozon_fbs_supplies)").fetchall()
+        }
+        if "delivering_listed" not in supply_cols:
+            conn.execute(
+                "ALTER TABLE ozon_fbs_supplies ADD COLUMN delivering_listed "
+                "INTEGER NOT NULL DEFAULT 0"
+            )
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_ozon_postings_carriage "
             "ON ozon_fbs_postings(source_id, carriage_id)"
         )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_ozon_postings_supply "
+            "ON ozon_fbs_postings(source_id, supply_id)"
+        )
+        # Migrate legacy Ozon tab keys → web portal names.
+        for old, new in (
+            ("new", "awaiting_packaging"),
+            ("assembly", "awaiting_deliver"),
+            ("delivery", "delivering"),
+            ("finished", "delivered"),
+        ):
+            conn.execute(
+                "UPDATE ozon_fbs_postings SET tab = ? WHERE tab = ?",
+                (new, old),
+            )
 
     @contextmanager
     def cursor(self) -> Iterator[sqlite3.Cursor]:

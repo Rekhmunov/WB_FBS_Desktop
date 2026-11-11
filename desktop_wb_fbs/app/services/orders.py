@@ -640,8 +640,15 @@ class OrdersService:
             conn.commit()
 
     def open_compatible_supplies(
-        self, source_id: int, cargo_type: int, is_b2b: bool, warehouse_id: Any
+        self,
+        source_id: int,
+        cargo_type: int,
+        is_b2b: bool,
+        warehouse_id: Any,
+        cross_border_type: Any = None,
     ) -> List[Dict[str, Any]]:
+        from app.services.collect_mgt import cross_border, supply_is_empty
+
         with self.db.connect() as conn:
             rows = conn.execute(
                 """
@@ -652,25 +659,41 @@ class OrdersService:
                 (source_id,),
             ).fetchall()
         out = []  # type: List[Dict[str, Any]]
+        want_cb = None  # type: Optional[int]
+        if cross_border_type is not None:
+            try:
+                want_cb = int(cross_border_type)
+            except (TypeError, ValueError):
+                want_cb = None
         for r in Database.rows_to_dicts(rows):
             if int(r.get("cargo_type") or 0) != int(cargo_type or 0):
                 continue
             if bool(int(r.get("is_b2b") or 0)) != bool(is_b2b):
                 continue
             oids = parse_json_list(r.get("order_ids_json"))
-            # empty supply always compatible; else check warehouse via first order
-            if oids and warehouse_id is not None:
-                with self.db.connect() as conn:
-                    ow = conn.execute(
-                        """
-                        SELECT warehouse_id FROM wb_fbs_orders
-                        WHERE source_id = ? AND order_id = ?
-                        """,
-                        (source_id, int(oids[0])),
-                    ).fetchone()
-                if ow and ow["warehouse_id"] is not None:
-                    if int(ow["warehouse_id"]) != int(warehouse_id):
+            r["order_ids"] = oids
+            # empty supply always compatible; else check warehouse / crossBorderType
+            if not supply_is_empty(r):
+                if want_cb is not None:
+                    supply_cb = cross_border(r)
+                    if supply_cb is not None and int(supply_cb) != want_cb:
                         continue
+                if warehouse_id is not None and oids:
+                    with self.db.connect() as conn:
+                        ow = conn.execute(
+                            """
+                            SELECT warehouse_id, raw_json FROM wb_fbs_orders
+                            WHERE source_id = ? AND order_id = ?
+                            """,
+                            (source_id, int(oids[0])),
+                        ).fetchone()
+                    if ow and ow["warehouse_id"] is not None:
+                        if int(ow["warehouse_id"]) != int(warehouse_id):
+                            continue
+                    if want_cb is not None and ow is not None:
+                        first_cb = cross_border(dict(ow))
+                        if first_cb is not None and int(first_cb) != want_cb:
+                            continue
             r["order_count"] = len(oids)
             out.append(r)
         return out

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from typing import Any, Dict, List
 from urllib.error import HTTPError
 from urllib.request import Request
@@ -13,6 +14,8 @@ from app.wb.http import urlopen_https
 
 _log = logging.getLogger(__name__)
 WB_CONTENT_API = "https://content-api.wildberries.ru"
+# Official Content category limit: ~100 req/min, 600 ms interval.
+_CONTENT_MIN_INTERVAL_SEC = 0.61
 
 
 class WbContentClient:
@@ -21,7 +24,11 @@ class WbContentClient:
         self.timeout = timeout
 
     def get_cards_by_nm_ids(self, nm_ids: List[int]) -> Dict[int, Dict[str, Any]]:
-        """Map nmId → {title, brand, colors…}. Chunks of 100."""
+        """Map nmId → {title, brand, colors…}.
+
+        Official filter has no ``nmID`` array — use ``textSearch`` per WB article
+        (exact match for seller/WB article or barcode).
+        """
         ids = []  # type: List[int]
         for x in nm_ids:
             try:
@@ -30,12 +37,13 @@ class WbContentClient:
                 pass
         ids = sorted(set(ids))
         out = {}  # type: Dict[int, Dict[str, Any]]
-        for i in range(0, len(ids), 100):
-            chunk = ids[i : i + 100]
+        for i, nm in enumerate(ids):
+            if i:
+                time.sleep(_CONTENT_MIN_INTERVAL_SEC)
             body = {
                 "settings": {
-                    "cursor": {"limit": len(chunk)},
-                    "filter": {"withPhoto": -1, "nmID": chunk},
+                    "cursor": {"limit": 1},
+                    "filter": {"withPhoto": -1, "textSearch": str(nm)},
                 }
             }
             try:
@@ -43,7 +51,7 @@ class WbContentClient:
                     "POST", "/content/v2/get/cards/list", body=body
                 )
             except Exception as exc:
-                _log.warning("content cards failed: %s", exc)
+                _log.warning("content cards failed for nmID=%s: %s", nm, exc)
                 continue
             cards = data.get("cards") if isinstance(data, dict) else None
             if not isinstance(cards, list):
@@ -52,10 +60,12 @@ class WbContentClient:
                 if not isinstance(card, dict):
                     continue
                 try:
-                    nm = int(card.get("nmID"))
+                    card_nm = int(card.get("nmID"))
                 except (TypeError, ValueError):
                     continue
-                out[nm] = card
+                if card_nm == nm:
+                    out[nm] = card
+                    break
         return out
 
     def _request(self, method: str, path: str, body: Any = None) -> Any:

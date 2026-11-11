@@ -1685,9 +1685,13 @@ class SelectionSupplyDialog(QDialog):
                 [sid] + list(order_ids),
             ).fetchall()
         items = [dict(r) for r in rows]
+        from app.services.collect_mgt import cross_border
+
         cargos = {int(r.get("cargo_type") or 0) for r in items}
         b2bs = {bool(int(r.get("is_b2b") or 0)) for r in items}
         whs = {r.get("warehouse_id") for r in items}
+        cbs = {cross_border(r) for r in items}
+        cbs.discard(None)
         errors = []
         if len(cargos) > 1:
             errors.append("Нельзя смешивать типы груза (МГТ/СГТ/КГТ+)")
@@ -1695,6 +1699,8 @@ class SelectionSupplyDialog(QDialog):
             errors.append("Нельзя смешивать B2B и розницу")
         if len(whs) > 1:
             errors.append("Нельзя смешивать склады")
+        if len(cbs) > 1:
+            errors.append("Нельзя смешивать кросс-бордер и обычные заказы")
         self.err = QLabel("\n".join(errors))
         self.err.setObjectName("hint")
         self.err.setStyleSheet("color:#b91c1c; font-size: 15px;")
@@ -1718,7 +1724,10 @@ class SelectionSupplyDialog(QDialog):
             cargo = next(iter(cargos), 0)
             is_b2b = bool(next(iter(b2bs), False))
             wh = next(iter(whs), None)
-            for s in orders.open_compatible_supplies(sid, cargo, is_b2b, wh):
+            cb = next(iter(cbs), None)
+            for s in orders.open_compatible_supplies(
+                sid, cargo, is_b2b, wh, cross_border_type=cb
+            ):
                 self.supply_combo.addItem(
                     "{} · {} зак.".format(s.get("name") or s.get("supply_id"), s.get("order_count")),
                     str(s.get("supply_id")),

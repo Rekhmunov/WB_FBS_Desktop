@@ -70,7 +70,14 @@ class OzonLabelService:
             cached = self._cache_get(source_id, key)
             if cached:
                 return cached
-        tasks = client.package_label_create(nums)
+        # Prefer v3 create (web parity), fall back to v2 create / sync fetch.
+        tasks = []  # type: List
+        try:
+            tasks = client.package_label_create_v3(nums)
+        except Exception:
+            tasks = []
+        if not tasks:
+            tasks = client.package_label_create(nums)
         task_ids = []
         for task in tasks:
             if isinstance(task, dict) and task.get("task_id") is not None:
@@ -98,19 +105,32 @@ class OzonLabelService:
         last_status = ""
         while time.monotonic() < deadline:
             for tid in task_ids:
-                status = client.package_label_task_status(int(tid))
+                status = {}
+                try:
+                    status = client.package_label_get_v2(int(tid))
+                except Exception:
+                    status = client.package_label_task_status(int(tid))
                 st = str(status.get("status") or "").strip().lower()
                 last_status = st or last_status
-                if st == "completed":
-                    url = str(status.get("file_url") or "").strip()
-                    if url:
-                        data = client.fetch_url_bytes(url)
-                        if data:
-                            return self._write_bytes(data)
-                if st == "error":
-                    err = str(status.get("error") or "error")
-                    raise RuntimeError("Ошибка формирования этикеток: {}".format(err))
-            time.sleep(2.0)
+                url = str(status.get("file_url") or "").strip()
+                if url and st not in ("error", "failed"):
+                    data = client.fetch_url_bytes(url)
+                    if data:
+                        return self._write_bytes(data)
+                if st in ("completed", "done", "ready") and url:
+                    data = client.fetch_url_bytes(url)
+                    if data:
+                        return self._write_bytes(data)
+                if st in ("error", "failed"):
+                    err = str(
+                        status.get("error")
+                        or status.get("error_message")
+                        or "error"
+                    )
+                    raise RuntimeError(
+                        "Ошибка формирования этикеток: {}".format(err)
+                    )
+            time.sleep(1.5)
         raise RuntimeError(
             "Таймаут ожидания этикеток (статус: {})".format(last_status or "—")
         )

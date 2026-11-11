@@ -315,3 +315,28 @@ class OzonLocalSuppliesTest(unittest.TestCase):
                 os.unlink(path)
             except OSError:
                 pass
+
+
+class OzonSplitHelpersTest(unittest.TestCase):
+    def test_build_split_postings_qty(self) -> None:
+        from app.services.ozon_split import build_split_postings, posting_unit_count
+
+        row = {
+            "products": [
+                {"sku": 111, "quantity": 2},
+                {"sku": 222, "quantity": 1},
+            ]
+        }
+        self.assertEqual(posting_unit_count(row), 3)
+        units = build_split_postings(row)
+        self.assertEqual(len(units), 3)
+        self.assertEqual(units[0]["products"][0]["quantity"], 1)
+
+    def test_parse_split_response_list(self) -> None:
+        from app.services.ozon_split import parse_split_response
+
+        nums = parse_split_response(
+            {"result": ["PN-1", "PN-1-1", "PN-1-2"]},
+            fallback_posting_number="PN-1",
+        )
+        self.assertEqual(nums, ["PN-1", "PN-1-1", "PN-1-2"])

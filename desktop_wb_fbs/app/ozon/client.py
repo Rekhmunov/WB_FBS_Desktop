@@ -309,6 +309,63 @@ class OzonFbsClient:
         tasks = result.get("tasks") if isinstance(result, dict) else []
         return list(tasks or []) if isinstance(tasks, list) else []
 
+    def package_label_create_v3(
+        self, posting_numbers: List[str]
+    ) -> List[Dict[str, Any]]:
+        """POST /v3/posting/fbs/package-label/create — async labels (web parity)."""
+        nums = [str(p).strip() for p in posting_numbers if str(p).strip()]
+        if not nums:
+            return []
+        if len(nums) > 1000:
+            raise RuntimeError(
+                "Ozon принимает не больше 1000 отправлений за одно задание"
+            )
+        data = self._request(
+            "POST",
+            "/v3/posting/fbs/package-label/create",
+            {"posting_numbers": nums},
+        )
+        tasks = []  # type: List[Dict[str, Any]]
+        if isinstance(data, dict):
+            raw = data.get("tasks")
+            if raw is None:
+                result = data.get("result")
+                if isinstance(result, dict):
+                    raw = result.get("tasks")
+                elif isinstance(result, list):
+                    raw = result
+            if isinstance(raw, list):
+                for item in raw:
+                    if isinstance(item, dict):
+                        tasks.append(item)
+        return tasks
+
+    def package_label_get_v2(self, task_id: int) -> Dict[str, Any]:
+        """POST /v2/posting/fbs/package-label/get."""
+        data = self._request(
+            "POST",
+            "/v2/posting/fbs/package-label/get",
+            {"task_id": int(task_id)},
+        )
+        if not isinstance(data, dict):
+            return {}
+        result = data.get("result")
+        return result if isinstance(result, dict) else data
+
+    def split_posting(
+        self, posting_number: str, postings: List[Dict[str, Any]]
+    ) -> Dict[str, Any]:
+        """POST /v1/posting/fbs/split — one posting per physical unit."""
+        pnum = str(posting_number or "").strip()
+        if not pnum:
+            raise ValueError("posting_number required")
+        data = self._request(
+            "POST",
+            "/v1/posting/fbs/split",
+            {"posting_number": pnum, "postings": postings},
+        )
+        return data if isinstance(data, dict) else {}
+
     def package_label_fetch(self, posting_numbers: List[str]) -> bytes:
         """Fetch label PDF/ZIP for postings (v2)."""
         nums = [str(p).strip() for p in posting_numbers if str(p).strip()]

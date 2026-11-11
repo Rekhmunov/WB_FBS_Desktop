@@ -310,33 +310,19 @@ class OzonSuppliesService:
             conn.commit()
 
     def preview_ship_all(self, source_id: int) -> Dict[str, Any]:
+        from app.services.ozon_split import posting_unit_count
+
         rows = self._load_awaiting_packaging(source_id)
-        multi = sum(1 for r in rows if int(r.get("quantity") or 1) > 1)
-        # Desktop ship packages keep multi-qty in one package; only block when
-        # products_json has multiple product lines that web would split.
-        multi_lines = 0
-        for r in rows:
-            try:
-                products = json.loads(str(r.get("products_json") or "[]"))
-            except Exception:
-                products = []
-            if isinstance(products, list) and len(products) > 1:
-                multi_lines += 1
-            elif int(r.get("quantity") or 1) > 1 and (
-                not products or len(products) == 1
-            ):
-                # Single SKU qty>1 — ship as one package (OK).
-                pass
-        if multi_lines > 0:
+        multi = sum(1 for r in rows if posting_unit_count(r) > 1)
+        # Web parity: multi-unit postings must be split before ship-all.
+        if multi > 0:
             return {
                 "ok": False,
                 "block_collect": True,
                 "posting_count": len(rows),
-                "multi_posting_count": multi_lines,
+                "multi_posting_count": multi,
                 "groups": [],
-                "message": "Сначала разделите мультизаказы ({} шт.)".format(
-                    multi_lines
-                ),
+                "message": "Сначала разделите мультизаказы ({} шт.)".format(multi),
                 "source_name": self.source_display_name(source_id),
             }
 

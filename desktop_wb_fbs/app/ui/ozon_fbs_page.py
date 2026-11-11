@@ -154,6 +154,12 @@ class OzonFbsPage(QWidget):
             "Собрать все отправления «Ожидают сборки» в локальные поставки"
         )
         self.ship_all_btn.clicked.connect(self.ship_all_collect)
+        self.split_multi_btn = QPushButton("Разделить мультизаказы")
+        self.split_multi_btn.setObjectName("secondary")
+        self.split_multi_btn.setToolTip(
+            "Разделить мультизаказы через /v1/posting/fbs/split"
+        )
+        self.split_multi_btn.clicked.connect(self.split_all_multi)
         self.create_carriage_btn = QPushButton("Создать отгрузку")
         self.create_carriage_btn.setObjectName("secondary")
         self.create_carriage_btn.clicked.connect(self.create_carriage)
@@ -162,6 +168,7 @@ class OzonFbsPage(QWidget):
         tb.addWidget(self.sync_btn)
         tb.addWidget(self.stop_btn)
         tb.addWidget(self.ship_all_btn)
+        tb.addWidget(self.split_multi_btn)
         tb.addWidget(self.create_carriage_btn)
         tb.addWidget(self.open_carriage_btn)
         tb.addStretch(1)
@@ -316,6 +323,7 @@ class OzonFbsPage(QWidget):
         self.tab_cancelled.setChecked(tab == "cancelled")
         self.bottom_bar.setVisible(tab == "awaiting_packaging")
         self.ship_all_btn.setVisible(tab in ("awaiting_packaging", "awaiting_deliver"))
+        self.split_multi_btn.setVisible(tab == "awaiting_packaging")
         self.reload_table()
 
     def _on_page_size_change(self) -> None:
@@ -781,6 +789,49 @@ class OzonFbsPage(QWidget):
         btns.addWidget(box)
         lay.addLayout(btns)
         dlg.exec_()
+        self.reload_table()
+
+    def split_all_multi(self) -> None:
+        src = self.current_source()
+        if not src:
+            QMessageBox.information(self, "Ozon FBS", "Выберите источник Ozon FBS.")
+            return
+        from app.ozon.client import OzonFbsClient
+        from app.services.ozon_split import OzonSplitService
+
+        sid = int(src["id"])
+        svc = OzonSplitService(self.db)
+        preview = svc.preview_multi(sid)
+        multi = int(preview.get("multi_posting_count") or 0)
+        if multi <= 0:
+            QMessageBox.information(
+                self, "Разделить мультизаказы", "Нет мультизаказов для разделения."
+            )
+            return
+        reply = QMessageBox.question(
+            self,
+            "Разделить мультизаказы",
+            "Разделить {} мультизаказов → ~{} одинарных?".format(
+                multi, int(preview.get("result_posting_count") or 0)
+            ),
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.Yes,
+        )
+        if reply != QMessageBox.Yes:
+            return
+        client = OzonFbsClient(
+            str(src.get("client_id") or ""), str(src.get("api_key") or "")
+        )
+        try:
+            result = svc.split_all_multi(client, sid)
+        except Exception as exc:
+            QMessageBox.warning(self, "Разделить мультизаказы", str(exc))
+            return
+        msg = str(result.get("message") or "")
+        errs = result.get("errors") or []
+        if errs:
+            msg += "\n" + "\n".join(str(e) for e in errs[:8])
+        QMessageBox.information(self, "Разделить мультизаказы", msg or "Готово")
         self.reload_table()
 
     def ship_all_collect(self) -> None:

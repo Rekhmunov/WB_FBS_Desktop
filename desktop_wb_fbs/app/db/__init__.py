@@ -453,6 +453,14 @@ class Database:
             "CREATE INDEX IF NOT EXISTS idx_ozon_postings_supply "
             "ON ozon_fbs_postings(source_id, supply_id)"
         )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_ozon_postings_sticker_bc "
+            "ON ozon_fbs_postings(source_id, sticker_barcode)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_ozon_postings_sticker_low "
+            "ON ozon_fbs_postings(source_id, sticker_lower_barcode)"
+        )
         # Migrate legacy Ozon tab keys → web portal names.
         for old, new in (
             ("new", "awaiting_packaging"),

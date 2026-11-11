@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import sys
 
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtGui import QColor, QPalette
 
 # QtWebEngine must be imported before QApplication on Windows, otherwise
@@ -29,6 +29,7 @@ from app import APP_NAME, __version__
 from app.diag_log import init as init_diag_log, write as diag_write
 from app.db import Database
 from app.services import SourceService
+from app.services.auto_sync import AutoSyncSettings
 from app.services.catalog import CategoryService, ProductService
 from app.services.orders import OrdersService
 from app.services.ozon_orders import OzonOrdersService
@@ -109,14 +110,24 @@ class MainWindow(QMainWindow):
         self.btn_ozon.clicked.connect(lambda: self._show(1))
         self.btn_settings.clicked.connect(lambda: self._show(2))
         self.settings_page.sources_changed.connect(self._on_sources_changed)
+        self._autosync = AutoSyncSettings(db)
+        self._autosync_timer = QTimer(self)
+        self._autosync_timer.setInterval(60 * 1000)
+        self._autosync_timer.timeout.connect(self._on_autosync_tick)
+        self._autosync_timer.start()
         self._show(0)
         self.statusBar().showMessage(
             "Готово · данные локально · API Wildberries и Ozon"
         )
+        # First poll shortly after startup (web restores scheduler on boot).
+        QTimer.singleShot(15 * 1000, self._on_autosync_tick)
 
     def _on_sources_changed(self) -> None:
         self.fbs_page.reload_sources()
         self.ozon_fbs_page.reload_sources()
+        reload_ui = getattr(self.settings_page, "_reload_autosync_ui", None)
+        if callable(reload_ui):
+            reload_ui()
 
     def _show(self, index: int) -> None:
         self.stack.setCurrentIndex(index)
@@ -129,6 +140,36 @@ class MainWindow(QMainWindow):
             self.fbs_page.reload_sources()
         elif index == 1:
             self.ozon_fbs_page.reload_sources()
+
+    def _on_autosync_tick(self) -> None:
+        try:
+            self._maybe_autosync_channel("wb")
+            self._maybe_autosync_channel("ozon")
+        except Exception:
+            pass
+
+    def _maybe_autosync_channel(self, channel: str) -> None:
+        due, _reason = self._autosync.should_run_now(channel)
+        if not due:
+            return
+        if channel == "wb":
+            worker = getattr(self.fbs_page, "_worker", None)
+            if worker is not None and worker.isRunning():
+                return
+            if not self.sources.list_fbs_enabled():
+                return
+            self.statusBar().showMessage("Автосинк ВБ ФБС…")
+            self._autosync.mark_synced("wb")
+            self.fbs_page.start_sync()
+            return
+        worker = getattr(self.ozon_fbs_page, "_sync_worker", None)
+        if worker is not None and worker.isRunning():
+            return
+        if not self.sources.list_ozon_fbs_enabled():
+            return
+        self.statusBar().showMessage("Автосинк ОЗОН ФБС…")
+        self._autosync.mark_synced("ozon")
+        self.ozon_fbs_page.run_sync()
 
 
 def run() -> int:

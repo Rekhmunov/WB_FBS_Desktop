@@ -10,6 +10,7 @@ from PyQt5.QtWidgets import (
     QDialogButtonBox,
     QFileDialog,
     QFormLayout,
+    QFrame,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -86,6 +87,7 @@ class SettingsPage(QWidget):
         self._settings_tabs = tabs
         tabs.addTab(self._build_sources_tab(), "Источники")
         tabs.addTab(self._build_products_tab(), "Товары")
+        tabs.addTab(self._build_autosync_tab(), "Автосинк")
         search_box, self.prod_search_input = make_modal_search_box(
             placeholder="🔍 Поиск…",
             tooltip=(
@@ -286,6 +288,114 @@ class SettingsPage(QWidget):
         box = getattr(self, "_products_search_box", None)
         if box is not None:
             box.setVisible(int(index) == 1)
+
+    def _build_autosync_tab(self) -> QWidget:
+        from app.services.auto_sync import AutoSyncSettings, allowed_intervals_minutes
+
+        w = QWidget()
+        v = QVBoxLayout(w)
+        v.setContentsMargins(0, 8, 0, 0)
+        v.setSpacing(16)
+        hint = QLabel(
+            "Фоновое обновление заказов в активном окне времени (МСК). "
+            "Интервал как в веб-портале: 10 мин … 24 ч. Окно 12:00→06:00 "
+            "означает ночной диапазон через полночь."
+        )
+        hint.setWordWrap(True)
+        hint.setObjectName("hint")
+        v.addWidget(hint)
+
+        self._autosync = AutoSyncSettings(self.db)
+        self._autosync_widgets = {}  # type: Dict[str, Dict[str, Any]]
+
+        for channel, title in (("wb", "ВБ ФБС"), ("ozon", "ОЗОН ФБС")):
+            box = QFrame()
+            box.setObjectName("card")
+            form = QFormLayout(box)
+            form.setContentsMargins(16, 16, 16, 16)
+            form.setHorizontalSpacing(16)
+            form.setVerticalSpacing(12)
+            head = QLabel(title)
+            head.setObjectName("dialogTitle")
+            form.addRow(head)
+
+            enabled = QCheckBox("Включить автосинк")
+            interval = QComboBox()
+            for m in allowed_intervals_minutes():
+                if m < 60:
+                    label = "{} мин".format(m)
+                elif m % 60 == 0:
+                    label = "{} ч".format(m // 60)
+                else:
+                    label = "{} мин".format(m)
+                interval.addItem(label, m)
+            active_from = QLineEdit()
+            active_from.setPlaceholderText("12:00")
+            active_from.setMaximumWidth(96)
+            active_to = QLineEdit()
+            active_to.setPlaceholderText("06:00")
+            active_to.setMaximumWidth(96)
+            last_lbl = QLabel("—")
+            last_lbl.setObjectName("hint")
+            form.addRow(enabled)
+            form.addRow("Интервал", interval)
+            form.addRow("Активно с (МСК)", active_from)
+            form.addRow("Активно до (МСК)", active_to)
+            form.addRow("Последний автосинк", last_lbl)
+            v.addWidget(box)
+            self._autosync_widgets[channel] = {
+                "enabled": enabled,
+                "interval": interval,
+                "from": active_from,
+                "to": active_to,
+                "last": last_lbl,
+            }
+
+        save = QPushButton("Сохранить автосинк")
+        save.clicked.connect(self._save_autosync)
+        row = QHBoxLayout()
+        row.addWidget(save)
+        row.addStretch(1)
+        v.addLayout(row)
+        v.addStretch(1)
+        self._reload_autosync_ui()
+        return w
+
+    def _reload_autosync_ui(self) -> None:
+        widgets = getattr(self, "_autosync_widgets", None) or {}
+        autosync = getattr(self, "_autosync", None)
+        if not widgets or autosync is None:
+            return
+        for channel, wmap in widgets.items():
+            cfg = autosync.get(channel)
+            wmap["enabled"].setChecked(bool(cfg.get("enabled")))
+            interval = int(cfg.get("interval_minutes") or 60)
+            combo = wmap["interval"]
+            idx = combo.findData(interval)
+            if idx < 0:
+                idx = combo.findData(60)
+            combo.setCurrentIndex(max(0, idx))
+            wmap["from"].setText(str(cfg.get("active_from") or "12:00"))
+            wmap["to"].setText(str(cfg.get("active_to") or "06:00"))
+            last = cfg.get("last_auto_synced_at") or ""
+            wmap["last"].setText(str(last) if last else "ещё не было")
+
+    def _save_autosync(self) -> None:
+        widgets = getattr(self, "_autosync_widgets", None) or {}
+        autosync = getattr(self, "_autosync", None)
+        if not widgets or autosync is None:
+            return
+        for channel, wmap in widgets.items():
+            autosync.save(
+                channel,
+                enabled=bool(wmap["enabled"].isChecked()),
+                interval_minutes=int(wmap["interval"].currentData() or 60),
+                active_from=wmap["from"].text(),
+                active_to=wmap["to"].text(),
+            )
+        self._reload_autosync_ui()
+        QMessageBox.information(self, "Автосинк", "Настройки сохранены.")
+        self.sources_changed.emit()
 
     def _on_products_search(self, _text: str = "") -> None:
         self.reload_products_table()

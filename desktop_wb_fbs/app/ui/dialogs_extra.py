@@ -715,16 +715,19 @@ def show_supply_qr(
     order_count: int = 0,
     city: str = "",
 ) -> None:
-    """Show/print local supply QR sticker (WB-GI id). ``api_key`` kept for call-site compat."""
-    from app.services.supply_qr import render_supply_qr_sticker_png
+    """Show/print supply QR: WB ``/barcode`` first, local sticker fallback."""
+    from app.services.supply_qr import resolve_supply_qr_png
 
-    _ = api_key  # local QR does not call WB /barcode
-    png = render_supply_qr_sticker_png(
+    png, source = resolve_supply_qr_png(
+        api_key,
         supply_id,
         order_count=int(order_count or 0),
         city=str(city or ""),
     )
-    show_png_list([png], "QR поставки {}".format(supply_id), parent)
+    title = "QR поставки {}".format(supply_id)
+    if source == "local":
+        title = "{} (локальный)".format(title)
+    show_png_list([png], title, parent)
 
 
 

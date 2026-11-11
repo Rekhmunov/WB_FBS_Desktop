@@ -507,6 +507,7 @@ class OzonSupplyDetailDialog(QDialog):
             posting_numbers=self._posting_numbers(),
             selected_posting=self._selected_posting_number(),
             warehouse_id=wh,
+            db=self.db,
             parent=self,
         )
         dlg.exec_()

@@ -1,17 +1,65 @@
 # -*- coding: utf-8 -*-
-"""Local supply QR sticker (web parity: WB-GI id → QR, no /barcode API)."""
+"""Supply QR sticker: prefer WB Marketplace /barcode, fallback to local QR."""
 from __future__ import annotations
 
-from typing import Tuple
+import logging
+from typing import Optional, Tuple
 
 from PyQt5.QtCore import QBuffer, QByteArray, QRectF, Qt
 from PyQt5.QtGui import QColor, QFont, QImage, QPainter, QPixmap
 
 from app.vendor.qrcodegen import QrCode
 
+_log = logging.getLogger(__name__)
+
 
 def supply_qr_payload(supply_id: str) -> str:
     return str(supply_id or "").strip()
+
+
+def fetch_supply_barcode_png(
+    api_key: str, supply_id: str, *, sticker_type: str = "png"
+) -> bytes:
+    """WB Marketplace ``GET /api/v3/supplies/{id}/barcode`` → PNG bytes."""
+    from app.wb.client import WbMarketplaceClient
+
+    key = str(api_key or "").strip()
+    sid = supply_qr_payload(supply_id)
+    if not key:
+        raise ValueError("Нет API-ключа WB для QR поставки")
+    if not sid:
+        raise ValueError("Нет кода поставки для QR")
+    client = WbMarketplaceClient(key)
+    return client.get_supply_barcode(sid, sticker_type=sticker_type)
+
+
+def resolve_supply_qr_png(
+    api_key: str,
+    supply_id: str,
+    *,
+    order_count: int = 0,
+    city: str = "",
+) -> Tuple[bytes, str]:
+    """Return ``(png, source)`` where source is ``wb`` or ``local``."""
+    key = str(api_key or "").strip()
+    sid = supply_qr_payload(supply_id)
+    if key and sid:
+        try:
+            png = fetch_supply_barcode_png(key, sid)
+            if png and (
+                png[:8] == b"\x89PNG\r\n\x1a\n"
+                or png[:5] == b"%PDF-"
+                or len(png) > 200
+            ):
+                return png, "wb"
+        except Exception as exc:
+            _log.warning("WB supply /barcode failed %s: %s — local QR", sid, exc)
+    return (
+        render_supply_qr_sticker_png(
+            sid, order_count=int(order_count or 0), city=str(city or "")
+        ),
+        "local",
+    )
 
 
 def _qr_pixmap(text: str, box_px: int = 280) -> QPixmap:

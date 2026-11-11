@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Ozon FBS containers (грузоместа) dialog — TrbxDialog-style."""
+"""Ozon FBS containers (грузоместа) dialog — TrbxDialog-style + archive/reconcile."""
 from __future__ import annotations
 
 from functools import partial
@@ -9,6 +9,7 @@ from PyQt5.QtCore import Qt, QUrl
 from PyQt5.QtGui import QDesktopServices
 from PyQt5.QtWidgets import (
     QAbstractItemView,
+    QCheckBox,
     QComboBox,
     QDialog,
     QHBoxLayout,
@@ -23,13 +24,14 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
+from app.db import Database
 from app.ozon.client import OzonFbsClient
 from app.services.ozon_containers import OzonContainersService
 from app.ui.dialog_utils import prepare_modal_dialog
 
 
 class OzonContainersDialog(QDialog):
-    """List / create / delete / approve / print / bind cargo places for a carriage."""
+    """List / create / delete / approve / print / bind / archive / reconcile."""
 
     def __init__(
         self,
@@ -40,11 +42,13 @@ class OzonContainersDialog(QDialog):
         posting_numbers: Optional[List[str]] = None,
         selected_posting: str = "",
         warehouse_id: int = 0,
+        db: Optional[Database] = None,
         parent: Optional[QWidget] = None,
     ) -> None:
         super(OzonContainersDialog, self).__init__(parent)
         self.client = client
-        self.svc = OzonContainersService()
+        self.db = db
+        self.svc = OzonContainersService(db)
         self.carriage_id = str(carriage_id or "").strip()
         self.source_id = int(source_id or 0)
         self.warehouse_id = int(warehouse_id or 0)
@@ -53,6 +57,7 @@ class OzonContainersDialog(QDialog):
         ]
         self.selected_posting = str(selected_posting or "").strip()
         self.containers = []  # type: List[Dict[str, Any]]
+        self._include_archived = False
 
         scope = str(self.carriage_id or "")
         if scope.startswith("supply:"):
@@ -76,7 +81,9 @@ class OzonContainersDialog(QDialog):
 
         lead = QLabel(
             "Создайте грузоместа, привяжите отправления, "
-            "подтвердите состав и распечатайте этикетки."
+            "подтвердите состав и распечатайте этикетки. "
+            "«Сверить с Ozon» подтягивает состав ГМ с портала; "
+            "архив только локально скрывает залипшие ГМ."
         )
         lead.setObjectName("hint")
         lead.setWordWrap(True)
@@ -110,6 +117,14 @@ class OzonContainersDialog(QDialog):
         stepper.addWidget(self.create_btn)
         stepper.addStretch(1)
         root.addLayout(stepper)
+
+        filt = QHBoxLayout()
+        filt.setSpacing(8)
+        self.show_archived = QCheckBox("Показать локальный архив")
+        self.show_archived.toggled.connect(self._on_show_archived)
+        filt.addWidget(self.show_archived)
+        filt.addStretch(1)
+        root.addLayout(filt)
 
         self.info = QLabel("")
         self.info.setObjectName("hint")
@@ -163,6 +178,15 @@ class OzonContainersDialog(QDialog):
         self.refresh_btn = QPushButton("Обновить")
         self.refresh_btn.setObjectName("secondary")
         self.refresh_btn.clicked.connect(self.reload)
+        self.reconcile_btn = QPushButton("Сверить с Ozon")
+        self.reconcile_btn.setObjectName("secondary")
+        self.reconcile_btn.clicked.connect(self.reconcile)
+        self.archive_btn = QPushButton("В архив")
+        self.archive_btn.setObjectName("secondary")
+        self.archive_btn.clicked.connect(self.archive_selected)
+        self.restore_btn = QPushButton("Из архива")
+        self.restore_btn.setObjectName("secondary")
+        self.restore_btn.clicked.connect(self.restore_selected)
         self.approve_btn = QPushButton("Подтвердить")
         self.approve_btn.clicked.connect(self.approve_selected)
         self.labels_btn = QPushButton("Этикетки PDF")
@@ -172,6 +196,9 @@ class OzonContainersDialog(QDialog):
         self.delete_btn.setObjectName("danger")
         self.delete_btn.clicked.connect(self.delete_selected)
         actions.addWidget(self.refresh_btn)
+        actions.addWidget(self.reconcile_btn)
+        actions.addWidget(self.archive_btn)
+        actions.addWidget(self.restore_btn)
         actions.addWidget(self.approve_btn)
         actions.addWidget(self.labels_btn)
         actions.addWidget(self.delete_btn)
@@ -182,6 +209,10 @@ class OzonContainersDialog(QDialog):
 
     def _step_amount(self, delta: int) -> None:
         self.amount.setValue(max(1, min(100, self.amount.value() + int(delta))))
+
+    def _on_show_archived(self, checked: bool) -> None:
+        self._include_archived = bool(checked)
+        self.reload()
 
     def _selected_ids(self) -> List[int]:
         ids = []  # type: List[int]
@@ -209,11 +240,23 @@ class OzonContainersDialog(QDialog):
                 warehouse_id=self.warehouse_id or None,
             )
             self.warehouse_id = int(result.get("warehouse_id") or self.warehouse_id or 0)
-            self.containers = list(result.get("items") or [])
+            items = list(result.get("items") or [])
+            if self.source_id > 0:
+                items = self.svc.apply_local_archive_filter(
+                    self.source_id,
+                    items,
+                    include_archived=self._include_archived,
+                )
+            self.containers = items
             self._render_table()
+            archived_n = 0
+            if self.source_id > 0:
+                archived_n = len(self.svc.list_archived_ids(self.source_id))
             self.info.setText(
-                "Грузомест: {} · склад {}".format(
-                    len(self.containers), self.warehouse_id or "—"
+                "Грузомест: {} · склад {} · в локальном архиве {}".format(
+                    len(self.containers),
+                    self.warehouse_id or "—",
+                    archived_n,
                 )
             )
         except Exception as exc:
@@ -326,6 +369,71 @@ class OzonContainersDialog(QDialog):
         except Exception as exc:
             QMessageBox.warning(self, "Грузоместа", str(exc))
 
+    def archive_selected(self) -> None:
+        ids = self._selected_ids()
+        if not ids:
+            QMessageBox.information(self, "Грузоместа", "Выберите грузоместа.")
+            return
+        if self.source_id <= 0:
+            QMessageBox.information(
+                self, "Грузоместа", "Нужен источник для локального архива."
+            )
+            return
+        try:
+            for cid in ids:
+                self.svc.archive_locally(self.source_id, cid)
+            self.reload()
+            QMessageBox.information(
+                self,
+                "Грузоместа",
+                "В локальный архив: {}".format(len(ids)),
+            )
+        except Exception as exc:
+            QMessageBox.warning(self, "Грузоместа", str(exc))
+
+    def restore_selected(self) -> None:
+        ids = self._selected_ids()
+        if not ids:
+            QMessageBox.information(self, "Грузоместа", "Выберите грузоместа.")
+            return
+        if self.source_id <= 0:
+            return
+        try:
+            for cid in ids:
+                self.svc.restore_locally(self.source_id, cid)
+            self.reload()
+            QMessageBox.information(
+                self,
+                "Грузоместа",
+                "Восстановлено из архива: {}".format(len(ids)),
+            )
+        except Exception as exc:
+            QMessageBox.warning(self, "Грузоместа", str(exc))
+
+    def reconcile(self) -> None:
+        if self.source_id <= 0 or not self.posting_numbers:
+            QMessageBox.information(
+                self,
+                "Грузоместа",
+                "Нет отправлений поставки для сверки с Ozon.",
+            )
+            return
+        try:
+            result = self.svc.reconcile_binds(
+                self.client,
+                self.source_id,
+                self.posting_numbers,
+                warehouse_id=self.warehouse_id,
+                carriage_id=self.carriage_id,
+            )
+            self.info.setText(str(result.get("message") or "Сверка выполнена"))
+            QMessageBox.information(
+                self, "Грузоместа", str(result.get("message") or "Готово")
+            )
+            self.reload()
+        except Exception as exc:
+            QMessageBox.warning(self, "Грузоместа", str(exc))
+
     def bind_selected(self) -> None:
         ids = self._selected_ids()
         pn = self._selected_posting()
@@ -340,7 +448,13 @@ class OzonContainersDialog(QDialog):
             )
             return
         try:
-            self.svc.bind_posting(self.client, self.carriage_id, ids[0], pn)
+            self.svc.bind_posting(
+                self.client,
+                self.carriage_id,
+                ids[0],
+                pn,
+                source_id=self.source_id,
+            )
             QMessageBox.information(
                 self,
                 "Грузоместа",
@@ -366,6 +480,7 @@ class OzonContainersDialog(QDialog):
                 ids[0],
                 pn,
                 carriage_id=self.carriage_id,
+                source_id=self.source_id,
             )
             QMessageBox.information(
                 self,

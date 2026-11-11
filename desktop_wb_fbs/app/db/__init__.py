@@ -235,6 +235,81 @@ CREATE TABLE IF NOT EXISTS ozon_fbs_label_cache (
     updated_at TEXT NOT NULL,
     UNIQUE(source_id, cache_key)
 );
+
+-- Shared driver catalog (WB + Ozon FBS supplies).
+CREATE TABLE IF NOT EXISTS supply_drivers (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    full_name TEXT NOT NULL UNIQUE,
+    phone TEXT NOT NULL DEFAULT '',
+    documents TEXT NOT NULL DEFAULT '',
+    carrier TEXT NOT NULL DEFAULT '',
+    vehicles_json TEXT NOT NULL DEFAULT '[]',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS wb_fbs_supply_driver (
+    source_id INTEGER NOT NULL,
+    supply_id TEXT NOT NULL,
+    driver_id INTEGER NOT NULL DEFAULT 0,
+    driver_name TEXT NOT NULL DEFAULT '',
+    vehicle_number TEXT NOT NULL DEFAULT '',
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (source_id, supply_id)
+);
+
+CREATE TABLE IF NOT EXISTS ozon_fbs_supply_driver (
+    source_id INTEGER NOT NULL,
+    supply_id TEXT NOT NULL,
+    driver_id INTEGER NOT NULL DEFAULT 0,
+    driver_name TEXT NOT NULL DEFAULT '',
+    vehicle_number TEXT NOT NULL DEFAULT '',
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (source_id, supply_id)
+);
+
+CREATE TABLE IF NOT EXISTS fbs_ttn_drafts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    platform TEXT NOT NULL,
+    source_id INTEGER NOT NULL,
+    supply_id TEXT NOT NULL,
+    title TEXT NOT NULL DEFAULT '',
+    ttn_date TEXT NOT NULL DEFAULT '',
+    driver_name TEXT NOT NULL DEFAULT '',
+    vehicle_number TEXT NOT NULL DEFAULT '',
+    vehicle_type TEXT NOT NULL DEFAULT '',
+    load_address TEXT NOT NULL DEFAULT '',
+    unload_address TEXT NOT NULL DEFAULT '',
+    cargo_places TEXT NOT NULL DEFAULT '',
+    cargo_weight TEXT NOT NULL DEFAULT '',
+    cargo_description TEXT NOT NULL DEFAULT '',
+    notes TEXT NOT NULL DEFAULT '',
+    draft_json TEXT NOT NULL DEFAULT '{}',
+    updated_at TEXT NOT NULL,
+    UNIQUE(platform, source_id, supply_id)
+);
+
+CREATE TABLE IF NOT EXISTS ozon_fbs_pvz_returns (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    source_id INTEGER NOT NULL,
+    return_id INTEGER NOT NULL,
+    posting_number TEXT NOT NULL DEFAULT '',
+    order_id TEXT NOT NULL DEFAULT '',
+    order_number TEXT NOT NULL DEFAULT '',
+    visual_status TEXT NOT NULL DEFAULT '',
+    completed_dt TEXT NOT NULL DEFAULT '',
+    offer_id TEXT NOT NULL DEFAULT '',
+    sku TEXT NOT NULL DEFAULT '',
+    product_name TEXT NOT NULL DEFAULT '',
+    quantity INTEGER NOT NULL DEFAULT 1,
+    barcode TEXT NOT NULL DEFAULT '',
+    raw_json TEXT NOT NULL DEFAULT '{}',
+    updated_at TEXT NOT NULL,
+    UNIQUE(source_id, return_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_ozon_pvz_returns_src
+    ON ozon_fbs_pvz_returns(source_id, completed_dt);
 """
 
 

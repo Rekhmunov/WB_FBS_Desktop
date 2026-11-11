@@ -450,6 +450,8 @@ class SupplyDetailDialog(QDialog):
         for text, slot in (
             ("Грузоместа", self.manage_trbx),
             ("Отмененные заказы", self.show_cancelled),
+            ("Водитель", self.assign_driver),
+            ("ТН", self.open_ttn_draft),
         ):
             btn = _sec(QPushButton(text))
             btn.clicked.connect(slot)
@@ -1528,6 +1530,40 @@ class SupplyDetailDialog(QDialog):
             )
         except Exception as exc:
             QMessageBox.critical(self, "QR", str(exc))
+
+    def assign_driver(self) -> None:
+        from app.ui.driver_assign_dialog import DriverAssignDialog
+
+        dlg = DriverAssignDialog(
+            self.db,
+            platform="wb",
+            source_id=self.source_id,
+            supply_id=self.supply_id,
+            parent=self,
+        )
+        dlg.exec_()
+
+    def open_ttn_draft(self) -> None:
+        from app.ui.ttn_draft_dialog import TtnDraftDialog
+
+        detail = getattr(self, "_detail", None) or {}
+        if not isinstance(detail, dict):
+            detail = {}
+        dlg = TtnDraftDialog(
+            self.db,
+            platform="wb",
+            source_id=self.source_id,
+            supply_id=self.supply_id,
+            supply_name=str(detail.get("name") or self.supply_id),
+            warehouse_name=str(
+                detail.get("destination_office_name")
+                or detail.get("warehouse_name")
+                or ""
+            ),
+            cargo_places=str(len(detail.get("order_ids") or []) or ""),
+            parent=self,
+        )
+        dlg.exec_()
 
     def open_portal(self) -> None:
         url = (

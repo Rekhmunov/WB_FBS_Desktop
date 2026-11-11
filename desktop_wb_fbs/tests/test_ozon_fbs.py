@@ -340,3 +340,62 @@ class OzonSplitHelpersTest(unittest.TestCase):
             fallback_posting_number="PN-1",
         )
         self.assertEqual(nums, ["PN-1", "PN-1-1", "PN-1-2"])
+
+
+class OzonSelectionPreviewTest(unittest.TestCase):
+    def test_preview_rejects_wrong_tab_and_existing_supply(self) -> None:
+        import os
+        import tempfile
+
+        from app.db import Database
+        from app.services.ozon_supplies import OzonSuppliesService
+
+        fd, path = tempfile.mkstemp(suffix=".sqlite")
+        os.close(fd)
+        try:
+            db = Database(path)
+            db.init_schema()
+            with db.connect() as conn:
+                conn.execute(
+                    """
+                    INSERT INTO supply_sources(
+                        name, marketplace, client_id, api_key, is_enabled,
+                        lookback_days, created_at
+                    ) VALUES ('Озон ФБС', 'ozon', '1', 'k', 1, 2, '2026-01-01')
+                    """
+                )
+                sid = int(conn.execute("SELECT last_insert_rowid()").fetchone()[0])
+                conn.execute(
+                    """
+                    INSERT INTO ozon_fbs_postings(
+                        source_id, posting_number, status, tab, warehouse_id,
+                        synced_at
+                    ) VALUES
+                    (?, 'OK-1', 'awaiting_packaging', 'awaiting_packaging', 1, '2026-01-01'),
+                    (?, 'BAD-TAB', 'awaiting_deliver', 'awaiting_deliver', 1, '2026-01-01'),
+                    (?, 'IN-SUP', 'awaiting_packaging', 'awaiting_packaging', 1, '2026-01-01')
+                    """,
+                    (sid, sid, sid),
+                )
+                conn.execute(
+                    "UPDATE ozon_fbs_postings SET supply_id = 'OZ-X' "
+                    "WHERE posting_number = 'IN-SUP'"
+                )
+                conn.commit()
+            svc = OzonSuppliesService(db)
+            bad = svc.preview_selection_supply(
+                sid, ["OK-1", "BAD-TAB", "IN-SUP", "MISSING"]
+            )
+            self.assertFalse(bad.get("ok"))
+            joined = " | ".join(bad.get("errors") or [])
+            self.assertIn("Ожидают сборки", joined)
+            self.assertIn("локальной поставке", joined)
+            self.assertIn("Не найдены", joined)
+            good = svc.preview_selection_supply(sid, ["OK-1"])
+            self.assertTrue(good.get("ok"))
+            self.assertEqual(good.get("order_count"), 1)
+        finally:
+            try:
+                os.unlink(path)
+            except OSError:
+                pass

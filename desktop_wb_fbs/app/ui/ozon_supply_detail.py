@@ -14,6 +14,7 @@ from PyQt5.QtWidgets import (
     QDialog,
     QFrame,
     QHBoxLayout,
+    QHeaderView,
     QInputDialog,
     QLabel,
     QLineEdit,
@@ -146,6 +147,9 @@ class OzonSupplyDetailDialog(QDialog):
         self.btn_labels = QPushButton("Этикетки")
         self.btn_labels.setObjectName("secondary")
         self.btn_labels.clicked.connect(self.print_labels)
+        self.btn_stickers = QPushButton("Стикеры / QR")
+        self.btn_stickers.setObjectName("secondary")
+        self.btn_stickers.clicked.connect(self.print_stickers_sheet)
         self.btn_picking = QPushButton("Лист подбора")
         self.btn_picking.setObjectName("secondary")
         self.btn_picking.clicked.connect(self.print_picking_list)
@@ -165,6 +169,7 @@ class OzonSupplyDetailDialog(QDialog):
             self.btn_mark,
             self.btn_pick,
             self.btn_labels,
+            self.btn_stickers,
             self.btn_picking,
             self.btn_containers,
             self.btn_cancelled,
@@ -205,8 +210,10 @@ class OzonSupplyDetailDialog(QDialog):
         self.btn_mark.setEnabled(True)
         self.btn_pick.setEnabled(True)
         self.btn_labels.setEnabled(True)
+        self.btn_stickers.setEnabled(True)
         self.btn_picking.setEnabled(True)
         self.btn_containers.setEnabled(True)
+        self.btn_cancelled.setEnabled(True)
         self.btn_move.setEnabled(not ro)
         self.btn_move.setVisible(not ro)
 
@@ -450,38 +457,114 @@ class OzonSupplyDetailDialog(QDialog):
         )
         dlg.exec_()
 
-    def show_cancelled(self) -> None:
-        cancelled = [
-            r
-            for r in self._rows
-            if str(r.get("tab") or "").lower() == "cancelled"
-            or str(r.get("status") or "").lower()
-            in ("cancelled", "not_accepted")
-            or str(r.get("cancel_reason") or "").strip()
-        ]
-        if not cancelled:
-            QMessageBox.information(
-                self, "Отменённые", "В поставке нет отменённых отправлений."
-            )
+    def print_stickers_sheet(self) -> None:
+        pnums = self._posting_numbers()
+        if not pnums:
+            QMessageBox.information(self, "Стикеры", "Нет отправлений.")
             return
-        lines = []
-        for r in cancelled:
-            lines.append(
-                "{} · {} · {}".format(
-                    r.get("posting_number") or "",
-                    r.get("product_name") or r.get("offer_id") or "",
-                    r.get("cancel_reason")
-                    or r.get("status_label")
-                    or r.get("status")
-                    or "отменено",
-                )
+        self.load_info.setText("Привязка QR и подготовка листа стикеров…")
+        try:
+            self.supplies.bind_stickers_from_postings(
+                self.client, self.source_id, pnums
             )
-        QMessageBox.information(
-            self,
-            "Отменённые ({})".format(len(cancelled)),
-            "\n".join(lines[:40])
-            + ("\n…" if len(lines) > 40 else ""),
+        except Exception:
+            pass
+        self.reload()
+        html = self.supplies.render_stickers_sheet_html(self._detail)
+        fd, path = tempfile.mkstemp(suffix=".html", prefix="ozon-stickers-")
+        os.close(fd)
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(html)
+        self.load_info.setText("Стикеры / QR: {}".format(path))
+        QDesktopServices.openUrl(QUrl.fromLocalFile(path))
+
+    def show_cancelled(self) -> None:
+        from app.ui.dialog_utils import prepare_modal_dialog
+
+        cancelled = self.supplies.list_cancelled_in_supply(
+            self.source_id, self.supply_id
         )
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Отменённые · {}".format(self.supply_id))
+        prepare_modal_dialog(
+            dlg,
+            maximized=True,
+            default_size=(860, 600),
+            minimum_size=(640, 440),
+        )
+        lay = QVBoxLayout(dlg)
+        lay.setContentsMargins(24, 20, 24, 20)
+        lay.setSpacing(12)
+        title = QLabel("Отменённые отправления")
+        title.setObjectName("dialogTitle")
+        lay.addWidget(title)
+        subtitle = QLabel(
+            "Отправления отменены, но всё ещё привязаны к этой поставке. "
+            "«Обновить» перечитает локальные статусы после синхронизации."
+        )
+        subtitle.setObjectName("hint")
+        subtitle.setWordWrap(True)
+        lay.addWidget(subtitle)
+        head = QHBoxLayout()
+        lead = QLabel("Найдено отменённых: {}".format(len(cancelled)))
+        lead.setObjectName("hint")
+        head.addWidget(lead, 1)
+        refresh_btn = QPushButton("Обновить")
+        refresh_btn.setObjectName("secondary")
+        head.addWidget(refresh_btn)
+        lay.addLayout(head)
+        table = QTableWidget(0, 3)
+        table.setObjectName("kizTable")
+        table.setAlternatingRowColors(True)
+        table.setHorizontalHeaderLabels(["Отправление", "Товар", "Причина / статус"])
+        table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        table.setShowGrid(False)
+        hdr = table.horizontalHeader()
+        hdr.setStretchLastSection(True)
+        hdr.setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        table.verticalHeader().setVisible(False)
+
+        def _fill(items: List[Dict[str, Any]]) -> None:
+            lead.setText("Найдено отменённых: {}".format(len(items)))
+            if not items:
+                table.setRowCount(1)
+                table.setSpan(0, 0, 1, 3)
+                empty = QTableWidgetItem("Отменённых отправлений в поставке нет")
+                empty.setTextAlignment(Qt.AlignCenter)
+                empty.setFlags(Qt.ItemIsEnabled)
+                table.setItem(0, 0, empty)
+                return
+            table.clearSpans()
+            table.setRowCount(len(items))
+            for i, r in enumerate(items):
+                table.setItem(
+                    i, 0, QTableWidgetItem(str(r.get("posting_number") or ""))
+                )
+                table.setCellWidget(
+                    i, 1, build_product_cell_widget(r, photo_size=64)
+                )
+                reason = (
+                    str(r.get("cancel_reason") or "").strip()
+                    or str(r.get("status_label") or r.get("status") or "отменено")
+                )
+                table.setItem(i, 2, QTableWidgetItem(reason))
+                table.setRowHeight(i, 88)
+
+        def _refresh() -> None:
+            self.reload()
+            items = self.supplies.list_cancelled_in_supply(
+                self.source_id, self.supply_id
+            )
+            _fill(items)
+
+        refresh_btn.clicked.connect(_refresh)
+        _fill(cancelled)
+        lay.addWidget(table, 1)
+        close_btn = QPushButton("Закрыть")
+        close_btn.clicked.connect(dlg.accept)
+        lay.addWidget(close_btn, 0, Qt.AlignRight)
+        dlg.exec_()
 
     def move_to_delivering(self) -> None:
         if self._is_read_only():

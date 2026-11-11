@@ -930,29 +930,24 @@ class OzonFbsPage(QWidget):
             )
             return
         from app.ozon.client import OzonFbsClient
-        from app.services.ozon_supplies import (
-            OzonSuppliesService,
-            default_supply_name,
-        )
-        from PyQt5.QtWidgets import QInputDialog
+        from app.services.ozon_supplies import OzonSuppliesService
+        from app.ui.ozon_selection_supply_dialog import run_selection_supply_flow
 
-        suggested = default_supply_name(
-            source_name=str(src.get("name") or "Ozon")
-        )
-        name, ok = QInputDialog.getText(
-            self, "Создать поставку", "Название поставки:", text=suggested
-        )
-        if not ok:
-            return
         client = OzonFbsClient(
             str(src.get("client_id") or ""), str(src.get("api_key") or "")
         )
         try:
-            result = OzonSuppliesService(self.db).create_from_selection(
-                client, int(src["id"]), pnums, name=name
+            result = run_selection_supply_flow(
+                parent=self,
+                svc=OzonSuppliesService(self.db),
+                client=client,
+                source_id=int(src["id"]),
+                posting_numbers=pnums,
             )
         except Exception as exc:
             QMessageBox.warning(self, "Поставка", str(exc))
+            return
+        if not result:
             return
         msg = str(result.get("message") or "")
         errs = result.get("errors") or []

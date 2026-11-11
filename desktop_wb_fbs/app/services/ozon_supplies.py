@@ -491,6 +491,119 @@ class OzonSuppliesService:
             body=body,
         )
 
+    def preview_selection_supply(
+        self, source_id: int, posting_numbers: List[str]
+    ) -> Dict[str, Any]:
+        """Validate selected packaging postings + list compatible open supplies."""
+        from app.services.ozon_split import posting_unit_count
+
+        wanted = [str(x).strip() for x in posting_numbers if str(x).strip()]
+        rows = []  # type: List[Dict[str, Any]]
+        found = set()  # type: Set[str]
+        for pn in wanted:
+            with self.db.connect() as conn:
+                row = conn.execute(
+                    """
+                    SELECT * FROM ozon_fbs_postings
+                    WHERE source_id = ? AND posting_number = ?
+                    """,
+                    (source_id, pn),
+                ).fetchone()
+            if row:
+                d = Database.row_to_dict(row)
+                rows.append(d)
+                found.add(pn)
+        errors = []  # type: List[str]
+        missing = [n for n in wanted if n not in found]
+        if missing:
+            errors.append(
+                "Не найдены отправления: "
+                + ", ".join(missing[:10])
+                + ("…" if len(missing) > 10 else "")
+            )
+        usable = []  # type: List[Dict[str, Any]]
+        for r in rows:
+            pn = str(r.get("posting_number") or "").strip()
+            tab = str(r.get("tab") or "")
+            if tab not in (TAB_AWAITING_PACKAGING, "new"):
+                errors.append(
+                    "Отправление {} не во вкладке «Ожидают сборки» (сейчас: {})".format(
+                        pn, tab or "—"
+                    )
+                )
+                continue
+            if str(r.get("supply_id") or "").strip():
+                errors.append("Отправление {} уже в локальной поставке".format(pn))
+                continue
+            usable.append(r)
+        wh_ids = {r.get("warehouse_id") for r in usable}
+        if len(wh_ids) > 1:
+            errors.append("Выбраны отправления с разных складов")
+        if not usable and not errors:
+            errors.append("Нет подходящих отправлений")
+        multi = sum(1 for r in usable if posting_unit_count(r) > 1)
+        if multi > 0:
+            errors.append(
+                "Сначала разделите мультизаказы в выборе ({} шт.)".format(multi)
+            )
+        traits = {"warehouse_id": None, "warehouse_name": ""}  # type: Dict[str, Any]
+        compatible = []  # type: List[Dict[str, Any]]
+        if usable and len(wh_ids) <= 1 and multi == 0:
+            first = usable[0]
+            traits = {
+                "warehouse_id": first.get("warehouse_id"),
+                "warehouse_name": str(first.get("warehouse_name") or ""),
+            }
+            for s in self.list_awaiting_deliver_supplies(source_id):
+                sw = s.get("warehouse_id")
+                tw = traits.get("warehouse_id")
+                if tw is None and sw is None:
+                    compatible.append(s)
+                elif tw is not None and sw is not None and int(sw) == int(tw):
+                    compatible.append(s)
+        open_names = sorted(
+            {
+                str(s.get("name") or "").strip()
+                for s in self.list_open_supplies(source_id)
+                if str(s.get("name") or "").strip()
+            }
+        )
+        suggested = unique_supply_name(
+            default_supply_name(source_name=self.source_display_name(source_id)),
+            set(open_names),
+        )
+        # Deduplicate errors
+        seen = set()  # type: Set[str]
+        uniq = []  # type: List[str]
+        for e in errors:
+            if e in seen:
+                continue
+            seen.add(e)
+            uniq.append(e)
+        return {
+            "ok": not uniq,
+            "errors": uniq,
+            "posting_numbers": [
+                str(r.get("posting_number") or "").strip() for r in usable
+            ],
+            "order_count": len(usable),
+            "multi_posting_count": multi,
+            "block_collect": multi > 0,
+            "traits": traits,
+            "suggested_name": suggested,
+            "existing_names": open_names,
+            "compatible_supplies": [
+                {
+                    "supply_id": s.get("supply_id"),
+                    "name": s.get("name") or s.get("supply_id"),
+                    "orders_count": int(s.get("posting_count") or s.get("order_count") or 0),
+                    "warehouse_name": s.get("warehouse_name") or "",
+                }
+                for s in compatible
+            ],
+            "has_open_supplies": bool(compatible),
+        }
+
     def create_from_selection(
         self,
         client: OzonFbsClient,
@@ -501,74 +614,54 @@ class OzonSuppliesService:
     ) -> Dict[str, Any]:
         from app.services.ozon_ship import OzonShipService, posting_needs_ship
 
-        nums = [str(x).strip() for x in posting_numbers if str(x).strip()]
-        if not nums:
+        preview = self.preview_selection_supply(source_id, posting_numbers)
+        if not preview.get("ok"):
             return {
                 "ok": False,
-                "message": "Выберите отправления",
+                "added": 0,
+                "errors": list(preview.get("errors") or []),
+                "message": "Нельзя создать поставку из выбранных отправлений",
                 "goto_awaiting_deliver": False,
             }
-        rows = []
-        for pn in nums:
-            with self.db.connect() as conn:
-                row = conn.execute(
-                    """
-                    SELECT * FROM ozon_fbs_postings
-                    WHERE source_id = ? AND posting_number = ?
-                    """,
-                    (source_id, pn),
-                ).fetchone()
-            if row:
-                rows.append(Database.row_to_dict(row))
-        if not rows:
-            return {
-                "ok": False,
-                "message": "Отправления не найдены локально",
-                "goto_awaiting_deliver": False,
-            }
-        wh_ids = {r.get("warehouse_id") for r in rows}
-        if len(wh_ids) > 1:
-            return {
-                "ok": False,
-                "message": "Выбраны отправления с разных складов",
-                "goto_awaiting_deliver": False,
-            }
+        nums = list(preview.get("posting_numbers") or [])
+        traits = preview.get("traits") or {}
         ship_svc = OzonShipService(self.db)
         shipped = []  # type: List[str]
         errors = []  # type: List[str]
-        for r in rows:
-            pn = str(r.get("posting_number") or "")
+        for pn in nums:
             try:
-                if posting_needs_ship(str(r.get("status") or "")):
-                    ship_svc.ship_posting(client, source_id, pn, posting=r)
+                with self.db.connect() as conn:
+                    row = conn.execute(
+                        """
+                        SELECT * FROM ozon_fbs_postings
+                        WHERE source_id = ? AND posting_number = ?
+                        """,
+                        (source_id, pn),
+                    ).fetchone()
+                local = Database.row_to_dict(row) if row else {}
+                if posting_needs_ship(str(local.get("status") or "")):
+                    ship_svc.ship_posting(client, source_id, pn, posting=local or None)
                 shipped.append(pn)
             except Exception as exc:
                 errors.append("{}: {}".format(pn, exc))
         if not shipped:
             return {
                 "ok": False,
-                "message": "Не удалось собрать отправления",
+                "added": 0,
                 "errors": errors,
+                "message": "Не удалось собрать отправления",
                 "goto_awaiting_deliver": False,
             }
-        open_names = {
-            str(s.get("name") or "").strip()
-            for s in self.list_open_supplies(source_id)
-            if str(s.get("name") or "").strip()
-        }
+        open_names = set(preview.get("existing_names") or [])
         supply_name = unique_supply_name(
-            str(name or "").strip()
-            or default_supply_name(
-                source_name=self.source_display_name(source_id)
-            ),
+            str(name or "").strip() or str(preview.get("suggested_name") or ""),
             open_names,
         )
-        first = rows[0]
         sid = self.create_supply(
             source_id,
             name=supply_name,
-            warehouse_id=first.get("warehouse_id"),
-            warehouse_name=str(first.get("warehouse_name") or ""),
+            warehouse_id=traits.get("warehouse_id"),
+            warehouse_name=str(traits.get("warehouse_name") or ""),
             posting_numbers=shipped,
         )
         return {
@@ -583,6 +676,175 @@ class OzonSuppliesService:
             + (" · ошибок {}".format(len(errors)) if errors else ""),
             "goto_awaiting_deliver": True,
         }
+
+    def add_selection_to_supply(
+        self,
+        client: OzonFbsClient,
+        source_id: int,
+        posting_numbers: List[str],
+        supply_id: str,
+    ) -> Dict[str, Any]:
+        from app.services.ozon_ship import OzonShipService, posting_needs_ship
+
+        preview = self.preview_selection_supply(source_id, posting_numbers)
+        if not preview.get("ok"):
+            return {
+                "ok": False,
+                "added": 0,
+                "errors": list(preview.get("errors") or []),
+                "message": "Нельзя добавить выбранные отправления в поставку",
+                "goto_awaiting_deliver": False,
+            }
+        sid = str(supply_id or "").strip()
+        compatible_ids = {
+            str(s.get("supply_id") or "").strip()
+            for s in (preview.get("compatible_supplies") or [])
+        }
+        if sid not in compatible_ids:
+            return {
+                "ok": False,
+                "added": 0,
+                "errors": ["Выбранная поставка не совместима со складом отправлений"],
+                "message": "Поставка не подходит",
+                "goto_awaiting_deliver": False,
+            }
+        nums = list(preview.get("posting_numbers") or [])
+        ship_svc = OzonShipService(self.db)
+        shipped = []  # type: List[str]
+        errors = []  # type: List[str]
+        for pn in nums:
+            try:
+                with self.db.connect() as conn:
+                    row = conn.execute(
+                        """
+                        SELECT * FROM ozon_fbs_postings
+                        WHERE source_id = ? AND posting_number = ?
+                        """,
+                        (source_id, pn),
+                    ).fetchone()
+                local = Database.row_to_dict(row) if row else {}
+                if posting_needs_ship(str(local.get("status") or "")):
+                    ship_svc.ship_posting(client, source_id, pn, posting=local or None)
+                shipped.append(pn)
+            except Exception as exc:
+                errors.append("{}: {}".format(pn, exc))
+        if not shipped:
+            return {
+                "ok": False,
+                "added": 0,
+                "errors": errors,
+                "message": "Не удалось собрать отправления",
+                "goto_awaiting_deliver": False,
+            }
+        self.add_postings(source_id, sid, shipped)
+        sname = next(
+            (
+                str(s.get("name") or sid)
+                for s in (preview.get("compatible_supplies") or [])
+                if str(s.get("supply_id")) == sid
+            ),
+            sid,
+        )
+        return {
+            "ok": not errors,
+            "added": len(shipped),
+            "supply_id": sid,
+            "name": sname,
+            "errors": errors,
+            "message": "Добавлено в «{}»: {} отпр.".format(sname, len(shipped))
+            + (" · ошибок {}".format(len(errors)) if errors else ""),
+            "goto_awaiting_deliver": True,
+        }
+
+    def list_cancelled_in_supply(
+        self, source_id: int, supply_id: str
+    ) -> List[Dict[str, Any]]:
+        from app.services.ozon_orders import OzonOrdersService
+
+        rows = self.list_supply_postings(source_id, supply_id)
+        orders_svc = OzonOrdersService(self.db)
+        out = []  # type: List[Dict[str, Any]]
+        for r in rows:
+            item = orders_svc._enrich_posting(dict(r))
+            tab = str(item.get("tab") or "").lower()
+            status = str(item.get("status") or "").lower()
+            cancel = str(item.get("cancel_reason") or "").strip()
+            if (
+                tab == "cancelled"
+                or status in ("cancelled", "not_accepted")
+                or cancel
+            ):
+                out.append(item)
+        return out
+
+    def render_stickers_sheet_html(self, detail: Dict[str, Any]) -> str:
+        """Printable sticker barcode sheet (desktop stand-in for web image pages)."""
+        orders = [
+            o
+            for o in (detail.get("orders") or [])
+            if str(o.get("tab") or "").lower() != "cancelled"
+            and str(o.get("status") or "").lower()
+            not in ("cancelled", "not_accepted")
+        ]
+        cards = []
+        for o in orders:
+            pn = _esc(o.get("posting_number"))
+            upper = str(o.get("sticker_barcode") or "").strip()
+            lower = str(o.get("sticker_lower_barcode") or "").strip()
+            if not upper and not lower:
+                bcs = o.get("barcodes") or []
+                if isinstance(bcs, list) and bcs:
+                    upper = str(bcs[0] or "")
+                    if len(bcs) > 1:
+                        lower = str(bcs[1] or "")
+            name = _esc(o.get("product_name") or o.get("offer_id") or "—")
+            cards.append(
+                """
+<div class="card">
+  <div class="pn">{pn}</div>
+  <div class="name">{name}</div>
+  <div class="bc">{esc_u}</div>
+  <div class="bc2">{esc_l}</div>
+</div>""".format(
+                    pn=pn,
+                    name=name,
+                    esc_u=_esc(upper) or "— нет QR —",
+                    esc_l=_esc(lower) if lower else "",
+                )
+            )
+        body = "\n".join(cards) if cards else "<p>Нет отправлений</p>"
+        return """<!doctype html>
+<html lang="ru"><head><meta charset="utf-8"/>
+<title>Стикеры {name}</title>
+<style>
+  @page {{ size: A4; margin: 8mm; }}
+  body {{ font-family: Arial, sans-serif; color: #0f172a; }}
+  h1 {{ font-size: 16px; margin: 0 0 8px; }}
+  .meta {{ color: #64748b; margin-bottom: 12px; font-size: 13px; }}
+  .grid {{ display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }}
+  .card {{
+    border: 1px solid #cbd5e1; border-radius: 8px; padding: 10px 12px;
+    break-inside: avoid; min-height: 88px;
+  }}
+  .pn {{ font-weight: 700; font-size: 13px; }}
+  .name {{ font-size: 12px; color: #334155; margin: 4px 0 8px; }}
+  .bc {{ font-family: Consolas, monospace; font-size: 14px; letter-spacing: 0.04em; }}
+  .bc2 {{ font-family: Consolas, monospace; font-size: 12px; color: #64748b; margin-top: 4px; }}
+  .toolbar {{ margin-bottom: 10px; }}
+  @media print {{ .toolbar {{ display: none !important; }} }}
+</style></head><body>
+  <div class="toolbar"><button onclick="window.print()">Печать</button></div>
+  <h1>Стикеры / QR — {name}</h1>
+  <div class="meta">Поставка {sid} · {count} отпр. · PDF этикеток Ozon печатайте отдельно кнопкой «Этикетки»</div>
+  <div class="grid">{body}</div>
+  <script>window.addEventListener('load',function(){{
+    setTimeout(function(){{ window.print(); }}, 250); }});</script>
+</body></html>""".format(
+            name=_esc(detail.get("name") or detail.get("supply_id")),
+            sid=_esc(detail.get("supply_id")),
+            count=len(orders),
+            body=body,
+        )
 
     def preview_ship_all(self, source_id: int) -> Dict[str, Any]:
         from app.services.ozon_split import posting_unit_count

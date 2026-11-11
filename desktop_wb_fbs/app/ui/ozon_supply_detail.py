@@ -30,6 +30,7 @@ from app.db import Database
 from app.ozon.client import OzonFbsClient
 from app.services.ozon_labels import OzonLabelService
 from app.services.ozon_mark_pick import OzonMarkService, OzonPickService
+from app.services.ozon_stickers import OzonStickersService
 from app.services.ozon_supplies import OzonSuppliesService
 from app.ui.dialog_utils import (
     fullscreen_parent,
@@ -47,6 +48,7 @@ class _LabelPrintWorker(QThread):
         self,
         labels: OzonLabelService,
         supplies: OzonSuppliesService,
+        stickers: Any,
         client: OzonFbsClient,
         source_id: int,
         posting_numbers: List[str],
@@ -55,6 +57,7 @@ class _LabelPrintWorker(QThread):
         super(_LabelPrintWorker, self).__init__(parent)
         self.labels = labels
         self.supplies = supplies
+        self.stickers = stickers
         self.client = client
         self.source_id = source_id
         self.posting_numbers = list(posting_numbers or [])
@@ -70,7 +73,50 @@ class _LabelPrintWorker(QThread):
             path = self.labels.fetch_labels(
                 self.client, self.source_id, self.posting_numbers
             )
+            # Web: overwrite sticker_* after package-label so scan matches PDF.
+            try:
+                self.stickers.bind_after_labels(
+                    self.client,
+                    self.source_id,
+                    self.posting_numbers,
+                    overwrite=True,
+                )
+            except Exception:
+                pass
             self.ready.emit(path)
+        except Exception as exc:
+            self.failed.emit(str(exc))
+
+
+class _StickersPrintWorker(QThread):
+    ready = pyqtSignal(dict)
+    failed = pyqtSignal(str)
+
+    def __init__(
+        self,
+        stickers: Any,
+        client: OzonFbsClient,
+        source_id: int,
+        supply_id: str,
+        posting_numbers: List[str],
+        parent: Optional[QWidget] = None,
+    ) -> None:
+        super(_StickersPrintWorker, self).__init__(parent)
+        self.stickers = stickers
+        self.client = client
+        self.source_id = source_id
+        self.supply_id = supply_id
+        self.posting_numbers = list(posting_numbers or [])
+
+    def run(self) -> None:
+        try:
+            result = self.stickers.print_stickers(
+                self.client,
+                self.source_id,
+                self.supply_id,
+                self.posting_numbers,
+            )
+            self.ready.emit(result if isinstance(result, dict) else {})
         except Exception as exc:
             self.failed.emit(str(exc))
 
@@ -100,9 +146,11 @@ class OzonSupplyDetailDialog(QDialog):
         self.mark = OzonMarkService(db)
         self.pick = OzonPickService(db)
         self.labels = OzonLabelService(db)
+        self.stickers = OzonStickersService(db)
         self._detail = {}  # type: Dict[str, Any]
         self._rows = []  # type: List[Dict[str, Any]]
         self._label_worker = None  # type: Optional[_LabelPrintWorker]
+        self._stickers_worker = None  # type: Optional[_StickersPrintWorker]
         self.supply_mutated = False
         self._force_read_only = bool(read_only)
 
@@ -398,7 +446,13 @@ class OzonSupplyDetailDialog(QDialog):
         self.btn_labels.setEnabled(False)
         self.load_info.setText("Формирование этикеток Ozon…")
         worker = _LabelPrintWorker(
-            self.labels, self.supplies, self.client, self.source_id, pnums, self
+            self.labels,
+            self.supplies,
+            self.stickers,
+            self.client,
+            self.source_id,
+            pnums,
+            self,
         )
         self._label_worker = worker
         worker.ready.connect(self._on_labels_ready)
@@ -462,21 +516,47 @@ class OzonSupplyDetailDialog(QDialog):
         if not pnums:
             QMessageBox.information(self, "Стикеры", "Нет отправлений.")
             return
-        self.load_info.setText("Привязка QR и подготовка листа стикеров…")
-        try:
-            self.supplies.bind_stickers_from_postings(
-                self.client, self.source_id, pnums
-            )
-        except Exception:
-            pass
+        if self._stickers_worker and self._stickers_worker.isRunning():
+            return
+        self.btn_stickers.setEnabled(False)
+        self.load_info.setText("PDF этикеток + привязка QR…")
+        worker = _StickersPrintWorker(
+            self.stickers,
+            self.client,
+            self.source_id,
+            self.supply_id,
+            pnums,
+            self,
+        )
+        self._stickers_worker = worker
+        worker.ready.connect(self._on_stickers_ready)
+        worker.failed.connect(self._on_stickers_failed)
+        worker.finished.connect(lambda: self.btn_stickers.setEnabled(True))
+        worker.start()
+
+    def _on_stickers_ready(self, result: object) -> None:
+        res = result if isinstance(result, dict) else {}
+        pdf_path = str(res.get("pdf_path") or "")
+        html = str(res.get("sheet_html") or "")
         self.reload()
-        html = self.supplies.render_stickers_sheet_html(self._detail)
-        fd, path = tempfile.mkstemp(suffix=".html", prefix="ozon-stickers-")
-        os.close(fd)
-        with open(path, "w", encoding="utf-8") as fh:
-            fh.write(html)
-        self.load_info.setText("Стикеры / QR: {}".format(path))
-        QDesktopServices.openUrl(QUrl.fromLocalFile(path))
+        if html:
+            fd, path = tempfile.mkstemp(suffix=".html", prefix="ozon-stickers-")
+            os.close(fd)
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write(html)
+            self.load_info.setText(
+                str(res.get("message") or "Стикеры: {}".format(path))
+            )
+            QDesktopServices.openUrl(QUrl.fromLocalFile(path))
+        if pdf_path:
+            QDesktopServices.openUrl(QUrl.fromLocalFile(pdf_path))
+        if not html and not pdf_path:
+            QMessageBox.information(
+                self, "Стикеры", str(res.get("message") or "Готово")
+            )
+
+    def _on_stickers_failed(self, message: str) -> None:
+        QMessageBox.warning(self, "Стикеры", str(message or "Ошибка"))
 
     def show_cancelled(self) -> None:
         from app.ui.dialog_utils import prepare_modal_dialog

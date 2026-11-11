@@ -28,6 +28,11 @@ from PyQt5.QtWidgets import (
 from app.db import Database
 from app.services import SourceService, clamp_lookback_days
 from app.services.ozon_orders import OzonOrdersService
+from app.services.ozon_stickers import OzonStickersService
+from app.ui.dialog_utils import (
+    block_ru_layout_scan,
+    install_live_ru_layout_guard,
+)
 from app.ui.format_helpers import make_badge, make_photo_label, make_status_pill
 from app.ui.layout_utils import FbsTabButton, fit_tab_button
 from app.ozon.sync import sync_source as ozon_sync_source
@@ -130,6 +135,7 @@ class OzonFbsPage(QWidget):
         self._page = 0
         self._sync_worker = None  # type: Optional[OzonSyncWorker]
         self._selected_postings = set()  # type: set
+        self.stickers = OzonStickersService(db)
 
         root = QVBoxLayout(self)
         root.setContentsMargins(16, 16, 16, 16)
@@ -175,8 +181,15 @@ class OzonFbsPage(QWidget):
         self.search_input.setObjectName("sdSearch")
         self.search_input.setPlaceholderText("Поиск по отправлению, артикулу, SKU…")
         self.search_input.textChanged.connect(self.reload_table)
-        self.search_input.setMinimumWidth(240)
+        self.search_input.setMinimumWidth(200)
         tb.addWidget(self.search_input)
+        self.scan_input = QLineEdit()
+        self.scan_input.setObjectName("kizScanInput")
+        self.scan_input.setPlaceholderText("Скан QR / ШК этикетки Ozon…")
+        self.scan_input.setMinimumWidth(220)
+        self.scan_input.returnPressed.connect(self.on_sticker_scan)
+        install_live_ru_layout_guard(self.scan_input, self)
+        tb.addWidget(self.scan_input)
         root.addWidget(toolbar)
 
         self.sync_info = QLabel("")
@@ -682,6 +695,55 @@ class OzonFbsPage(QWidget):
         dlg.exec_()
         if dlg.posting_mutated:
             self.reload_table()
+
+    def on_sticker_scan(self) -> None:
+        """Resolve posting by package QR / lower barcode / posting_number (web parity)."""
+        if block_ru_layout_scan(self.scan_input):
+            return
+        raw = self.scan_input.text().strip()
+        self.scan_input.clear()
+        if not raw:
+            return
+        src = self.current_source()
+        if not src:
+            QMessageBox.information(
+                self, "Скан", "Выберите источник Ozon FBS."
+            )
+            return
+        found = self.stickers.find_by_scan(int(src["id"]), raw)
+        if found.get("ambiguous"):
+            matches = found.get("matches") or []
+            nums = [
+                str(m.get("posting_number") or "")
+                for m in matches[:8]
+                if str(m.get("posting_number") or "").strip()
+            ]
+            QMessageBox.warning(
+                self,
+                "Скан",
+                "Несколько отправлений с этим ШК:\n{}".format(
+                    "\n".join(nums) or "—"
+                ),
+            )
+            return
+        row = found.get("row")
+        if not row:
+            QMessageBox.information(
+                self,
+                "Скан",
+                "Отправление по QR/ШК не найдено.\n"
+                "Напечатайте этикетки Ozon (привязка QR) и повторите.",
+            )
+            return
+        pnum = str(row.get("posting_number") or "").strip()
+        supply_id = str(row.get("supply_id") or "").strip()
+        self.sync_info.show()
+        self.sync_info.setText("Скан → {}".format(pnum))
+        if supply_id:
+            self._open_supply_by_id(src, supply_id)
+            return
+        if pnum:
+            self._open_posting_by_id(src, pnum)
 
     def _selected_carriage_id(self) -> Optional[str]:
         row = self.table.currentRow()

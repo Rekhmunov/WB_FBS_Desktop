@@ -65,6 +65,16 @@ def _parse_json_list(raw: object) -> List[Any]:
     return data if isinstance(data, list) else []
 
 
+def _esc(value: object) -> str:
+    return (
+        str(value or "")
+        .replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace('"', "&quot;")
+    )
+
+
 class OzonSuppliesService:
     def __init__(self, db: Database) -> None:
         self.db = db
@@ -308,6 +318,178 @@ class OzonSuppliesService:
                 (now, source_id, sid, TAB_AWAITING_DELIVER),
             )
             conn.commit()
+
+    def rename_supply(self, source_id: int, supply_id: str, name: str) -> None:
+        sid = str(supply_id or "").strip()
+        new_name = str(name or "").strip()
+        if not sid or not new_name:
+            raise ValueError("Укажите название поставки")
+        now = utc_now()
+        with self.db.connect() as conn:
+            cur = conn.execute(
+                """
+                UPDATE ozon_fbs_supplies
+                SET name = ?, updated_at = ?
+                WHERE source_id = ? AND supply_id = ?
+                """,
+                (new_name, now, source_id, sid),
+            )
+            if cur.rowcount <= 0:
+                raise RuntimeError("Поставка не найдена")
+            conn.commit()
+
+    def get_detail(
+        self,
+        source_id: int,
+        supply_id: str,
+        *,
+        read_only: bool = False,
+    ) -> Dict[str, Any]:
+        from app.services.ozon_orders import OzonOrdersService
+
+        supply = self.get_supply(source_id, supply_id)
+        if not supply:
+            raise RuntimeError("Поставка не найдена")
+        rows = self.list_supply_postings(source_id, supply_id)
+        orders_svc = OzonOrdersService(self.db)
+        orders = [orders_svc._enrich_posting(dict(r)) for r in rows]
+        active = [
+            o
+            for o in orders
+            if str(o.get("tab") or "").lower() != "cancelled"
+            and str(o.get("status") or "").lower()
+            not in ("cancelled", "not_accepted")
+        ]
+        return {
+            "supply_id": supply.get("supply_id"),
+            "name": supply.get("name"),
+            "warehouse_label": supply.get("warehouse_name") or "—",
+            "warehouse_id": supply.get("warehouse_id"),
+            "order_count": len(active),
+            "orders": orders,
+            "posting_numbers": [
+                str(o.get("posting_number") or "")
+                for o in orders
+                if str(o.get("posting_number") or "").strip()
+            ],
+            "source_id": source_id,
+            "read_only": bool(read_only)
+            or bool(int(supply.get("delivering_listed") or 0)),
+            "delivering_listed": int(supply.get("delivering_listed") or 0),
+            "done": int(supply.get("done") or 0),
+        }
+
+    def bind_stickers_from_postings(
+        self,
+        client: OzonFbsClient,
+        source_id: int,
+        posting_numbers: List[str],
+    ) -> int:
+        """Fill empty sticker_* from Ozon get barcodes (web safety-net)."""
+        from app.ozon.sync import upsert_posting
+
+        nums = [str(p).strip() for p in posting_numbers if str(p).strip()]
+        updated = 0
+        for pn in nums:
+            with self.db.connect() as conn:
+                row = conn.execute(
+                    """
+                    SELECT sticker_barcode, sticker_lower_barcode
+                    FROM ozon_fbs_postings
+                    WHERE source_id = ? AND posting_number = ?
+                    """,
+                    (source_id, pn),
+                ).fetchone()
+            if row and (
+                str(row["sticker_barcode"] or "").strip()
+                or str(row["sticker_lower_barcode"] or "").strip()
+            ):
+                continue
+            try:
+                fresh = client.get_posting(pn)
+            except Exception as exc:
+                _log.warning("ozon sticker bind get %s: %s", pn, exc)
+                continue
+            if not fresh:
+                continue
+            upsert_posting(self.db, source_id, fresh)
+            updated += 1
+        return updated
+
+    def render_picking_list_html(self, detail: Dict[str, Any]) -> str:
+        orders = [
+            o
+            for o in (detail.get("orders") or [])
+            if str(o.get("tab") or "").lower() != "cancelled"
+            and str(o.get("status") or "").lower()
+            not in ("cancelled", "not_accepted")
+        ]
+        groups = {}  # type: Dict[str, int]
+        for o in orders:
+            name = str(
+                o.get("product_name") or o.get("offer_id") or o.get("sku") or "—"
+            ).strip()
+            try:
+                qty = max(1, int(o.get("quantity") or 1))
+            except (TypeError, ValueError):
+                qty = 1
+            groups[name] = groups.get(name, 0) + qty
+        total = sum(groups.values())
+        sid = _esc(detail.get("supply_id"))
+        name = _esc(detail.get("name") or sid)
+        rows_html = []
+        for pname, qty in sorted(groups.items(), key=lambda x: x[0].lower()):
+            rows_html.append(
+                '<tr class="summary-row"><td class="main">{} — {} шт.</td>'
+                '<td class="check"><span class="box"></span></td></tr>'.format(
+                    _esc(pname), qty
+                )
+            )
+        body = (
+            "\n".join(rows_html)
+            if rows_html
+            else '<tr><td colspan="2">Нет заказов</td></tr>'
+        )
+        return """<!doctype html>
+<html lang="ru"><head><meta charset="utf-8"/>
+<title>Лист подбора {name}</title>
+<style>
+  @page {{ size: A4; margin: 12mm; }}
+  body {{ font-family: Arial, sans-serif; color: #0f172a; font-size: 14px; }}
+  h1 {{ font-size: 18px; margin: 0 0 8px; }}
+  .meta {{ color: #64748b; margin-bottom: 16px; }}
+  table.picking {{ width: 100%; border-collapse: collapse; }}
+  table.picking th, table.picking td {{
+    border-bottom: 1px solid #e2e8f0; padding: 8px 12px; text-align: left;
+  }}
+  table.picking .check {{ width: 88px; text-align: center; }}
+  .box {{
+    display: inline-block; width: 16px; height: 16px;
+    border: 1.5px solid #94a3b8; border-radius: 3px;
+  }}
+  .totals-row th {{ background: #f8fafc; font-weight: 700; }}
+  .toolbar {{ margin-bottom: 12px; }}
+  @media print {{ .toolbar {{ display: none !important; }} }}
+</style></head><body>
+  <div class="toolbar"><button onclick="window.print()">Печать</button></div>
+  <h1>Лист подбора — {name}</h1>
+  <div class="meta">Поставка {sid} · склад {wh}</div>
+  <table class="picking summary">
+    <tbody>
+      <tr class="totals-row"><th class="main">Всего {total} отпр.</th>
+      <th class="check">Собрано</th></tr>
+      {body}
+    </tbody>
+  </table>
+  <script>window.addEventListener('load',function(){{
+    setTimeout(function(){{ window.print(); }}, 200); }});</script>
+</body></html>""".format(
+            name=name,
+            sid=sid,
+            wh=_esc(detail.get("warehouse_label")),
+            total=total,
+            body=body,
+        )
 
     def preview_ship_all(self, source_id: int) -> Dict[str, Any]:
         from app.services.ozon_split import posting_unit_count

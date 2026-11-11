@@ -164,13 +164,37 @@ class OzonMarkService:
         )
         return self._row_view(row, prod, marks)
 
+    def marking_rows_for_postings(
+        self, source_id: int, posting_numbers: List[str]
+    ) -> List[Dict[str, Any]]:
+        nums = [str(p).strip() for p in (posting_numbers or []) if str(p).strip()]
+        out = []  # type: List[Dict[str, Any]]
+        for pnum in nums:
+            row = self.orders.get_posting(source_id, pnum)
+            if not row:
+                continue
+            if str(row.get("status") or "").lower() in ("cancelled", "not_accepted"):
+                continue
+            if str(row.get("tab") or "").lower() == "cancelled":
+                continue
+            marks = _parse_marks(row.get("marks_json"))
+            prod = _catalog_product(
+                self.db, str(row.get("offer_id") or ""), str(row.get("sku") or "")
+            )
+            out.append(self._row_view(row, prod, marks))
+        return out
+
     def marking_rows(
         self,
         source_id: int,
         carriage_id: str,
         *,
         client: Optional[OzonFbsClient] = None,
+        posting_numbers: Optional[List[str]] = None,
     ) -> List[Dict[str, Any]]:
+        del client  # reserved for live refresh
+        if posting_numbers is not None:
+            return self.marking_rows_for_postings(source_id, posting_numbers)
         rows = self.orders.postings_in_carriage(source_id, carriage_id)
         out = []  # type: List[Dict[str, Any]]
         for r in rows:
@@ -183,7 +207,25 @@ class OzonMarkService:
             out.append(self._row_view(r, prod, marks))
         return out
 
-    def pick_rows(self, source_id: int, carriage_id: str) -> List[Dict[str, Any]]:
+    def pick_rows_for_postings(
+        self, source_id: int, posting_numbers: List[str]
+    ) -> List[Dict[str, Any]]:
+        out = []  # type: List[Dict[str, Any]]
+        for r in self.marking_rows_for_postings(source_id, posting_numbers):
+            if r.get("marks"):
+                continue
+            out.append(r)
+        return out
+
+    def pick_rows(
+        self,
+        source_id: int,
+        carriage_id: str,
+        *,
+        posting_numbers: Optional[List[str]] = None,
+    ) -> List[Dict[str, Any]]:
+        if posting_numbers is not None:
+            return self.pick_rows_for_postings(source_id, posting_numbers)
         rows = self.orders.postings_in_carriage(source_id, carriage_id)
         out = []  # type: List[Dict[str, Any]]
         for r in rows:
@@ -477,7 +519,17 @@ class OzonPickService:
         self.orders = OzonOrdersService(db)
         self._wb_pick = PickVerifyService(db)
 
-    def rows(self, source_id: int, carriage_id: str) -> List[Dict[str, Any]]:
+    def rows(
+        self,
+        source_id: int,
+        carriage_id: str = "",
+        *,
+        posting_numbers: Optional[List[str]] = None,
+    ) -> List[Dict[str, Any]]:
+        if posting_numbers is not None:
+            return OzonMarkService(self.db).pick_rows(
+                source_id, carriage_id, posting_numbers=posting_numbers
+            )
         if not str(carriage_id or "").strip():
             return []
         return OzonMarkService(self.db).pick_rows(source_id, carriage_id)

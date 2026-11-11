@@ -54,7 +54,11 @@ class OzonContainersDialog(QDialog):
         self.selected_posting = str(selected_posting or "").strip()
         self.containers = []  # type: List[Dict[str, Any]]
 
-        self.setWindowTitle("Грузоместа отгрузки {}".format(self.carriage_id))
+        scope = str(self.carriage_id or "")
+        if scope.startswith("supply:"):
+            self.setWindowTitle("Грузоместа поставки {}".format(scope[7:]))
+        else:
+            self.setWindowTitle("Грузоместа отгрузки {}".format(scope))
         prepare_modal_dialog(
             self,
             maximized=True,
@@ -71,7 +75,7 @@ class OzonContainersDialog(QDialog):
         root.addWidget(title)
 
         lead = QLabel(
-            "Создайте грузоместа, привяжите отправления из отгрузки, "
+            "Создайте грузоместа, привяжите отправления, "
             "подтвердите состав и распечатайте этикетки."
         )
         lead.setObjectName("hint")

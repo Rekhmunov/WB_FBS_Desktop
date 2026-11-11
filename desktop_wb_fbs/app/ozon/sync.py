@@ -43,6 +43,15 @@ def _barcodes(posting: Dict[str, Any]) -> List[str]:
     return out
 
 
+def _sticker_pair(posting: Dict[str, Any]) -> tuple:
+    bc = posting.get("barcodes")
+    if not isinstance(bc, dict):
+        return "", ""
+    upper = str(bc.get("upper_barcode") or "").strip()
+    lower = str(bc.get("lower_barcode") or "").strip()
+    return upper, lower
+
+
 def upsert_posting(
     db: Database,
     source_id: int,
@@ -66,6 +75,7 @@ def upsert_posting(
     wh = str(analytics.get("warehouse") or "")
     wh_id = analytics.get("warehouse_id")
     barcodes = _barcodes(posting)
+    sticker_upper, sticker_lower = _sticker_pair(posting)
     cancel = posting.get("cancellation") if isinstance(posting.get("cancellation"), dict) else {}
     cancel_reason = str(cancel.get("cancel_reason") or "")
     now = utc_now()
@@ -77,8 +87,9 @@ def upsert_posting(
                 tab, carriage_id, offer_id, sku, product_name, quantity,
                 warehouse_name, warehouse_id, barcodes_json, cancel_reason,
                 shipment_date, in_process_at, created_at_wb, products_json,
+                sticker_barcode, sticker_lower_barcode,
                 raw_json, synced_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(source_id, posting_number) DO UPDATE SET
                 order_id = excluded.order_id,
                 order_number = excluded.order_number,
@@ -99,6 +110,13 @@ def upsert_posting(
                 in_process_at = excluded.in_process_at,
                 created_at_wb = COALESCE(excluded.created_at_wb, ozon_fbs_postings.created_at_wb),
                 products_json = excluded.products_json,
+                sticker_barcode = CASE
+                    WHEN excluded.sticker_barcode != '' THEN excluded.sticker_barcode
+                    ELSE ozon_fbs_postings.sticker_barcode END,
+                sticker_lower_barcode = CASE
+                    WHEN excluded.sticker_lower_barcode != ''
+                    THEN excluded.sticker_lower_barcode
+                    ELSE ozon_fbs_postings.sticker_lower_barcode END,
                 raw_json = excluded.raw_json,
                 synced_at = excluded.synced_at
             """,
@@ -123,6 +141,8 @@ def upsert_posting(
                 str(posting.get("in_process_at") or ""),
                 str(posting.get("in_process_at") or posting.get("shipment_date") or ""),
                 json.dumps(all_products, ensure_ascii=False),
+                sticker_upper,
+                sticker_lower,
                 json.dumps(posting, ensure_ascii=False),
                 now,
             ),

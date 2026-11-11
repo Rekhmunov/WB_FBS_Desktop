@@ -164,6 +164,8 @@ CREATE TABLE IF NOT EXISTS ozon_fbs_postings (
     pick_verified INTEGER NOT NULL DEFAULT 0,
     pick_barcode TEXT NOT NULL DEFAULT '',
     pick_verified_at TEXT,
+    sticker_barcode TEXT NOT NULL DEFAULT '',
+    sticker_lower_barcode TEXT NOT NULL DEFAULT '',
     raw_json TEXT NOT NULL DEFAULT '{}',
     synced_at TEXT NOT NULL,
     UNIQUE(source_id, posting_number)
@@ -408,6 +410,16 @@ class Database:
         if "supply_id" not in cols:
             conn.execute(
                 "ALTER TABLE ozon_fbs_postings ADD COLUMN supply_id "
+                "TEXT NOT NULL DEFAULT ''"
+            )
+        if "sticker_barcode" not in cols:
+            conn.execute(
+                "ALTER TABLE ozon_fbs_postings ADD COLUMN sticker_barcode "
+                "TEXT NOT NULL DEFAULT ''"
+            )
+        if "sticker_lower_barcode" not in cols:
+            conn.execute(
+                "ALTER TABLE ozon_fbs_postings ADD COLUMN sticker_lower_barcode "
                 "TEXT NOT NULL DEFAULT ''"
             )
         carriage_cols = {

@@ -20,7 +20,6 @@ from PyQt5.QtWidgets import (
     QPushButton,
     QTableWidget,
     QTableWidgetItem,
-    QTextEdit,
     QVBoxLayout,
     QWidget,
     QSizePolicy,
@@ -721,75 +720,24 @@ class OzonFbsPage(QWidget):
             self.reload_table()
 
     def _open_supply_by_id(self, src: Dict[str, Any], supply_id: str) -> None:
-        """Open local supply via carriage-detail-like posting list (phase 1)."""
-        from app.services.ozon_supplies import OzonSuppliesService
+        from app.ui.ozon_supply_detail import OzonSupplyDetailDialog
 
-        svc = OzonSuppliesService(self.db)
-        supply = svc.get_supply(int(src["id"]), supply_id)
-        if not supply:
-            QMessageBox.information(self, "Ozon FBS", "Поставка не найдена.")
-            return
-        postings = svc.list_supply_postings(int(src["id"]), supply_id)
-        dlg = QDialog(self.window())
-        dlg.setWindowTitle(str(supply.get("name") or supply_id))
-        dlg.resize(720, 480)
-        lay = QVBoxLayout(dlg)
-        info = QLabel(
-            "Локальная поставка {} · {} отправлений · {}".format(
-                supply_id,
-                len(postings),
-                supply.get("warehouse_name") or "склад —",
-            )
+        dlg = OzonSupplyDetailDialog(
+            self.db,
+            src,
+            supply_id,
+            self.window(),
+            fullscreen=True,
+            read_only=self._tab == "delivering",
         )
-        info.setWordWrap(True)
-        lay.addWidget(info)
-        body = QTextEdit()
-        body.setReadOnly(True)
-        lines = []
-        for p in postings:
-            lines.append(
-                "{}  {}  ×{}  [{}]".format(
-                    p.get("posting_number") or "",
-                    p.get("product_name") or p.get("offer_id") or "",
-                    int(p.get("quantity") or 1),
-                    p.get("status") or p.get("tab") or "",
-                )
-            )
-        body.setPlainText("\n".join(lines) if lines else "Нет отправлений")
-        lay.addWidget(body, 1)
-        btns = QHBoxLayout()
-        move_btn = QPushButton("Перенести в доставку")
-        move_btn.setVisible(self._tab == "awaiting_deliver")
-
-        def _move() -> None:
-            try:
-                svc.mark_delivering(int(src["id"]), supply_id)
-            except Exception as exc:
-                QMessageBox.warning(self, "Ozon FBS", str(exc))
-                return
-            dlg.accept()
-            self.on_tab_change("delivering")
-
-        move_btn.clicked.connect(_move)
-        btns.addWidget(move_btn)
-        open_first = QPushButton("Открыть первое отправление")
-        open_first.setEnabled(bool(postings))
-
-        def _open_first() -> None:
-            pnum = str((postings[0] or {}).get("posting_number") or "")
-            if pnum:
-                dlg.accept()
-                self._open_posting_by_id(src, pnum)
-
-        open_first.clicked.connect(_open_first)
-        btns.addWidget(open_first)
-        box = QDialogButtonBox(QDialogButtonBox.Close)
-        box.rejected.connect(dlg.reject)
-        box.accepted.connect(dlg.accept)
-        btns.addWidget(box)
-        lay.addLayout(btns)
         dlg.exec_()
-        self.reload_table()
+        if dlg.supply_mutated:
+            if self._tab == "awaiting_deliver" and dlg._is_read_only():
+                self.on_tab_change("delivering")
+            else:
+                self.reload_table()
+        else:
+            self.reload_table()
 
     def split_all_multi(self) -> None:
         src = self.current_source()
@@ -861,36 +809,12 @@ class OzonFbsPage(QWidget):
                 "Нет отправлений в «Ожидают сборки».",
             )
             return
-        lines = [
-            "Будет собрано {} отправлений в {} поставок:".format(
-                int(preview.get("posting_count") or 0), len(groups)
-            )
-        ]
-        for g in groups:
-            lines.append(
-                "· {} — {} шт. → «{}»".format(
-                    g.get("label") or "склад",
-                    int(g.get("order_count") or 0),
-                    g.get("suggested_name") or "новая поставка",
-                )
-            )
-        reply = QMessageBox.question(
-            self,
-            "Собрать все заказы",
-            "\n".join(lines),
-            QMessageBox.Yes | QMessageBox.No,
-            QMessageBox.Yes,
-        )
-        if reply != QMessageBox.Yes:
+        from app.ui.ozon_ship_all_dialog import OzonShipAllDialog
+
+        choose = OzonShipAllDialog(preview, self)
+        if choose.exec_() != QDialog.Accepted:
             return
-        decisions = [
-            {
-                "group_key": g.get("group_key"),
-                "action": "create",
-                "name": g.get("suggested_name"),
-            }
-            for g in groups
-        ]
+        decisions = choose.decisions()
         client = OzonFbsClient(
             str(src.get("client_id") or ""), str(src.get("api_key") or "")
         )

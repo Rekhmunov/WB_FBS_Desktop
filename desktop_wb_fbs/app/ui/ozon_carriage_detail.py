@@ -243,6 +243,9 @@ class OzonCarriageDetailDialog(QDialog):
         self.btn_act_pdf = QPushButton("Акт PDF")
         self.btn_act_pdf.setObjectName("secondary")
         self.btn_act_pdf.clicked.connect(self.print_act_pdf)
+        self.btn_containers = QPushButton("Грузоместа")
+        self.btn_containers.setObjectName("secondary")
+        self.btn_containers.clicked.connect(self.open_containers)
         self.btn_approve = QPushButton("Подтвердить отгрузку")
         self.btn_approve.clicked.connect(self.approve_carriage)
         self.btn_refresh = QPushButton("Обновить")
@@ -255,6 +258,7 @@ class OzonCarriageDetailDialog(QDialog):
             self.btn_ship,
             self.btn_act_qr,
             self.btn_act_pdf,
+            self.btn_containers,
             self.btn_approve,
             self.btn_refresh,
         ):
@@ -292,6 +296,7 @@ class OzonCarriageDetailDialog(QDialog):
             self.btn_ship,
             self.btn_act_qr,
             self.btn_act_pdf,
+            self.btn_containers,
             self.btn_approve,
             self.btn_refresh,
         ):
@@ -494,6 +499,46 @@ class OzonCarriageDetailDialog(QDialog):
     def _on_act_file_ready(self, path: str) -> None:
         self.load_info.setText("Документ сохранён: {}".format(path))
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
+
+    def _selected_posting_number(self) -> str:
+        rows = self.table.selectionModel().selectedRows() if self.table else []
+        if not rows:
+            return ""
+        item = self.table.item(rows[0].row(), 0)
+        return str(item.text() if item else "").strip()
+
+    def open_containers(self) -> None:
+        from app.ui.ozon_containers_dialog import OzonContainersDialog
+
+        pnums = [
+            str(r.get("posting_number") or "").strip()
+            for r in self._rows
+            if str(r.get("posting_number") or "").strip()
+        ]
+        wh = 0
+        c = self._carriage or {}
+        try:
+            wh = int(c.get("warehouse_id") or 0)
+        except (TypeError, ValueError):
+            wh = 0
+        if wh <= 0:
+            for r in self._rows:
+                try:
+                    wh = int(r.get("warehouse_id") or 0)
+                except (TypeError, ValueError):
+                    wh = 0
+                if wh > 0:
+                    break
+        dlg = OzonContainersDialog(
+            self.client,
+            self.carriage_id,
+            source_id=self.source_id,
+            posting_numbers=pnums,
+            selected_posting=self._selected_posting_number(),
+            warehouse_id=wh,
+            parent=self,
+        )
+        dlg.exec_()
 
     def approve_carriage(self) -> None:
         if (

@@ -521,3 +521,115 @@ class OzonFbsClient:
         )
         with urlopen_https(req, timeout=60) as resp:
             return resp.read()
+
+    # --- Carriage containers (грузоместа) ---
+
+    def carriage_container_list(self, body: Dict[str, Any]) -> Dict[str, Any]:
+        """POST /v1/carriage/container/list — грузоместа склада."""
+        data = self._request("POST", "/v1/carriage/container/list", body or {})
+        return data if isinstance(data, dict) else {}
+
+    def carriage_container_create(
+        self,
+        *,
+        warehouse_id: int,
+        containers_count: int,
+        sort_type: str = "sort",
+        cargo_type: str = "pallet",
+    ) -> Dict[str, Any]:
+        """POST /v1/carriage/container/create."""
+        data = self._request(
+            "POST",
+            "/v1/carriage/container/create",
+            {
+                "warehouse_id": int(warehouse_id),
+                "containers_count": int(containers_count),
+                "sort_type": str(sort_type),
+                "cargo_type": str(cargo_type),
+            },
+        )
+        return data if isinstance(data, dict) else {}
+
+    def carriage_container_get(self, *, container_id: int) -> Dict[str, Any]:
+        """POST /v1/carriage/container/get."""
+        data = self._request(
+            "POST",
+            "/v1/carriage/container/get",
+            {"container_id": int(container_id)},
+        )
+        return data if isinstance(data, dict) else {}
+
+    def carriage_container_fill(
+        self, *, container_id: int, posting_numbers: List[str]
+    ) -> Dict[str, Any]:
+        """POST /v1/carriage/container/fill — привязать отправления к ГМ."""
+        nums = [str(p).strip() for p in (posting_numbers or []) if str(p).strip()]
+        data = self._request(
+            "POST",
+            "/v1/carriage/container/fill",
+            {
+                "container_id": int(container_id),
+                "posting_numbers": nums,
+            },
+        )
+        return data if isinstance(data, dict) else {}
+
+    def carriage_container_remove_postings(
+        self, *, container_id: int, posting_numbers: List[str]
+    ) -> Dict[str, Any]:
+        """POST /v1/carriage/container/remove-postings."""
+        nums = [str(p).strip() for p in (posting_numbers or []) if str(p).strip()]
+        data = self._request(
+            "POST",
+            "/v1/carriage/container/remove-postings",
+            {
+                "container_id": int(container_id),
+                "posting_numbers": nums,
+            },
+        )
+        return data if isinstance(data, dict) else {}
+
+    def carriage_container_approve(
+        self, *, container_ids: List[int]
+    ) -> Dict[str, Any]:
+        """POST /v1/carriage/container/approve — подтвердить состав."""
+        ids = [int(x) for x in (container_ids or []) if int(x) > 0]
+        data = self._request(
+            "POST",
+            "/v1/carriage/container/approve",
+            {"container_ids": ids},
+        )
+        return data if isinstance(data, dict) else {}
+
+    def carriage_container_cancel(
+        self, *, container_ids: List[int]
+    ) -> Dict[str, Any]:
+        """POST /v1/carriage/container/cancel — удалить грузоместа."""
+        ids = [int(x) for x in (container_ids or []) if int(x) > 0]
+        data = self._request(
+            "POST",
+            "/v1/carriage/container/cancel",
+            {"container_ids": ids},
+        )
+        return data if isinstance(data, dict) else {}
+
+    def carriage_container_label_get(
+        self, *, container_ids: List[int]
+    ) -> Dict[str, Any]:
+        """POST /v1/carriage/container/label/get — PDF этикеток."""
+        ids = [int(x) for x in (container_ids or []) if int(x) > 0]
+        data = self._request(
+            "POST",
+            "/v1/carriage/container/label/get",
+            {"container_ids": ids},
+        )
+        return data if isinstance(data, dict) else {}
+
+    def carriage_container_task_info(self, *, task_id: int) -> Dict[str, Any]:
+        """POST /v1/carriage/container/task/info — статус async-задачи."""
+        data = self._request(
+            "POST",
+            "/v1/carriage/container/task/info",
+            {"task_id": int(task_id)},
+        )
+        return data if isinstance(data, dict) else {}

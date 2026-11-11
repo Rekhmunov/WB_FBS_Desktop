@@ -491,6 +491,99 @@ class OzonSuppliesService:
             body=body,
         )
 
+    def create_from_selection(
+        self,
+        client: OzonFbsClient,
+        source_id: int,
+        posting_numbers: List[str],
+        *,
+        name: str = "",
+    ) -> Dict[str, Any]:
+        from app.services.ozon_ship import OzonShipService, posting_needs_ship
+
+        nums = [str(x).strip() for x in posting_numbers if str(x).strip()]
+        if not nums:
+            return {
+                "ok": False,
+                "message": "Выберите отправления",
+                "goto_awaiting_deliver": False,
+            }
+        rows = []
+        for pn in nums:
+            with self.db.connect() as conn:
+                row = conn.execute(
+                    """
+                    SELECT * FROM ozon_fbs_postings
+                    WHERE source_id = ? AND posting_number = ?
+                    """,
+                    (source_id, pn),
+                ).fetchone()
+            if row:
+                rows.append(Database.row_to_dict(row))
+        if not rows:
+            return {
+                "ok": False,
+                "message": "Отправления не найдены локально",
+                "goto_awaiting_deliver": False,
+            }
+        wh_ids = {r.get("warehouse_id") for r in rows}
+        if len(wh_ids) > 1:
+            return {
+                "ok": False,
+                "message": "Выбраны отправления с разных складов",
+                "goto_awaiting_deliver": False,
+            }
+        ship_svc = OzonShipService(self.db)
+        shipped = []  # type: List[str]
+        errors = []  # type: List[str]
+        for r in rows:
+            pn = str(r.get("posting_number") or "")
+            try:
+                if posting_needs_ship(str(r.get("status") or "")):
+                    ship_svc.ship_posting(client, source_id, pn, posting=r)
+                shipped.append(pn)
+            except Exception as exc:
+                errors.append("{}: {}".format(pn, exc))
+        if not shipped:
+            return {
+                "ok": False,
+                "message": "Не удалось собрать отправления",
+                "errors": errors,
+                "goto_awaiting_deliver": False,
+            }
+        open_names = {
+            str(s.get("name") or "").strip()
+            for s in self.list_open_supplies(source_id)
+            if str(s.get("name") or "").strip()
+        }
+        supply_name = unique_supply_name(
+            str(name or "").strip()
+            or default_supply_name(
+                source_name=self.source_display_name(source_id)
+            ),
+            open_names,
+        )
+        first = rows[0]
+        sid = self.create_supply(
+            source_id,
+            name=supply_name,
+            warehouse_id=first.get("warehouse_id"),
+            warehouse_name=str(first.get("warehouse_name") or ""),
+            posting_numbers=shipped,
+        )
+        return {
+            "ok": not errors,
+            "supply_id": sid,
+            "name": supply_name,
+            "added": len(shipped),
+            "errors": errors,
+            "message": "Создана поставка «{}»: {} отпр.".format(
+                supply_name, len(shipped)
+            )
+            + (" · ошибок {}".format(len(errors)) if errors else ""),
+            "goto_awaiting_deliver": True,
+        }
+
     def preview_ship_all(self, source_id: int) -> Dict[str, Any]:
         from app.services.ozon_split import posting_unit_count
 

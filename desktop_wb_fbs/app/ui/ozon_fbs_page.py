@@ -244,11 +244,15 @@ class OzonFbsPage(QWidget):
         sel_row.addStretch(1)
         bottom_outer.addLayout(sel_row)
         actions = QHBoxLayout()
+        self.btn_create_supply = QPushButton("Создать поставку")
+        self.btn_create_supply.clicked.connect(self.create_supply_from_selection)
         self.btn_add_carriage = QPushButton("Добавить в отгрузку")
+        self.btn_add_carriage.setObjectName("secondary")
         self.btn_add_carriage.clicked.connect(self.add_to_carriage)
         self.btn_ship_sel = QPushButton("Собрать (ship)")
         self.btn_ship_sel.setObjectName("secondary")
         self.btn_ship_sel.clicked.connect(self.ship_selected)
+        actions.addWidget(self.btn_create_supply)
         actions.addWidget(self.btn_add_carriage)
         actions.addWidget(self.btn_ship_sel)
         actions.addStretch(1)
@@ -916,6 +920,50 @@ class OzonFbsPage(QWidget):
             "Добавлено {} отправлений в отгрузку {}.".format(len(pnums), cid),
         )
         self.on_tab_change("awaiting_deliver")
+
+    def create_supply_from_selection(self) -> None:
+        src = self.current_source()
+        pnums = self._selected_posting_numbers()
+        if not src or not pnums:
+            QMessageBox.information(
+                self, "Поставка", "Выберите отправления на «Ожидают сборки»."
+            )
+            return
+        from app.ozon.client import OzonFbsClient
+        from app.services.ozon_supplies import (
+            OzonSuppliesService,
+            default_supply_name,
+        )
+        from PyQt5.QtWidgets import QInputDialog
+
+        suggested = default_supply_name(
+            source_name=str(src.get("name") or "Ozon")
+        )
+        name, ok = QInputDialog.getText(
+            self, "Создать поставку", "Название поставки:", text=suggested
+        )
+        if not ok:
+            return
+        client = OzonFbsClient(
+            str(src.get("client_id") or ""), str(src.get("api_key") or "")
+        )
+        try:
+            result = OzonSuppliesService(self.db).create_from_selection(
+                client, int(src["id"]), pnums, name=name
+            )
+        except Exception as exc:
+            QMessageBox.warning(self, "Поставка", str(exc))
+            return
+        msg = str(result.get("message") or "")
+        errs = result.get("errors") or []
+        if errs:
+            msg += "\n" + "\n".join(str(e) for e in errs[:8])
+        QMessageBox.information(self, "Поставка", msg or "Готово")
+        self._selected_postings.clear()
+        if result.get("goto_awaiting_deliver"):
+            self.on_tab_change("awaiting_deliver")
+        else:
+            self.reload_table()
 
     def ship_selected(self) -> None:
         src = self.current_source()

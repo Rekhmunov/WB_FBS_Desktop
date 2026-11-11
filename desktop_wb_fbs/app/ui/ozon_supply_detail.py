@@ -152,6 +152,9 @@ class OzonSupplyDetailDialog(QDialog):
         self.btn_containers = QPushButton("Грузоместа")
         self.btn_containers.setObjectName("secondary")
         self.btn_containers.clicked.connect(self.open_containers)
+        self.btn_cancelled = QPushButton("Отменённые")
+        self.btn_cancelled.setObjectName("secondary")
+        self.btn_cancelled.clicked.connect(self.show_cancelled)
         self.btn_move = QPushButton("Перенести в доставку")
         self.btn_move.clicked.connect(self.move_to_delivering)
         self.btn_refresh = QPushButton("Обновить")
@@ -164,6 +167,7 @@ class OzonSupplyDetailDialog(QDialog):
             self.btn_labels,
             self.btn_picking,
             self.btn_containers,
+            self.btn_cancelled,
             self.btn_move,
             self.btn_refresh,
         ):
@@ -445,6 +449,39 @@ class OzonSupplyDetailDialog(QDialog):
             parent=self,
         )
         dlg.exec_()
+
+    def show_cancelled(self) -> None:
+        cancelled = [
+            r
+            for r in self._rows
+            if str(r.get("tab") or "").lower() == "cancelled"
+            or str(r.get("status") or "").lower()
+            in ("cancelled", "not_accepted")
+            or str(r.get("cancel_reason") or "").strip()
+        ]
+        if not cancelled:
+            QMessageBox.information(
+                self, "Отменённые", "В поставке нет отменённых отправлений."
+            )
+            return
+        lines = []
+        for r in cancelled:
+            lines.append(
+                "{} · {} · {}".format(
+                    r.get("posting_number") or "",
+                    r.get("product_name") or r.get("offer_id") or "",
+                    r.get("cancel_reason")
+                    or r.get("status_label")
+                    or r.get("status")
+                    or "отменено",
+                )
+            )
+        QMessageBox.information(
+            self,
+            "Отменённые ({})".format(len(cancelled)),
+            "\n".join(lines[:40])
+            + ("\n…" if len(lines) > 40 else ""),
+        )
 
     def move_to_delivering(self) -> None:
         if self._is_read_only():

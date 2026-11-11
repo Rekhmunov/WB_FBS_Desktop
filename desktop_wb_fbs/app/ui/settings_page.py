@@ -87,6 +87,7 @@ class SettingsPage(QWidget):
         self._settings_tabs = tabs
         tabs.addTab(self._build_sources_tab(), "Источники")
         tabs.addTab(self._build_products_tab(), "Товары")
+        tabs.addTab(self._build_drivers_tab(), "Водители")
         tabs.addTab(self._build_autosync_tab(), "Автосинк")
         search_box, self.prod_search_input = make_modal_search_box(
             placeholder="🔍 Поиск…",
@@ -288,6 +289,172 @@ class SettingsPage(QWidget):
         box = getattr(self, "_products_search_box", None)
         if box is not None:
             box.setVisible(int(index) == 1)
+
+    def _build_drivers_tab(self) -> QWidget:
+        from app.services.supply_drivers import SupplyDriversService
+
+        w = QWidget()
+        v = QVBoxLayout(w)
+        v.setContentsMargins(0, 8, 0, 0)
+        v.setSpacing(12)
+        hint = QLabel(
+            "Справочник водителей для поставок ВБ и Ozon FBS: ФИО, телефон, "
+            "перевозчик, гос. номера (через запятую)."
+        )
+        hint.setWordWrap(True)
+        hint.setObjectName("hint")
+        v.addWidget(hint)
+
+        self._drivers_svc = SupplyDriversService(self.db)
+        bar = QHBoxLayout()
+        add = QPushButton("Добавить")
+        add.clicked.connect(self._add_driver)
+        edit = QPushButton("Изменить")
+        edit.setObjectName("secondary")
+        edit.clicked.connect(self._edit_driver)
+        delete = QPushButton("Удалить")
+        delete.setObjectName("danger")
+        delete.clicked.connect(self._delete_driver)
+        bar.addWidget(add)
+        bar.addWidget(edit)
+        bar.addWidget(delete)
+        bar.addStretch(1)
+        v.addLayout(bar)
+
+        self.drv_table = QTableWidget(0, 4)
+        self.drv_table.setHorizontalHeaderLabels(
+            ["ФИО", "Телефон", "Перевозчик", "Гос. номера"]
+        )
+        self.drv_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.drv_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.drv_table.setShowGrid(False)
+        self.drv_table.verticalHeader().setVisible(False)
+        v.addWidget(self.drv_table, 1)
+        self.reload_drivers_table()
+        return w
+
+    def reload_drivers_table(self) -> None:
+        svc = getattr(self, "_drivers_svc", None)
+        table = getattr(self, "drv_table", None)
+        if svc is None or table is None:
+            return
+        rows = svc.list_drivers()
+        table.setRowCount(len(rows))
+        for i, row in enumerate(rows):
+            item = QTableWidgetItem(str(row.get("full_name") or ""))
+            item.setData(Qt.UserRole, int(row.get("id") or 0))
+            table.setItem(i, 0, item)
+            table.setItem(i, 1, QTableWidgetItem(str(row.get("phone") or "")))
+            table.setItem(i, 2, QTableWidgetItem(str(row.get("carrier") or "")))
+            plates = ", ".join(
+                str(p.get("number") or "")
+                for p in (row.get("vehicles") or [])
+                if str(p.get("number") or "").strip()
+            )
+            table.setItem(i, 3, QTableWidgetItem(plates))
+
+    def _selected_driver_id(self) -> Optional[int]:
+        table = getattr(self, "drv_table", None)
+        if table is None:
+            return None
+        row = table.currentRow()
+        if row < 0:
+            return None
+        item = table.item(row, 0)
+        if not item:
+            return None
+        try:
+            return int(item.data(Qt.UserRole) or 0) or None
+        except (TypeError, ValueError):
+            return None
+
+    def _driver_editor(self, existing: Optional[Dict[str, Any]] = None) -> None:
+        from app.services.supply_drivers import SupplyDriversService
+
+        svc = getattr(self, "_drivers_svc", None) or SupplyDriversService(self.db)
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Водитель")
+        prepare_modal_dialog(
+            dlg, maximized=False, default_size=(480, 360), minimum_size=(400, 300)
+        )
+        form = QFormLayout(dlg)
+        form.setContentsMargins(24, 20, 24, 20)
+        form.setHorizontalSpacing(16)
+        form.setVerticalSpacing(12)
+        name = QLineEdit(str((existing or {}).get("full_name") or ""))
+        phone = QLineEdit(str((existing or {}).get("phone") or ""))
+        carrier = QLineEdit(str((existing or {}).get("carrier") or ""))
+        documents = QLineEdit(str((existing or {}).get("documents") or ""))
+        plates = QLineEdit(
+            ", ".join(
+                str(p.get("number") or "")
+                for p in ((existing or {}).get("vehicles") or [])
+                if str(p.get("number") or "").strip()
+            )
+        )
+        plates.setPlaceholderText("А123ВС777, В456ОР199")
+        form.addRow("ФИО", name)
+        form.addRow("Телефон", phone)
+        form.addRow("Перевозчик", carrier)
+        form.addRow("Документы", documents)
+        form.addRow("Гос. номера", plates)
+        buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(dlg.accept)
+        buttons.rejected.connect(dlg.reject)
+        form.addRow(buttons)
+        if dlg.exec_() != QDialog.Accepted:
+            return
+        vehicles = []
+        for part in plates.text().split(","):
+            num = part.strip()
+            if num:
+                vehicles.append({"number": num, "type": ""})
+        try:
+            svc.upsert(
+                driver_id=int((existing or {}).get("id") or 0),
+                full_name=name.text(),
+                phone=phone.text(),
+                documents=documents.text(),
+                carrier=carrier.text(),
+                vehicles=vehicles,
+            )
+            self.reload_drivers_table()
+        except Exception as exc:
+            QMessageBox.warning(self, "Водители", str(exc))
+
+    def _add_driver(self) -> None:
+        self._driver_editor(None)
+
+    def _edit_driver(self) -> None:
+        did = self._selected_driver_id()
+        if not did:
+            QMessageBox.information(self, "Водители", "Выберите водителя.")
+            return
+        svc = getattr(self, "_drivers_svc", None)
+        if svc is None:
+            return
+        existing = next(
+            (d for d in svc.list_drivers() if int(d.get("id") or 0) == did), None
+        )
+        if not existing:
+            return
+        self._driver_editor(existing)
+
+    def _delete_driver(self) -> None:
+        did = self._selected_driver_id()
+        if not did:
+            QMessageBox.information(self, "Водители", "Выберите водителя.")
+            return
+        if (
+            QMessageBox.question(self, "Водители", "Удалить водителя?")
+            != QMessageBox.Yes
+        ):
+            return
+        try:
+            self._drivers_svc.delete(did)
+            self.reload_drivers_table()
+        except Exception as exc:
+            QMessageBox.warning(self, "Водители", str(exc))
 
     def _build_autosync_tab(self) -> QWidget:
         from app.services.auto_sync import AutoSyncSettings, allowed_intervals_minutes

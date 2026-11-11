@@ -690,3 +690,27 @@ class OzonFbsClient:
             {"task_id": int(task_id)},
         )
         return data if isinstance(data, dict) else {}
+
+    def returns_list(
+        self,
+        *,
+        time_from: str,
+        time_to: str,
+        last_id: int = 0,
+        limit: int = 500,
+    ) -> Dict[str, Any]:
+        """POST /v1/returns/list — FBS ReceivedBySeller window."""
+        body = {
+            "filter": {
+                "return_schema": "FBS",
+                "visual_status_name": "ReceivedBySeller",
+                "visual_status_change_moment": {
+                    "time_from": str(time_from or "").strip(),
+                    "time_to": str(time_to or "").strip(),
+                },
+            },
+            "limit": max(1, min(int(limit or 500), 500)),
+            "last_id": max(0, int(last_id or 0)),
+        }
+        data = self._request("POST", "/v1/returns/list", body)
+        return data if isinstance(data, dict) else {}

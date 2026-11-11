@@ -170,12 +170,19 @@ class OzonFbsPage(QWidget):
         self.create_carriage_btn.clicked.connect(self.create_carriage)
         self.open_carriage_btn = QPushButton("Открыть отгрузку")
         self.open_carriage_btn.clicked.connect(self.open_selected_carriage)
+        self.pvz_returns_btn = QPushButton("Возвраты ПВЗ")
+        self.pvz_returns_btn.setObjectName("secondary")
+        self.pvz_returns_btn.setToolTip(
+            "Возвраты FBS ReceivedBySeller (локальный кэш + sync)"
+        )
+        self.pvz_returns_btn.clicked.connect(self.open_pvz_returns)
         tb.addWidget(self.sync_btn)
         tb.addWidget(self.stop_btn)
         tb.addWidget(self.ship_all_btn)
         tb.addWidget(self.split_multi_btn)
         tb.addWidget(self.create_carriage_btn)
         tb.addWidget(self.open_carriage_btn)
+        tb.addWidget(self.pvz_returns_btn)
         tb.addStretch(1)
         self.search_input = QLineEdit()
         self.search_input.setObjectName("sdSearch")
@@ -695,6 +702,18 @@ class OzonFbsPage(QWidget):
         dlg.exec_()
         if dlg.posting_mutated:
             self.reload_table()
+
+    def open_pvz_returns(self) -> None:
+        src = self.current_source()
+        if not src:
+            QMessageBox.information(
+                self, "Возвраты ПВЗ", "Выберите источник Ozon FBS."
+            )
+            return
+        from app.ui.ozon_pvz_returns_dialog import OzonPvzReturnsDialog
+
+        dlg = OzonPvzReturnsDialog(self.db, src, self.window())
+        dlg.exec_()
 
     def on_sticker_scan(self) -> None:
         """Resolve posting by package QR / lower barcode / posting_number (web parity)."""

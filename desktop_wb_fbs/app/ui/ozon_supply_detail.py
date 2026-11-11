@@ -207,6 +207,12 @@ class OzonSupplyDetailDialog(QDialog):
         self.btn_cancelled = QPushButton("Отменённые")
         self.btn_cancelled.setObjectName("secondary")
         self.btn_cancelled.clicked.connect(self.show_cancelled)
+        self.btn_driver = QPushButton("Водитель")
+        self.btn_driver.setObjectName("secondary")
+        self.btn_driver.clicked.connect(self.assign_driver)
+        self.btn_ttn = QPushButton("ТН")
+        self.btn_ttn.setObjectName("secondary")
+        self.btn_ttn.clicked.connect(self.open_ttn_draft)
         self.btn_move = QPushButton("Перенести в доставку")
         self.btn_move.clicked.connect(self.move_to_delivering)
         self.btn_refresh = QPushButton("Обновить")
@@ -221,6 +227,8 @@ class OzonSupplyDetailDialog(QDialog):
             self.btn_picking,
             self.btn_containers,
             self.btn_cancelled,
+            self.btn_driver,
+            self.btn_ttn,
             self.btn_move,
             self.btn_refresh,
         ):
@@ -558,6 +566,48 @@ class OzonSupplyDetailDialog(QDialog):
 
     def _on_stickers_failed(self, message: str) -> None:
         QMessageBox.warning(self, "Стикеры", str(message or "Ошибка"))
+
+    def assign_driver(self) -> None:
+        from app.services.supply_drivers import SupplyDriversService
+        from app.ui.driver_assign_dialog import DriverAssignDialog
+
+        dlg = DriverAssignDialog(
+            self.db,
+            platform="ozon",
+            source_id=self.source_id,
+            supply_id=self.supply_id,
+            parent=self,
+        )
+        dlg.exec_()
+        if dlg.changed:
+            assigned = SupplyDriversService(self.db).get_assignment(
+                "ozon", self.source_id, self.supply_id
+            )
+            if assigned.get("has_driver"):
+                self.load_info.setText(
+                    "Водитель: {} · {}".format(
+                        assigned.get("driver_name") or "—",
+                        assigned.get("vehicle_number") or "без номера",
+                    )
+                )
+            else:
+                self.load_info.setText("Водитель снят")
+
+    def open_ttn_draft(self) -> None:
+        from app.ui.ttn_draft_dialog import TtnDraftDialog
+
+        cargo = str(len(self._posting_numbers()) or "")
+        dlg = TtnDraftDialog(
+            self.db,
+            platform="ozon",
+            source_id=self.source_id,
+            supply_id=self.supply_id,
+            supply_name=str(self._detail.get("name") or self.supply_id),
+            warehouse_name=str(self._detail.get("warehouse_name") or ""),
+            cargo_places=cargo,
+            parent=self,
+        )
+        dlg.exec_()
 
     def show_cancelled(self) -> None:
         from app.ui.dialog_utils import prepare_modal_dialog

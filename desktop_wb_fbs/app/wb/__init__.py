@@ -78,8 +78,7 @@ def compute_tab(*, supplier_status: str, wb_status: str, is_archive: bool) -> st
     if ss == "confirm":
         return TAB_ASSEMBLY
     if ss == "complete":
-        # «В доставке» removed from the desktop app — leave operational tabs.
-        return TAB_FINISHED
+        return TAB_DELIVERY
     if ss == "new" or not ss:
         return TAB_NEW
     return TAB_ASSEMBLY if ss else TAB_NEW
@@ -295,11 +294,11 @@ def default_mgt_supply_name(*, is_b2b: bool, when: Optional[datetime] = None) ->
 
 
 def supply_status_label(*, done: object = False, scan_dt: object = None) -> str:
+    """Web parity: for delivered supplies, scan_dt drives the label."""
+    del done
     if scan_dt:
-        return "На приёмке"
-    if done:
-        return "Отгрузите поставку"
-    return "На сборке"
+        return "Поставка в обработке"
+    return "Отгрузите поставку"
 
 
 def assembly_stage_label(*, done: object = False, boxes_count: int = 0) -> str:

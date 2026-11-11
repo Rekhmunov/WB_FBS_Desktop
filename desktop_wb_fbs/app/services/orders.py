@@ -174,11 +174,20 @@ class OrdersService:
             ).fetchone()
             d = conn.execute(
                 """
-                SELECT COUNT(*) AS c FROM wb_fbs_supplies
-                WHERE source_id = ? AND done = 1
+                SELECT COUNT(*) AS c FROM wb_fbs_orders
+                WHERE source_id = ? AND tab = 'delivery' AND is_archive = 0
                 """,
                 (source_id,),
             ).fetchone()
+            # Fallback: pinned/done supplies when orders already left the tab.
+            if not d or int(d["c"] or 0) == 0:
+                d = conn.execute(
+                    """
+                    SELECT COUNT(*) AS c FROM wb_fbs_supplies
+                    WHERE source_id = ? AND (delivery_listed = 1 OR done = 1)
+                    """,
+                    (source_id,),
+                ).fetchone()
         asm = self.assembly_order_stats(source_id)
         out["new"] = int(n["c"] if n else 0)
         out["mgt_new"] = int(mgt["c"] if mgt else 0)
@@ -249,6 +258,41 @@ class OrdersService:
         ]
         return items, int(total["c"] if total else 0)
 
+    def list_delivery_supplies(
+        self,
+        source_id: int,
+        search: str = "",
+        limit: int = 50,
+        offset: int = 0,
+        include_order_warehouse: bool = True,
+    ) -> Tuple[List[Dict[str, Any]], int]:
+        """«В доставке»: pinned done supplies (web delivery_listed parity)."""
+        with self.db.connect() as conn:
+            # Keep pin in sync with orders still on delivery.
+            conn.execute(
+                """
+                UPDATE wb_fbs_supplies
+                SET delivery_listed = 1
+                WHERE source_id = ?
+                  AND supply_id IN (
+                    SELECT DISTINCT supply_id FROM wb_fbs_orders
+                    WHERE source_id = ? AND tab = 'delivery'
+                      AND supply_id IS NOT NULL AND supply_id != ''
+                  )
+                """,
+                (source_id, source_id),
+            )
+            conn.commit()
+        return self.list_supplies(
+            source_id,
+            done=True,
+            search=search,
+            limit=limit,
+            offset=offset,
+            include_order_warehouse=include_order_warehouse,
+            delivery_listed_only=True,
+        )
+
     def list_supplies(
         self,
         source_id: int,
@@ -257,9 +301,14 @@ class OrdersService:
         limit: int = 50,
         offset: int = 0,
         include_order_warehouse: bool = True,
+        delivery_listed_only: bool = False,
     ) -> Tuple[List[Dict[str, Any]], int]:
-        cond = ["source_id = ?", "done = ?"]
-        params = [source_id, 1 if done else 0]  # type: List[Any]
+        if delivery_listed_only:
+            cond = ["source_id = ?", "(delivery_listed = 1 OR done = 1)"]
+            params = [source_id]  # type: List[Any]
+        else:
+            cond = ["source_id = ?", "done = ?"]
+            params = [source_id, 1 if done else 0]  # type: List[Any]
         q = str(search or "").strip()
         if q:
             like = "%{}%".format(q.lower())

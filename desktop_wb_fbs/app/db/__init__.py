@@ -97,6 +97,7 @@ CREATE TABLE IF NOT EXISTS wb_fbs_supplies (
     supply_id TEXT NOT NULL,
     name TEXT NOT NULL DEFAULT '',
     done INTEGER NOT NULL DEFAULT 0,
+    delivery_listed INTEGER NOT NULL DEFAULT 0,
     cargo_type INTEGER NOT NULL DEFAULT 0,
     is_b2b INTEGER NOT NULL DEFAULT 0,
     destination_office_id INTEGER,
@@ -112,6 +113,9 @@ CREATE TABLE IF NOT EXISTS wb_fbs_supplies (
 
 CREATE INDEX IF NOT EXISTS idx_supplies_src
     ON wb_fbs_supplies(source_id, done, created_at_wb DESC);
+
+CREATE INDEX IF NOT EXISTS idx_supplies_delivery_listed
+    ON wb_fbs_supplies(source_id, delivery_listed);
 
 -- Persists sticker numbers + order meta across app restarts so supply open
 -- can skip WB API when Sync/reload has not invalidated the cache.
@@ -217,8 +221,36 @@ class Database:
             conn.executescript(SCHEMA_SQL)
             self._migrate_product_photos(conn)
             self._migrate_supply_sources(conn)
+            self._migrate_wb_fbs_supplies(conn)
             self._migrate_ozon_schema(conn)
             conn.commit()
+
+    @staticmethod
+    def _migrate_wb_fbs_supplies(conn: sqlite3.Connection) -> None:
+        """Add delivery_listed pin for «В доставке» (web parity)."""
+        cols = {
+            str(r[1])
+            for r in conn.execute("PRAGMA table_info(wb_fbs_supplies)").fetchall()
+        }
+        if "delivery_listed" not in cols:
+            conn.execute(
+                "ALTER TABLE wb_fbs_supplies ADD COLUMN delivery_listed "
+                "INTEGER NOT NULL DEFAULT 0"
+            )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_supplies_delivery_listed
+                ON wb_fbs_supplies(source_id, delivery_listed)
+            """
+        )
+        # Existing done supplies should stay visible on «В доставке».
+        conn.execute(
+            """
+            UPDATE wb_fbs_supplies
+            SET delivery_listed = 1
+            WHERE done = 1 AND delivery_listed = 0
+            """
+        )
 
     @staticmethod
     def _migrate_product_photos(conn: sqlite3.Connection) -> None:

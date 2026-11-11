@@ -160,12 +160,16 @@ def upsert_supply(
         conn.execute(
             """
             INSERT INTO wb_fbs_supplies (
-                source_id, supply_id, name, done, cargo_type, is_b2b, destination_office_id,
-                created_at_wb, closed_at_wb, scan_dt, order_ids_json, boxes_json, raw_json, synced_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                source_id, supply_id, name, done, delivery_listed, cargo_type, is_b2b,
+                destination_office_id, created_at_wb, closed_at_wb, scan_dt,
+                order_ids_json, boxes_json, raw_json, synced_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(source_id, supply_id) DO UPDATE SET
                 name = excluded.name,
                 done = excluded.done,
+                delivery_listed = CASE
+                    WHEN excluded.done = 1 THEN 1
+                    ELSE wb_fbs_supplies.delivery_listed END,
                 cargo_type = excluded.cargo_type,
                 is_b2b = CASE WHEN ? THEN excluded.is_b2b ELSE wb_fbs_supplies.is_b2b END,
                 destination_office_id = excluded.destination_office_id,
@@ -185,6 +189,7 @@ def upsert_supply(
                 source_id,
                 supply_id,
                 str(supply.get("name") or ""),
+                1 if supply.get("done") else 0,
                 1 if supply.get("done") else 0,
                 int(supply.get("cargoType") or 0),
                 1 if (supply_b2b if supply_b2b is not None else False) else 0,
@@ -342,7 +347,7 @@ def sync_source(
             """
             SELECT order_id FROM wb_fbs_orders
             WHERE source_id = ? AND is_archive = 0
-              AND tab IN ('new', 'assembly')
+              AND tab IN ('new', 'assembly', 'delivery')
             ORDER BY synced_at DESC
             LIMIT 5000
             """,
@@ -458,6 +463,26 @@ def sync_source(
             time.sleep(0.25)
     except Exception as exc:
         errors.append(friendly_sync_error("supplies", exc))
+
+    # Pin supplies that currently have orders on «В доставке» (web parity).
+    try:
+        with db.connect() as conn:
+            conn.execute(
+                """
+                UPDATE wb_fbs_supplies
+                SET delivery_listed = 1
+                WHERE source_id = ?
+                  AND supply_id IN (
+                    SELECT DISTINCT supply_id FROM wb_fbs_orders
+                    WHERE source_id = ? AND tab = 'delivery'
+                      AND supply_id IS NOT NULL AND supply_id != ''
+                  )
+                """,
+                (source_id, source_id),
+            )
+            conn.commit()
+    except Exception as exc:
+        errors.append(friendly_sync_error("delivery pin", exc))
 
     return {
         "orders": len(seen_order_ids),

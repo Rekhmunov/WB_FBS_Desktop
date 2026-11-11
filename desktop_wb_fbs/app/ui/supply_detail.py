@@ -273,6 +273,7 @@ class SupplyDetailDialog(QDialog):
         parent: Optional[QWidget] = None,
         *,
         fullscreen: bool = True,
+        opened_from_delivery: bool = False,
     ) -> None:
         super(SupplyDetailDialog, self).__init__(fullscreen_parent(parent, fullscreen))
         self.db = db
@@ -281,6 +282,7 @@ class SupplyDetailDialog(QDialog):
         self.supply_id = supply_id
         self.source_id = int(source["id"])
         self.api_key = str(source["api_key"])
+        self.opened_from_delivery = bool(opened_from_delivery)
         self.trbx = TrbxService(db)
         self.stickers = StickersService(db)
         self.kiz = KizService(db)
@@ -367,6 +369,15 @@ class SupplyDetailDialog(QDialog):
         self.load_status.setWordWrap(True)
         self.load_status.hide()
         hv.addWidget(self.load_status)
+
+        self.delivery_ro_banner = QLabel(
+            "Поставка в доставке: состав изменению не подлежит. "
+            "Доступны печать и просмотр маркировки / ШК."
+        )
+        self.delivery_ro_banner.setObjectName("sdMeta")
+        self.delivery_ro_banner.setWordWrap(True)
+        self.delivery_ro_banner.setVisible(self.opened_from_delivery)
+        hv.addWidget(self.delivery_ro_banner)
 
         actions_row = QHBoxLayout()
         actions_row.setSpacing(12)

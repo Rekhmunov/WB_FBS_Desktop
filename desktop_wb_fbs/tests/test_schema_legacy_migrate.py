@@ -7,7 +7,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from app.db import Database
+from app.db import SCHEMA_SQL, Database
 
 
 class LegacySchemaMigrateTests(unittest.TestCase):
@@ -17,6 +17,10 @@ class LegacySchemaMigrateTests(unittest.TestCase):
 
     def tearDown(self) -> None:
         self.tmp.cleanup()
+
+    def test_schema_sql_has_no_indexes(self) -> None:
+        """Indexes in SCHEMA_SQL crash legacy DBs before ALTER can run."""
+        self.assertNotIn("CREATE INDEX", SCHEMA_SQL.upper())
 
     def _bootstrap_legacy(self, sql: str) -> None:
         conn = sqlite3.connect(str(self.path))

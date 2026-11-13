@@ -88,9 +88,6 @@ CREATE TABLE IF NOT EXISTS wb_fbs_orders (
     UNIQUE (source_id, order_id)
 );
 
-CREATE INDEX IF NOT EXISTS idx_orders_src_tab
-    ON wb_fbs_orders(source_id, tab, created_at_wb DESC);
-
 CREATE TABLE IF NOT EXISTS wb_fbs_supplies (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     source_id INTEGER NOT NULL,
@@ -111,12 +108,6 @@ CREATE TABLE IF NOT EXISTS wb_fbs_supplies (
     UNIQUE (source_id, supply_id)
 );
 
-CREATE INDEX IF NOT EXISTS idx_supplies_src
-    ON wb_fbs_supplies(source_id, done, created_at_wb DESC);
-
--- idx_supplies_delivery_listed is created in _migrate_wb_fbs_supplies after
--- ALTER ADD COLUMN on existing DBs (CREATE TABLE IF NOT EXISTS is a no-op).
-
 -- Persists sticker numbers + order meta across app restarts so supply open
 -- can skip WB API when Sync/reload has not invalidated the cache.
 CREATE TABLE IF NOT EXISTS wb_fbs_order_open_cache (
@@ -131,9 +122,6 @@ CREATE TABLE IF NOT EXISTS wb_fbs_order_open_cache (
     updated_at TEXT NOT NULL,
     PRIMARY KEY (source_id, order_id)
 );
-
-CREATE INDEX IF NOT EXISTS idx_order_open_cache_src
-    ON wb_fbs_order_open_cache(source_id);
 
 CREATE TABLE IF NOT EXISTS ozon_fbs_postings (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -182,15 +170,6 @@ CREATE TABLE IF NOT EXISTS ozon_fbs_container_local_archive (
     PRIMARY KEY (source_id, container_id)
 );
 
-CREATE INDEX IF NOT EXISTS idx_ozon_container_archive_src
-    ON ozon_fbs_container_local_archive(source_id);
-
-CREATE INDEX IF NOT EXISTS idx_ozon_postings_src_tab
-    ON ozon_fbs_postings(source_id, tab, created_at_wb DESC);
-
-CREATE INDEX IF NOT EXISTS idx_ozon_postings_supply
-    ON ozon_fbs_postings(source_id, supply_id);
-
 CREATE TABLE IF NOT EXISTS ozon_fbs_carriages (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     source_id INTEGER NOT NULL,
@@ -206,9 +185,6 @@ CREATE TABLE IF NOT EXISTS ozon_fbs_carriages (
     UNIQUE(source_id, carriage_id)
 );
 
-CREATE INDEX IF NOT EXISTS idx_ozon_carriages_src
-    ON ozon_fbs_carriages(source_id, done, synced_at DESC);
-
 CREATE TABLE IF NOT EXISTS ozon_fbs_supplies (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     source_id INTEGER NOT NULL,
@@ -223,9 +199,6 @@ CREATE TABLE IF NOT EXISTS ozon_fbs_supplies (
     updated_at TEXT NOT NULL,
     UNIQUE(source_id, supply_id)
 );
-
-CREATE INDEX IF NOT EXISTS idx_ozon_supplies_src
-    ON ozon_fbs_supplies(source_id, done, created_at DESC);
 
 CREATE TABLE IF NOT EXISTS ozon_fbs_label_cache (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -308,6 +281,47 @@ CREATE TABLE IF NOT EXISTS ozon_fbs_pvz_returns (
     UNIQUE(source_id, return_id)
 );
 
+"""
+
+# Indexes run AFTER column migrations so legacy DBs (CREATE TABLE IF NOT EXISTS
+# is a no-op) do not crash on «no such column» during startup.
+SCHEMA_INDEXES_SQL = """
+CREATE INDEX IF NOT EXISTS idx_orders_src_tab
+    ON wb_fbs_orders(source_id, tab, created_at_wb DESC);
+
+CREATE INDEX IF NOT EXISTS idx_supplies_src
+    ON wb_fbs_supplies(source_id, done, created_at_wb DESC);
+
+CREATE INDEX IF NOT EXISTS idx_supplies_delivery_listed
+    ON wb_fbs_supplies(source_id, delivery_listed);
+
+CREATE INDEX IF NOT EXISTS idx_order_open_cache_src
+    ON wb_fbs_order_open_cache(source_id);
+
+CREATE INDEX IF NOT EXISTS idx_ozon_container_archive_src
+    ON ozon_fbs_container_local_archive(source_id);
+
+CREATE INDEX IF NOT EXISTS idx_ozon_postings_src_tab
+    ON ozon_fbs_postings(source_id, tab, created_at_wb DESC);
+
+CREATE INDEX IF NOT EXISTS idx_ozon_postings_supply
+    ON ozon_fbs_postings(source_id, supply_id);
+
+CREATE INDEX IF NOT EXISTS idx_ozon_postings_carriage
+    ON ozon_fbs_postings(source_id, carriage_id);
+
+CREATE INDEX IF NOT EXISTS idx_ozon_postings_sticker_bc
+    ON ozon_fbs_postings(source_id, sticker_barcode);
+
+CREATE INDEX IF NOT EXISTS idx_ozon_postings_sticker_low
+    ON ozon_fbs_postings(source_id, sticker_lower_barcode);
+
+CREATE INDEX IF NOT EXISTS idx_ozon_carriages_src
+    ON ozon_fbs_carriages(source_id, done, synced_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_ozon_supplies_src
+    ON ozon_fbs_supplies(source_id, done, created_at DESC);
+
 CREATE INDEX IF NOT EXISTS idx_ozon_pvz_returns_src
     ON ozon_fbs_pvz_returns(source_id, completed_dt);
 """
@@ -331,30 +345,57 @@ class Database:
 
     def init_schema(self) -> None:
         with self.connect() as conn:
+            # 1) tables  2) ALTER migrations  3) indexes (legacy-safe order)
             conn.executescript(SCHEMA_SQL)
             self._migrate_product_photos(conn)
             self._migrate_supply_sources(conn)
             self._migrate_wb_fbs_supplies(conn)
             self._migrate_ozon_schema(conn)
+            conn.executescript(SCHEMA_INDEXES_SQL)
             conn.commit()
+
+    @staticmethod
+    def _ensure_columns(
+        conn: sqlite3.Connection, table: str, columns: Dict[str, str]
+    ) -> None:
+        """ALTER TABLE ADD COLUMN for any missing ``columns`` (name → SQL type)."""
+        existing = {
+            str(r[1])
+            for r in conn.execute("PRAGMA table_info({})".format(table)).fetchall()
+        }
+        for name, decl in columns.items():
+            if name in existing:
+                continue
+            conn.execute(
+                "ALTER TABLE {} ADD COLUMN {} {}".format(table, name, decl)
+            )
 
     @staticmethod
     def _migrate_wb_fbs_supplies(conn: sqlite3.Connection) -> None:
         """Add delivery_listed pin for «В доставке» (web parity)."""
-        cols = {
-            str(r[1])
-            for r in conn.execute("PRAGMA table_info(wb_fbs_supplies)").fetchall()
+        tables = {
+            str(r[0])
+            for r in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall()
         }
-        if "delivery_listed" not in cols:
-            conn.execute(
-                "ALTER TABLE wb_fbs_supplies ADD COLUMN delivery_listed "
-                "INTEGER NOT NULL DEFAULT 0"
-            )
-        conn.execute(
-            """
-            CREATE INDEX IF NOT EXISTS idx_supplies_delivery_listed
-                ON wb_fbs_supplies(source_id, delivery_listed)
-            """
+        if "wb_fbs_supplies" not in tables:
+            return
+        Database._ensure_columns(
+            conn,
+            "wb_fbs_supplies",
+            {
+                "delivery_listed": "INTEGER NOT NULL DEFAULT 0",
+                "created_at_wb": "TEXT",
+                "closed_at_wb": "TEXT",
+                "scan_dt": "TEXT",
+                "destination_office_id": "INTEGER",
+                "cargo_type": "INTEGER NOT NULL DEFAULT 0",
+                "is_b2b": "INTEGER NOT NULL DEFAULT 0",
+                "order_ids_json": "TEXT NOT NULL DEFAULT '[]'",
+                "boxes_json": "TEXT NOT NULL DEFAULT '[]'",
+                "raw_json": "TEXT NOT NULL DEFAULT '{}'",
+            },
         )
         # Existing done supplies should stay visible on «В доставке».
         conn.execute(
@@ -401,7 +442,8 @@ class Database:
 
     @staticmethod
     def _migrate_ozon_schema(conn: sqlite3.Connection) -> None:
-        """Ensure Ozon FBS tables exist on older DB files (CREATE IF NOT EXISTS)."""
+        """Ensure Ozon FBS tables/columns exist (indexes come later via SCHEMA_INDEXES_SQL)."""
+        # Tables only — never CREATE INDEX here (legacy columns may be missing).
         conn.executescript(
             """
             CREATE TABLE IF NOT EXISTS ozon_fbs_postings (
@@ -436,8 +478,6 @@ class Database:
                 synced_at TEXT NOT NULL,
                 UNIQUE(source_id, posting_number)
             );
-            CREATE INDEX IF NOT EXISTS idx_ozon_postings_src_tab
-                ON ozon_fbs_postings(source_id, tab, created_at_wb DESC);
             CREATE TABLE IF NOT EXISTS ozon_fbs_carriages (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 source_id INTEGER NOT NULL,
@@ -452,10 +492,6 @@ class Database:
                 synced_at TEXT NOT NULL,
                 UNIQUE(source_id, carriage_id)
             );
-            CREATE INDEX IF NOT EXISTS idx_ozon_carriages_src
-                ON ozon_fbs_carriages(source_id, done, synced_at DESC);
-            CREATE INDEX IF NOT EXISTS idx_ozon_postings_carriage
-                ON ozon_fbs_postings(source_id, carriage_id);
             CREATE TABLE IF NOT EXISTS ozon_fbs_supplies (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 source_id INTEGER NOT NULL,
@@ -470,8 +506,6 @@ class Database:
                 updated_at TEXT NOT NULL,
                 UNIQUE(source_id, supply_id)
             );
-            CREATE INDEX IF NOT EXISTS idx_ozon_supplies_src
-                ON ozon_fbs_supplies(source_id, done, created_at DESC);
             CREATE TABLE IF NOT EXISTS ozon_fbs_label_cache (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 source_id INTEGER NOT NULL,
@@ -480,108 +514,62 @@ class Database:
                 updated_at TEXT NOT NULL,
                 UNIQUE(source_id, cache_key)
             );
-            """
-        )
-        cols = {
-            str(r[1])
-            for r in conn.execute("PRAGMA table_info(ozon_fbs_postings)").fetchall()
-        }
-        if "marks_synced" not in cols:
-            conn.execute(
-                "ALTER TABLE ozon_fbs_postings ADD COLUMN marks_synced "
-                "INTEGER NOT NULL DEFAULT 0"
-            )
-        if "products_json" not in cols:
-            conn.execute(
-                "ALTER TABLE ozon_fbs_postings ADD COLUMN products_json "
-                "TEXT NOT NULL DEFAULT '[]'"
-            )
-        if "supply_id" not in cols:
-            conn.execute(
-                "ALTER TABLE ozon_fbs_postings ADD COLUMN supply_id "
-                "TEXT NOT NULL DEFAULT ''"
-            )
-        if "sticker_barcode" not in cols:
-            conn.execute(
-                "ALTER TABLE ozon_fbs_postings ADD COLUMN sticker_barcode "
-                "TEXT NOT NULL DEFAULT ''"
-            )
-        if "sticker_lower_barcode" not in cols:
-            conn.execute(
-                "ALTER TABLE ozon_fbs_postings ADD COLUMN sticker_lower_barcode "
-                "TEXT NOT NULL DEFAULT ''"
-            )
-        if "container_id" not in cols:
-            conn.execute(
-                "ALTER TABLE ozon_fbs_postings ADD COLUMN container_id INTEGER"
-            )
-        if "container_barcode" not in cols:
-            conn.execute(
-                "ALTER TABLE ozon_fbs_postings ADD COLUMN container_barcode "
-                "TEXT NOT NULL DEFAULT ''"
-            )
-        if "container_synced" not in cols:
-            conn.execute(
-                "ALTER TABLE ozon_fbs_postings ADD COLUMN container_synced "
-                "INTEGER NOT NULL DEFAULT 0"
-            )
-        if "container_sync_error" not in cols:
-            conn.execute(
-                "ALTER TABLE ozon_fbs_postings ADD COLUMN container_sync_error "
-                "TEXT NOT NULL DEFAULT ''"
-            )
-        conn.execute(
-            """
             CREATE TABLE IF NOT EXISTS ozon_fbs_container_local_archive (
                 source_id INTEGER NOT NULL,
                 container_id INTEGER NOT NULL,
                 archived_at TEXT NOT NULL,
                 PRIMARY KEY (source_id, container_id)
-            )
+            );
             """
         )
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_ozon_container_archive_src "
-            "ON ozon_fbs_container_local_archive(source_id)"
+        Database._ensure_columns(
+            conn,
+            "ozon_fbs_postings",
+            {
+                "order_number": "TEXT NOT NULL DEFAULT ''",
+                "substatus": "TEXT NOT NULL DEFAULT ''",
+                "carriage_id": "TEXT NOT NULL DEFAULT ''",
+                "supply_id": "TEXT NOT NULL DEFAULT ''",
+                "warehouse_name": "TEXT NOT NULL DEFAULT ''",
+                "warehouse_id": "INTEGER",
+                "cancel_reason": "TEXT NOT NULL DEFAULT ''",
+                "shipment_date": "TEXT",
+                "in_process_at": "TEXT",
+                "created_at_wb": "TEXT",
+                "marks_json": "TEXT NOT NULL DEFAULT '[]'",
+                "marks_saved_at": "TEXT",
+                "marks_synced": "INTEGER NOT NULL DEFAULT 0",
+                "products_json": "TEXT NOT NULL DEFAULT '[]'",
+                "pick_verified": "INTEGER NOT NULL DEFAULT 0",
+                "pick_barcode": "TEXT NOT NULL DEFAULT ''",
+                "pick_verified_at": "TEXT",
+                "sticker_barcode": "TEXT NOT NULL DEFAULT ''",
+                "sticker_lower_barcode": "TEXT NOT NULL DEFAULT ''",
+                "container_id": "INTEGER",
+                "container_barcode": "TEXT NOT NULL DEFAULT ''",
+                "container_synced": "INTEGER NOT NULL DEFAULT 0",
+                "container_sync_error": "TEXT NOT NULL DEFAULT ''",
+            },
         )
-        carriage_cols = {
-            str(r[1])
-            for r in conn.execute("PRAGMA table_info(ozon_fbs_carriages)").fetchall()
-        }
-        if "act_id" not in carriage_cols:
-            conn.execute(
-                "ALTER TABLE ozon_fbs_carriages ADD COLUMN act_id "
-                "TEXT NOT NULL DEFAULT ''"
-            )
-        if "act_status" not in carriage_cols:
-            conn.execute(
-                "ALTER TABLE ozon_fbs_carriages ADD COLUMN act_status "
-                "TEXT NOT NULL DEFAULT ''"
-            )
-        supply_cols = {
-            str(r[1])
-            for r in conn.execute("PRAGMA table_info(ozon_fbs_supplies)").fetchall()
-        }
-        if "delivering_listed" not in supply_cols:
-            conn.execute(
-                "ALTER TABLE ozon_fbs_supplies ADD COLUMN delivering_listed "
-                "INTEGER NOT NULL DEFAULT 0"
-            )
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_ozon_postings_carriage "
-            "ON ozon_fbs_postings(source_id, carriage_id)"
+        Database._ensure_columns(
+            conn,
+            "ozon_fbs_carriages",
+            {
+                "act_id": "TEXT NOT NULL DEFAULT ''",
+                "act_status": "TEXT NOT NULL DEFAULT ''",
+                "delivery_method_id": "INTEGER",
+                "posting_numbers_json": "TEXT NOT NULL DEFAULT '[]'",
+            },
         )
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_ozon_postings_supply "
-            "ON ozon_fbs_postings(source_id, supply_id)"
-        )
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_ozon_postings_sticker_bc "
-            "ON ozon_fbs_postings(source_id, sticker_barcode)"
-        )
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_ozon_postings_sticker_low "
-            "ON ozon_fbs_postings(source_id, sticker_lower_barcode)"
+        Database._ensure_columns(
+            conn,
+            "ozon_fbs_supplies",
+            {
+                "delivering_listed": "INTEGER NOT NULL DEFAULT 0",
+                "warehouse_id": "INTEGER",
+                "warehouse_name": "TEXT NOT NULL DEFAULT ''",
+                "posting_numbers_json": "TEXT NOT NULL DEFAULT '[]'",
+            },
         )
         # Migrate legacy Ozon tab keys → web portal names.
         for old, new in (

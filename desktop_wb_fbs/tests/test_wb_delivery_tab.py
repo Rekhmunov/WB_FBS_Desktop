@@ -45,6 +45,68 @@ class DeliveryListedTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.tmp.cleanup()
 
+    def test_init_schema_upgrades_legacy_supplies_without_delivery_listed(self) -> None:
+        """Regression: old DB crash «no such column: delivery_listed» on startup."""
+        import sqlite3
+
+        path = Path(self.tmp.name) / "legacy.db"
+        conn = sqlite3.connect(str(path))
+        try:
+            conn.executescript(
+                """
+                CREATE TABLE app_settings (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL DEFAULT ''
+                );
+                CREATE TABLE supply_sources (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT NOT NULL,
+                    marketplace TEXT NOT NULL DEFAULT 'wb',
+                    client_id TEXT NOT NULL DEFAULT '',
+                    api_key TEXT NOT NULL DEFAULT '',
+                    is_enabled INTEGER NOT NULL DEFAULT 1,
+                    lookback_days INTEGER NOT NULL DEFAULT 2,
+                    created_at TEXT NOT NULL,
+                    last_synced_at TEXT
+                );
+                CREATE TABLE wb_fbs_supplies (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    source_id INTEGER NOT NULL,
+                    supply_id TEXT NOT NULL,
+                    name TEXT NOT NULL DEFAULT '',
+                    done INTEGER NOT NULL DEFAULT 0,
+                    cargo_type INTEGER NOT NULL DEFAULT 0,
+                    is_b2b INTEGER NOT NULL DEFAULT 0,
+                    destination_office_id INTEGER,
+                    created_at_wb TEXT,
+                    closed_at_wb TEXT,
+                    scan_dt TEXT,
+                    order_ids_json TEXT NOT NULL DEFAULT '[]',
+                    boxes_json TEXT NOT NULL DEFAULT '[]',
+                    raw_json TEXT NOT NULL DEFAULT '{}',
+                    synced_at TEXT NOT NULL,
+                    UNIQUE (source_id, supply_id)
+                );
+                INSERT INTO wb_fbs_supplies
+                (source_id, supply_id, name, done, order_ids_json, boxes_json, synced_at)
+                VALUES (1, 'WB-GI-LEGACY', 'old', 1, '[]', '[]', '2024-01-01');
+                """
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        db = Database(path)
+        db.init_schema()  # must not raise OperationalError
+        with db.connect() as c2:
+            cols = {str(r[1]) for r in c2.execute("PRAGMA table_info(wb_fbs_supplies)")}
+            self.assertIn("delivery_listed", cols)
+            row = c2.execute(
+                "SELECT delivery_listed FROM wb_fbs_supplies "
+                "WHERE supply_id='WB-GI-LEGACY'"
+            ).fetchone()
+        self.assertEqual(int(row["delivery_listed"]), 1)
+
     def test_migrate_pins_existing_done(self) -> None:
         with self.db.connect() as conn:
             conn.execute(

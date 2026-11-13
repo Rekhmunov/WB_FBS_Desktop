@@ -114,8 +114,8 @@ CREATE TABLE IF NOT EXISTS wb_fbs_supplies (
 CREATE INDEX IF NOT EXISTS idx_supplies_src
     ON wb_fbs_supplies(source_id, done, created_at_wb DESC);
 
-CREATE INDEX IF NOT EXISTS idx_supplies_delivery_listed
-    ON wb_fbs_supplies(source_id, delivery_listed);
+-- idx_supplies_delivery_listed is created in _migrate_wb_fbs_supplies after
+-- ALTER ADD COLUMN on existing DBs (CREATE TABLE IF NOT EXISTS is a no-op).
 
 -- Persists sticker numbers + order meta across app restarts so supply open
 -- can skip WB API when Sync/reload has not invalidated the cache.

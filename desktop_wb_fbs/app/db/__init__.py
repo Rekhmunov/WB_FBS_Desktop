@@ -346,13 +346,30 @@ class Database:
     def init_schema(self) -> None:
         with self.connect() as conn:
             # 1) tables  2) ALTER migrations  3) indexes (legacy-safe order)
+            # SCHEMA_SQL must never contain CREATE INDEX — old DBs lack columns.
             conn.executescript(SCHEMA_SQL)
             self._migrate_product_photos(conn)
             self._migrate_supply_sources(conn)
             self._migrate_wb_fbs_supplies(conn)
             self._migrate_ozon_schema(conn)
-            conn.executescript(SCHEMA_INDEXES_SQL)
+            self._apply_schema_indexes(conn)
             conn.commit()
+
+    @staticmethod
+    def _apply_schema_indexes(conn: sqlite3.Connection) -> None:
+        """Create indexes one-by-one after migrations (never via SCHEMA_SQL)."""
+        for raw in SCHEMA_INDEXES_SQL.split(";"):
+            stmt = raw.strip()
+            if not stmt:
+                continue
+            try:
+                conn.execute(stmt)
+            except sqlite3.OperationalError as exc:
+                # Extra safety: never crash startup if a column/table is still missing.
+                msg = str(exc).lower()
+                if "no such column" in msg or "no such table" in msg:
+                    continue
+                raise
 
     @staticmethod
     def _ensure_columns(

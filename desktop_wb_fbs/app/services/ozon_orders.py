@@ -69,10 +69,15 @@ class OzonOrdersService:
     def list_assembly_postings(
         self, source_id: int, *, search: str = "", limit: int = 200
     ) -> List[Dict[str, Any]]:
-        """Postings on assembly without carriage (awaiting_deliver, etc.)."""
+        """Loose awaiting_deliver postings — not in a local supply and not in a carriage.
+
+        Matches ``tab_counts`` orphan filter so members of «ОЗОН_ФБС_…» supplies
+        are not duplicated under the supply row on «Ожидают отгрузки».
+        """
         cond = [
             "source_id = ?",
             "tab IN ('assembly', 'awaiting_deliver')",
+            "COALESCE(supply_id, '') = ''",
             "(carriage_id IS NULL OR carriage_id = '')",
         ]
         params = [source_id]  # type: List[Any]

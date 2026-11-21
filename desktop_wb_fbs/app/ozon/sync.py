@@ -98,18 +98,29 @@ def upsert_posting(
                 tab = excluded.tab,
                 carriage_id = CASE WHEN excluded.carriage_id != ''
                     THEN excluded.carriage_id ELSE ozon_fbs_postings.carriage_id END,
-                offer_id = excluded.offer_id,
-                sku = excluded.sku,
-                product_name = excluded.product_name,
-                quantity = excluded.quantity,
-                warehouse_name = excluded.warehouse_name,
-                warehouse_id = excluded.warehouse_id,
-                barcodes_json = excluded.barcodes_json,
+                -- Never wipe product fields with an empty ship/force payload.
+                offer_id = CASE WHEN excluded.offer_id != ''
+                    THEN excluded.offer_id ELSE ozon_fbs_postings.offer_id END,
+                sku = CASE WHEN excluded.sku != ''
+                    THEN excluded.sku ELSE ozon_fbs_postings.sku END,
+                product_name = CASE WHEN excluded.product_name != ''
+                    THEN excluded.product_name ELSE ozon_fbs_postings.product_name END,
+                quantity = CASE
+                    WHEN excluded.products_json NOT IN ('', '[]', 'null')
+                    THEN excluded.quantity ELSE ozon_fbs_postings.quantity END,
+                warehouse_name = CASE WHEN excluded.warehouse_name != ''
+                    THEN excluded.warehouse_name ELSE ozon_fbs_postings.warehouse_name END,
+                warehouse_id = COALESCE(excluded.warehouse_id, ozon_fbs_postings.warehouse_id),
+                barcodes_json = CASE
+                    WHEN excluded.barcodes_json NOT IN ('', '[]', 'null')
+                    THEN excluded.barcodes_json ELSE ozon_fbs_postings.barcodes_json END,
                 cancel_reason = excluded.cancel_reason,
                 shipment_date = excluded.shipment_date,
                 in_process_at = excluded.in_process_at,
                 created_at_wb = COALESCE(excluded.created_at_wb, ozon_fbs_postings.created_at_wb),
-                products_json = excluded.products_json,
+                products_json = CASE
+                    WHEN excluded.products_json NOT IN ('', '[]', 'null')
+                    THEN excluded.products_json ELSE ozon_fbs_postings.products_json END,
                 sticker_barcode = CASE
                     WHEN excluded.sticker_barcode != '' THEN excluded.sticker_barcode
                     ELSE ozon_fbs_postings.sticker_barcode END,

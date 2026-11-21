@@ -91,19 +91,27 @@ def _force_local_awaiting_deliver(
     *,
     posting: Optional[Dict[str, Any]] = None,
 ) -> None:
-    """Persist awaiting_deliver without relying on Ozon get eventual consistency."""
+    """Persist awaiting_deliver without relying on Ozon get eventual consistency.
+
+    Prefer a full upsert when the payload has products; otherwise only flip
+    status/tab so we never blank out name/SKU after «already assembled».
+    """
     pn = str(posting_number or "").strip()
     if not pn:
         return
-    payload = dict(posting or {})
-    payload["posting_number"] = pn
-    payload["status"] = TAB_AWAITING_DELIVER
-    try:
-        upsert_posting(db, source_id, payload)
-    except Exception:
-        pass
-    # Hard-set tab/status — upsert uses compute_tab(status) which matches, but
-    # protect against empty/partial payloads leaving stale packaging.
+    payload = dict(posting or {}) if isinstance(posting, dict) else {}
+    products = payload.get("products")
+    has_products = isinstance(products, list) and any(
+        isinstance(p, dict) for p in products
+    )
+    if has_products:
+        payload["posting_number"] = pn
+        payload["status"] = TAB_AWAITING_DELIVER
+        try:
+            upsert_posting(db, source_id, payload)
+        except Exception:
+            pass
+    # Hard-set tab/status — always, even for product-less force paths.
     now = utc_now()
     with db.connect() as conn:
         conn.execute(

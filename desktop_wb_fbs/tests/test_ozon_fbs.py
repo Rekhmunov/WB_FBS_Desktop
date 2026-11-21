@@ -641,6 +641,117 @@ class OzonShipStatusParityTest(unittest.TestCase):
             except OSError:
                 pass
 
+    def test_force_awaiting_deliver_keeps_products(self) -> None:
+        import os
+        import tempfile
+
+        from app.db import Database
+        from app.ozon.sync import upsert_posting
+        from app.services.ozon_ship import _force_local_awaiting_deliver
+
+        fd, path = tempfile.mkstemp(suffix=".sqlite")
+        os.close(fd)
+        try:
+            db = Database(path)
+            db.init_schema()
+            with db.connect() as conn:
+                conn.execute(
+                    """
+                    INSERT INTO supply_sources(
+                        name, marketplace, client_id, api_key, is_enabled,
+                        lookback_days, created_at
+                    ) VALUES ('Озон ФБС', 'ozon', '1', 'k', 1, 2, '2026-01-01')
+                    """
+                )
+                sid = int(conn.execute("SELECT last_insert_rowid()").fetchone()[0])
+                conn.commit()
+            upsert_posting(
+                db,
+                sid,
+                {
+                    "posting_number": "KEEP-1",
+                    "status": "awaiting_packaging",
+                    "products": [
+                        {
+                            "sku": 42,
+                            "offer_id": "ART-42",
+                            "name": "Товар",
+                            "quantity": 1,
+                        }
+                    ],
+                },
+            )
+            # Empty force payload must not wipe product columns.
+            _force_local_awaiting_deliver(db, sid, "KEEP-1", posting={})
+            upsert_posting(
+                db,
+                sid,
+                {"posting_number": "KEEP-1", "status": "awaiting_deliver"},
+            )
+            with db.connect() as conn:
+                row = dict(
+                    conn.execute(
+                        "SELECT status, tab, offer_id, sku, product_name, products_json "
+                        "FROM ozon_fbs_postings WHERE posting_number = 'KEEP-1'"
+                    ).fetchone()
+                )
+            self.assertEqual(row["status"], "awaiting_deliver")
+            self.assertEqual(row["tab"], "awaiting_deliver")
+            self.assertEqual(row["offer_id"], "ART-42")
+            self.assertEqual(row["sku"], "42")
+            self.assertEqual(row["product_name"], "Товар")
+            self.assertIn("ART-42", str(row["products_json"] or ""))
+        finally:
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+
+    def test_assembly_list_excludes_supply_members(self) -> None:
+        import os
+        import tempfile
+
+        from app.db import Database
+        from app.services.ozon_orders import OzonOrdersService
+
+        fd, path = tempfile.mkstemp(suffix=".sqlite")
+        os.close(fd)
+        try:
+            db = Database(path)
+            db.init_schema()
+            with db.connect() as conn:
+                conn.execute(
+                    """
+                    INSERT INTO supply_sources(
+                        name, marketplace, client_id, api_key, is_enabled,
+                        lookback_days, created_at
+                    ) VALUES ('Озон ФБС', 'ozon', '1', 'k', 1, 2, '2026-01-01')
+                    """
+                )
+                sid = int(conn.execute("SELECT last_insert_rowid()").fetchone()[0])
+                conn.execute(
+                    """
+                    INSERT INTO ozon_fbs_postings(
+                        source_id, posting_number, status, tab, supply_id,
+                        offer_id, product_name, synced_at
+                    ) VALUES
+                    (?, 'IN-SUP', 'awaiting_deliver', 'awaiting_deliver', 'OZ-1',
+                     'A', 'In supply', '2026-01-01'),
+                    (?, 'ORPHAN', 'awaiting_deliver', 'awaiting_deliver', '',
+                     'B', 'Loose', '2026-01-01')
+                    """,
+                    (sid, sid),
+                )
+                conn.commit()
+            rows = OzonOrdersService(db).list_assembly_postings(sid)
+            nums = {str(r.get("posting_number") or "") for r in rows}
+            self.assertEqual(nums, {"ORPHAN"})
+        finally:
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+
     def test_ship_already_assembled_counts_ok(self) -> None:
         import os
         import tempfile

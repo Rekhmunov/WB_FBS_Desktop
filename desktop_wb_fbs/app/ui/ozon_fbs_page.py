@@ -34,7 +34,7 @@ from app.ui.dialog_utils import (
     block_ru_layout_scan,
     install_live_ru_layout_guard,
 )
-from app.ui.format_helpers import make_badge, make_photo_label, make_status_pill
+from app.ui.format_helpers import build_product_cell_widget, make_status_pill
 from app.ui.layout_utils import FbsTabButton, fit_tab_button
 from app.ui.table_col_widths import PersistentColumnWidths
 from app.ozon.sync import sync_source as ozon_sync_source
@@ -1553,33 +1553,13 @@ class OzonFbsPage(QWidget):
         self._open_carriage_by_id(src, cid)
 
     def _product_cell(self, row: Dict[str, Any]) -> QWidget:
-        wrap = QWidget()
-        wrap.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Minimum)
-        lay = QHBoxLayout(wrap)
-        lay.setContentsMargins(8, 8, 8, 8)
-        lay.setSpacing(10)
-        lay.addWidget(make_photo_label(row.get("product_photo"), 72), 0, Qt.AlignTop)
-        text = QVBoxLayout()
-        name = QLabel(str(row.get("product_name_display") or "—"))
-        name.setWordWrap(True)
-        name.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
-        text.addWidget(name)
-        sub = QLabel(
-            "Арт. {} · SKU {}{}".format(
-                row.get("offer_id") or "—",
-                row.get("sku") or "—",
-                " · {}".format(row["product_count_label"])
-                if row.get("product_count_label")
-                else "",
-            )
-        )
-        sub.setObjectName("sdProductSub")
-        sub.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
-        text.addWidget(sub)
-        if row.get("barcodes"):
-            text.addWidget(make_badge(str(row["barcodes"][0]), "cargo"))
-        lay.addLayout(text, 1)
-        return wrap
+        """Same product cell as Ozon supply detail (photo 72, archive typography).
+
+        Packaging list previously used an unstyled name + default VBox spacing,
+        so art/SKU sat too far under the title and text looked smaller than
+        the supply modal / web ``.wb-fbs-product-name`` (16px).
+        """
+        return build_product_cell_widget(row, photo_size=72)
 
     def _close_sync_info(self) -> None:
         self.sync_info_frame.hide()

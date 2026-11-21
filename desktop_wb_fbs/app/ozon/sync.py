@@ -368,21 +368,50 @@ def upsert_carriage(
                 now,
             ),
         )
+        # Bind carriage_id only. Never demote delivering/delivered/cancelled —
+        # forcing tab=awaiting_deliver on every sync reset «Доставляются» /
+        # «Ожидают отгрузки» after the operator moved a supply (web sync does
+        # not rewrite tabs from carriage lists at all).
         for pnum in pnums:
             conn.execute(
                 """
                 UPDATE ozon_fbs_postings
-                SET carriage_id = ?, tab = ?, status = CASE
-                    WHEN LOWER(COALESCE(status, '')) IN (
-                        'awaiting_registration',
-                        'acceptance_in_progress',
-                        'awaiting_approve',
-                        'awaiting_packaging',
-                        '',
-                        'new'
-                    ) THEN ?
-                    ELSE status
-                END, synced_at = ?
+                SET carriage_id = ?,
+                    tab = CASE
+                        WHEN LOWER(COALESCE(tab, '')) IN (
+                            'delivering', 'delivery', 'delivered', 'finished',
+                            'cancelled', 'arbitration'
+                        ) THEN tab
+                        WHEN LOWER(COALESCE(status, '')) IN (
+                            'awaiting_registration',
+                            'acceptance_in_progress',
+                            'awaiting_approve',
+                            'awaiting_packaging',
+                            '',
+                            'new'
+                        )
+                          OR LOWER(COALESCE(tab, '')) IN (
+                            'new', 'awaiting_packaging'
+                          )
+                        THEN ?
+                        ELSE tab
+                    END,
+                    status = CASE
+                        WHEN LOWER(COALESCE(tab, '')) IN (
+                            'delivering', 'delivery', 'delivered', 'finished',
+                            'cancelled', 'arbitration'
+                        ) THEN status
+                        WHEN LOWER(COALESCE(status, '')) IN (
+                            'awaiting_registration',
+                            'acceptance_in_progress',
+                            'awaiting_approve',
+                            'awaiting_packaging',
+                            '',
+                            'new'
+                        ) THEN ?
+                        ELSE status
+                    END,
+                    synced_at = ?
                 WHERE source_id = ? AND posting_number = ?
                 """,
                 (

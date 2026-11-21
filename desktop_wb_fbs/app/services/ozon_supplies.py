@@ -15,7 +15,12 @@ from typing import Any, Callable, Dict, List, Optional, Set
 from zoneinfo import ZoneInfo
 
 from app.db import Database
-from app.ozon import TAB_AWAITING_DELIVER, TAB_AWAITING_PACKAGING, utc_now
+from app.ozon import (
+    TAB_AWAITING_DELIVER,
+    TAB_AWAITING_PACKAGING,
+    TAB_DELIVERING,
+    utc_now,
+)
 from app.ozon.client import OzonFbsClient
 from app.services.ozon_ship import OzonShipService, posting_needs_ship
 
@@ -562,11 +567,18 @@ class OzonSuppliesService:
             conn.execute(
                 """
                 UPDATE ozon_fbs_postings
-                SET tab = 'delivering', synced_at = ?
+                SET tab = ?, status = ?, synced_at = ?
                 WHERE source_id = ? AND supply_id = ?
                   AND tab = ?
                 """,
-                (now, source_id, sid, TAB_AWAITING_DELIVER),
+                (
+                    TAB_DELIVERING,
+                    TAB_DELIVERING,
+                    now,
+                    source_id,
+                    sid,
+                    TAB_AWAITING_DELIVER,
+                ),
             )
             conn.commit()
 

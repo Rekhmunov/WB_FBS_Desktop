@@ -47,7 +47,8 @@ _PROD_COL_DEFAULTS = [
     110,
     120,
     140,
-    96,
+    96,  # Требует КИЗ
+    96,  # Действия
 ]
 _CAT_COL_DEFAULTS = [280, 160]
 
@@ -603,7 +604,7 @@ class SettingsPage(QWidget):
         import_btn.setObjectName("secondary")
         import_btn.setToolTip(
             "Импорт товаров из CSV "
-            "(название, артикулы WB/Ozon/ЯМ, кратность, категория, GTIN)"
+            "(название, артикулы WB/Ozon/ЯМ, кратность, категория, GTIN, Требует КИЗ)"
         )
         import_btn.clicked.connect(self.import_products)
         add = QPushButton("+ Добавить товар")
@@ -617,7 +618,7 @@ class SettingsPage(QWidget):
         self.prod_info.setObjectName("hint")
         v.addWidget(self.prod_info)
 
-        self.prod_table = QTableWidget(0, 9)
+        self.prod_table = QTableWidget(0, 10)
         self.prod_table.setHorizontalHeaderLabels(
             [
                 "Фото",
@@ -628,6 +629,7 @@ class SettingsPage(QWidget):
                 "Артикул ЯМ",
                 "Кратность в коробе",
                 "Категория товара",
+                "Требует КИЗ",
                 "Действия",
             ]
         )
@@ -718,6 +720,11 @@ class SettingsPage(QWidget):
                 self.prod_table.setItem(
                     i, 7, QTableWidgetItem(self._dash(p.get("product_category")))
                 )
+                self.prod_table.setItem(
+                    i,
+                    8,
+                    QTableWidgetItem("да" if p.get("requires_kiz") else "нет"),
+                )
 
                 actions = QWidget()
                 actions.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Minimum)
@@ -743,7 +750,7 @@ class SettingsPage(QWidget):
                 actions_lay.addWidget(edit_btn)
                 actions_lay.addWidget(del_btn)
                 actions_lay.addStretch(1)
-                self.prod_table.setCellWidget(i, 8, actions)
+                self.prod_table.setCellWidget(i, 9, actions)
         finally:
             self._prod_col_widths.end_update()
 
@@ -769,6 +776,7 @@ class SettingsPage(QWidget):
                     dlg.photo_path,
                     ozon_sku=dlg.ozon_sku,
                     yandex_offer_id=dlg.yandex_offer_id,
+                    requires_kiz=dlg.requires_kiz,
                 )
                 self.reload_products_table()
             except Exception as exc:
@@ -798,6 +806,7 @@ class SettingsPage(QWidget):
                     dlg.photo_path,
                     ozon_sku=dlg.ozon_sku,
                     yandex_offer_id=dlg.yandex_offer_id,
+                    requires_kiz=dlg.requires_kiz,
                 )
                 self.reload_products_table()
             except Exception as exc:
@@ -1119,6 +1128,10 @@ class ProductEditDialog(QDialog):
             self.cat_combo.setCurrentIndex(idx)
         else:
             self.cat_combo.setEditText(str(p.get("product_category") or ""))
+        self.requires_kiz_chk = QCheckBox(
+            "Требует КИЗ (Ozon FBS → «Товары с КИЗ»)"
+        )
+        self.requires_kiz_chk.setChecked(bool(p.get("requires_kiz")))
         self.skip_chk = QCheckBox("Без проверки GTIN маркировки (не сверять с ШК)")
         self.skip_chk.setChecked(bool(p.get("skip_kiz_gtin_check")))
         photo_btn = QPushButton("Выбрать фото…")
@@ -1132,6 +1145,7 @@ class ProductEditDialog(QDialog):
         form.addRow("Артикул Яндекс Маркет (offerId)", self.yandex_edit)
         form.addRow("Кратность в коробе", self.box_spin)
         form.addRow("Категория", self.cat_combo)
+        form.addRow("", self.requires_kiz_chk)
         form.addRow("", self.skip_chk)
         form.addRow(photo_btn, self.photo_label)
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
@@ -1157,5 +1171,6 @@ class ProductEditDialog(QDialog):
         bq = int(self.box_spin.value())
         self.box_qty = bq if bq > 0 else None
         self.category = self.cat_combo.currentText().strip()
+        self.requires_kiz = self.requires_kiz_chk.isChecked()
         self.skip_gtin = self.skip_chk.isChecked()
         super(ProductEditDialog, self).accept()

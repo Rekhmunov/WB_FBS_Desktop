@@ -14,6 +14,7 @@ from PyQt5.QtWidgets import QApplication, QLabel, QMessageBox, QTableWidgetItem
 
 from app.db import Database
 from app.ozon import utc_now
+from app.services.catalog import ProductService
 from app.services.ozon_supplies import OzonSuppliesService
 from app.ui.format_helpers import build_ozon_posting_cell_widget
 
@@ -114,6 +115,20 @@ class OzonKizPickBtnCountsTest(unittest.TestCase):
                  self.source_id, now, self.source_id, now),
             )
             conn.commit()
+        # Catalog «Требует КИЗ» drives Ozon partition (archive parity).
+        products = ProductService(self.db)
+        products.save(
+            None, "KIZ", "A", "", None, "", False, requires_kiz=True
+        )
+        products.save(
+            None, "KIZ2", "B", "", None, "", False, requires_kiz=True
+        )
+        products.save(
+            None, "Plain", "C", "", None, "", False, requires_kiz=False
+        )
+        products.save(
+            None, "Plain2", "D", "", None, "", False, requires_kiz=False
+        )
         self.sid = self.svc.create_supply(
             self.source_id,
             name="Main",
@@ -158,11 +173,11 @@ class OzonKizPickBtnCountsTest(unittest.TestCase):
             "KIZ-OK", "KIZ-EMPTY", "PICK-OK", "PICK-EMPTY"
         ]
         prog = OzonSupplyDetailDialog._kiz_pick_btn_progress(dlg)
-        # Mark modal: all 4 rows; 1 filled with marks.
-        self.assertEqual(prog["kiz"]["total"], 4)
+        # Mark modal: 2 catalog KIZ products; 1 filled with marks.
+        self.assertEqual(prog["kiz"]["total"], 2)
         self.assertEqual(prog["kiz"]["done"], 1)
-        # Pick modal: 3 without marks; 1 verified with barcode.
-        self.assertEqual(prog["pick"]["total"], 3)
+        # Pick modal: 2 without «Требует КИЗ»; 1 verified with barcode.
+        self.assertEqual(prog["pick"]["total"], 2)
         self.assertEqual(prog["pick"]["done"], 1)
 
 

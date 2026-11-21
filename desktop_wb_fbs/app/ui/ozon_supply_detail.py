@@ -719,9 +719,9 @@ class OzonSupplyDetailDialog(QDialog):
     def _kiz_pick_btn_progress(self) -> Dict[str, Dict[str, int]]:
         """Archive ``_ozonFbsComputeKizBtnProgress`` / PickBtnProgress.
 
-        Desktop has no catalog ``kiz_required`` flag yet — partition like the
-        mark/pick modals: KIZ progress over all active rows (filled marks);
-        pick progress over rows without marks (verified + barcode).
+        Partition by Settings → Products «Требует КИЗ»: mark modal = requires
+        KIZ; pick modal = does not. Counts exclude cancelled (already filtered
+        in mark/pick row builders).
         """
         pnums = self._posting_numbers()
         try:

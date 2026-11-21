@@ -46,6 +46,7 @@ CREATE TABLE IF NOT EXISTS product_photos (
     box_qty INTEGER,
     product_category TEXT NOT NULL DEFAULT '',
     skip_kiz_gtin_check INTEGER NOT NULL DEFAULT 0,
+    requires_kiz INTEGER NOT NULL DEFAULT 0,
     photo_path TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
@@ -473,6 +474,7 @@ class Database:
         for name, decl in (
             ("ozon_sku", "TEXT NOT NULL DEFAULT ''"),
             ("yandex_offer_id", "TEXT NOT NULL DEFAULT ''"),
+            ("requires_kiz", "INTEGER NOT NULL DEFAULT 0"),
         ):
             if name not in cols:
                 conn.execute(

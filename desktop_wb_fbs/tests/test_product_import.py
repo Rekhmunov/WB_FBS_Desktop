@@ -27,6 +27,37 @@ class ProductImportTests(unittest.TestCase):
             }
         self.assertIn("ozon_sku", cols)
         self.assertIn("yandex_offer_id", cols)
+        self.assertIn("requires_kiz", cols)
+
+    def test_requires_kiz_map_and_save(self) -> None:
+        pid = self.svc.save(
+            None,
+            "Маркируемый",
+            "ART-KIZ",
+            "111",
+            None,
+            "",
+            False,
+            ozon_sku="OZ-KIZ",
+            requires_kiz=True,
+        )
+        row = self.svc.get(pid)
+        assert row is not None
+        self.assertTrue(row["requires_kiz"])
+        mapping = self.svc.requires_kiz_map()
+        self.assertTrue(mapping.get("ART-KIZ"))
+        self.assertTrue(mapping.get("art-kiz"))
+        self.assertTrue(mapping.get("OZ-KIZ"))
+        self.assertTrue(
+            ProductService.catalog_requires_kiz(
+                offer_id="ART-KIZ", requires_kiz_map=mapping
+            )
+        )
+        self.assertFalse(
+            ProductService.catalog_requires_kiz(
+                offer_id="OTHER", requires_kiz_map=mapping
+            )
+        )
 
     def test_import_csv_creates_and_updates(self) -> None:
         csv_path = Path(self.tmp.name) / "products.csv"

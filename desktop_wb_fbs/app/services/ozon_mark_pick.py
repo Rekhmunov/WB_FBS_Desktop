@@ -140,11 +140,39 @@ def _catalog_product(db: Database, offer_id: str, sku: str) -> Dict[str, Any]:
     return {}
 
 
+def _posting_requires_kiz(
+    db: Database,
+    row: Dict[str, Any],
+    prod: Optional[Dict[str, Any]] = None,
+    *,
+    requires_map: Optional[Dict[str, bool]] = None,
+) -> bool:
+    """Archive ``posting_requires_marking`` via catalog «Требует КИЗ»."""
+    offer = str(row.get("offer_id") or "").strip()
+    sku = str(row.get("sku") or "").strip()
+    product = prod if prod is not None else _catalog_product(db, offer, sku)
+    mapping = requires_map
+    if mapping is None:
+        mapping = ProductService(db).requires_kiz_map()
+    return ProductService.catalog_requires_kiz(
+        offer_id=offer,
+        sku=sku,
+        requires_kiz_map=mapping,
+        product=product,
+    )
+
+
 class OzonMarkService:
     def __init__(self, db: Database) -> None:
         self.db = db
         self.orders = OzonOrdersService(db)
         self._pick_helper = PickVerifyService(db)
+        self._requires_map_cache = None  # type: Optional[Dict[str, bool]]
+
+    def _requires_map(self) -> Dict[str, bool]:
+        if self._requires_map_cache is None:
+            self._requires_map_cache = ProductService(self.db).requires_kiz_map()
+        return self._requires_map_cache
 
     def single_marking_row(
         self,
@@ -153,21 +181,28 @@ class OzonMarkService:
         *,
         client: Optional[OzonFbsClient] = None,
     ) -> Optional[Dict[str, Any]]:
+        del client
         row = self.orders.get_posting(source_id, posting_number)
         if not row:
             return None
         if str(row.get("status") or "").lower() == "cancelled":
             return None
-        marks = _parse_marks(row.get("marks_json"))
         prod = _catalog_product(
             self.db, str(row.get("offer_id") or ""), str(row.get("sku") or "")
         )
+        if not _posting_requires_kiz(
+            self.db, row, prod, requires_map=self._requires_map()
+        ):
+            return None
+        marks = _parse_marks(row.get("marks_json"))
         return self._row_view(row, prod, marks)
 
     def marking_rows_for_postings(
         self, source_id: int, posting_numbers: List[str]
     ) -> List[Dict[str, Any]]:
+        """Only postings whose catalog product has «Требует КИЗ»."""
         nums = [str(p).strip() for p in (posting_numbers or []) if str(p).strip()]
+        mapping = self._requires_map()
         out = []  # type: List[Dict[str, Any]]
         for pnum in nums:
             row = self.orders.get_posting(source_id, pnum)
@@ -177,10 +212,14 @@ class OzonMarkService:
                 continue
             if str(row.get("tab") or "").lower() == "cancelled":
                 continue
-            marks = _parse_marks(row.get("marks_json"))
             prod = _catalog_product(
                 self.db, str(row.get("offer_id") or ""), str(row.get("sku") or "")
             )
+            if not _posting_requires_kiz(
+                self.db, row, prod, requires_map=mapping
+            ):
+                continue
+            marks = _parse_marks(row.get("marks_json"))
             out.append(self._row_view(row, prod, marks))
         return out
 
@@ -195,26 +234,45 @@ class OzonMarkService:
         del client  # reserved for live refresh
         if posting_numbers is not None:
             return self.marking_rows_for_postings(source_id, posting_numbers)
+        mapping = self._requires_map()
         rows = self.orders.postings_in_carriage(source_id, carriage_id)
         out = []  # type: List[Dict[str, Any]]
         for r in rows:
             if str(r.get("status") or "").lower() == "cancelled":
                 continue
-            marks = _parse_marks(r.get("marks_json"))
             prod = _catalog_product(
                 self.db, str(r.get("offer_id") or ""), str(r.get("sku") or "")
             )
+            if not _posting_requires_kiz(
+                self.db, r, prod, requires_map=mapping
+            ):
+                continue
+            marks = _parse_marks(r.get("marks_json"))
             out.append(self._row_view(r, prod, marks))
         return out
 
     def pick_rows_for_postings(
         self, source_id: int, posting_numbers: List[str]
     ) -> List[Dict[str, Any]]:
+        """Postings that do NOT require КИЗ (archive pick-verify set)."""
+        nums = [str(p).strip() for p in (posting_numbers or []) if str(p).strip()]
+        mapping = self._requires_map()
         out = []  # type: List[Dict[str, Any]]
-        for r in self.marking_rows_for_postings(source_id, posting_numbers):
-            if r.get("marks"):
+        for pnum in nums:
+            row = self.orders.get_posting(source_id, pnum)
+            if not row:
                 continue
-            out.append(r)
+            if str(row.get("status") or "").lower() in ("cancelled", "not_accepted"):
+                continue
+            if str(row.get("tab") or "").lower() == "cancelled":
+                continue
+            prod = _catalog_product(
+                self.db, str(row.get("offer_id") or ""), str(row.get("sku") or "")
+            )
+            if _posting_requires_kiz(self.db, row, prod, requires_map=mapping):
+                continue
+            marks = _parse_marks(row.get("marks_json"))
+            out.append(self._row_view(row, prod, marks))
         return out
 
     def pick_rows(
@@ -226,17 +284,18 @@ class OzonMarkService:
     ) -> List[Dict[str, Any]]:
         if posting_numbers is not None:
             return self.pick_rows_for_postings(source_id, posting_numbers)
+        mapping = self._requires_map()
         rows = self.orders.postings_in_carriage(source_id, carriage_id)
         out = []  # type: List[Dict[str, Any]]
         for r in rows:
             if str(r.get("status") or "").lower() == "cancelled":
                 continue
-            marks = _parse_marks(r.get("marks_json"))
-            if marks:
-                continue
             prod = _catalog_product(
                 self.db, str(r.get("offer_id") or ""), str(r.get("sku") or "")
             )
+            if _posting_requires_kiz(self.db, r, prod, requires_map=mapping):
+                continue
+            marks = _parse_marks(r.get("marks_json"))
             out.append(self._row_view(r, prod, marks))
         return out
 
@@ -266,6 +325,8 @@ class OzonMarkService:
             "status": str(row.get("status") or ""),
             "status_label": str(row.get("status_label") or ""),
             "skip_gtin_check": bool(prod.get("skip_kiz_gtin_check")),
+            "kiz_required": bool(prod.get("requires_kiz")),
+            "requires_kiz": bool(prod.get("requires_kiz")),
         }
 
     def _posting_needs_mark(
@@ -540,12 +601,12 @@ class OzonPickService:
         row = self.orders.get_posting(source_id, posting_number)
         if not row:
             return []
-        marks = _parse_marks(row.get("marks_json"))
-        if marks:
-            return []
         prod = _catalog_product(
             self.db, str(row.get("offer_id") or ""), str(row.get("sku") or "")
         )
+        if _posting_requires_kiz(self.db, row, prod):
+            return []
+        marks = _parse_marks(row.get("marks_json"))
         return [OzonMarkService(self.db)._row_view(row, prod, marks)]
 
     def validate_barcode(self, barcode: str, skus: List[Any]) -> Tuple[bool, str]:

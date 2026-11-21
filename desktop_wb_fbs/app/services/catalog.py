@@ -68,6 +68,8 @@ def product_matches_search(product: Dict[str, Any], query: str) -> bool:
     ]
     if bool(int(p.get("skip_kiz_gtin_check") or 0)):
         parts.extend(("gtin", "маркировк"))
+    if bool(int(p.get("requires_kiz") or 0)):
+        parts.extend(("киз", "kiz", "маркировк"))
     haystack = " ".join(str(x or "") for x in parts).lower()
     return q in haystack
 
@@ -84,6 +86,7 @@ class ProductService:
         out = Database.rows_to_dicts(rows)
         for d in out:
             d["skip_kiz_gtin_check"] = bool(int(d.get("skip_kiz_gtin_check") or 0))
+            d["requires_kiz"] = bool(int(d.get("requires_kiz") or 0))
         return out
 
     def get(self, product_id: int) -> Optional[Dict[str, Any]]:
@@ -94,6 +97,7 @@ class ProductService:
         d = Database.row_to_dict(row)
         if d:
             d["skip_kiz_gtin_check"] = bool(int(d.get("skip_kiz_gtin_check") or 0))
+            d["requires_kiz"] = bool(int(d.get("requires_kiz") or 0))
         return d
 
     def save(
@@ -108,6 +112,7 @@ class ProductService:
         photo_src: Optional[str] = None,
         ozon_sku: str = "",
         yandex_offer_id: str = "",
+        requires_kiz: bool = False,
     ) -> int:
         name = str(name or "").strip()
         if not name:
@@ -118,6 +123,7 @@ class ProductService:
         yandex = str(yandex_offer_id or "").strip()
         category = str(product_category or "").strip()
         skip = 1 if skip_kiz_gtin_check else 0
+        needs_kiz = 1 if requires_kiz else 0
         now = utc_now()
         photo_path = None  # type: Optional[str]
 
@@ -149,6 +155,7 @@ class ProductService:
                         name=?, supplier_article=?, wb_nmid=?,
                         ozon_sku=?, yandex_offer_id=?, box_qty=?,
                         product_category=?, skip_kiz_gtin_check=?,
+                        requires_kiz=?,
                         photo_path=COALESCE(?, photo_path), updated_at=?
                     WHERE id=?
                     """,
@@ -161,6 +168,7 @@ class ProductService:
                         box_qty,
                         category,
                         skip,
+                        needs_kiz,
                         photo_path,
                         now,
                         product_id,
@@ -174,9 +182,9 @@ class ProductService:
                 """
                 INSERT INTO product_photos(
                     name, supplier_article, wb_nmid, ozon_sku, yandex_offer_id,
-                    box_qty, product_category, skip_kiz_gtin_check, photo_path,
-                    created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    box_qty, product_category, skip_kiz_gtin_check, requires_kiz,
+                    photo_path, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     name,
@@ -187,6 +195,7 @@ class ProductService:
                     box_qty,
                     category,
                     skip,
+                    needs_kiz,
                     photo_path,
                     now,
                     now,
@@ -285,6 +294,7 @@ class ProductService:
         col_box = _col("кратность", "коробе", "в коробе")
         col_cat = _col("категория")
         col_skip = _col("без проверки gtin", "без проверки gtin маркировки", "gtin")
+        col_kiz = _col("требует киз", "requires_kiz", "requires kiz", "с киз")
 
         if col_name is None:
             raise ValueError(
@@ -307,6 +317,9 @@ class ProductService:
             yandex = cell(col_yandex)
             category = cell(col_cat)
             skip = _truthy_flag(cell(col_skip)) if col_skip is not None else False
+            needs_kiz = (
+                _truthy_flag(cell(col_kiz)) if col_kiz is not None else False
+            )
             box_raw = cell(col_box)
             box_qty = None  # type: Optional[int]
             if box_raw:
@@ -338,6 +351,7 @@ class ProductService:
                 None,
                 ozon_sku=ozon,
                 yandex_offer_id=yandex,
+                requires_kiz=needs_kiz,
             )
             if existing_id:
                 updated += 1
@@ -383,6 +397,49 @@ class ProductService:
             if nm:
                 out[nm] = True
         return out
+
+    def requires_kiz_map(self) -> Dict[str, bool]:
+        """Archive ``get_product_requires_kiz_map``: article / ozon_sku → True.
+
+        Used by Ozon FBS to route postings into «Товары с КИЗ» vs «без КИЗ».
+        """
+        out = {}  # type: Dict[str, bool]
+        for p in self.list_all():
+            if not p.get("requires_kiz"):
+                continue
+            for field in ("supplier_article", "ozon_sku"):
+                key = str(p.get(field) or "").strip()
+                if not key:
+                    continue
+                out[key] = True
+                out[key.casefold()] = True
+        return out
+
+    @staticmethod
+    def catalog_requires_kiz(
+        *,
+        offer_id: str = "",
+        sku: str = "",
+        requires_kiz_map: Optional[Dict[str, bool]] = None,
+        product: Optional[Dict[str, Any]] = None,
+    ) -> bool:
+        """Match posting line to Settings → Products «Требует КИЗ»."""
+        if product is not None and bool(product.get("requires_kiz")):
+            return True
+        mapping = requires_kiz_map or {}
+        if not mapping:
+            return False
+        article = str(offer_id or "").strip()
+        sku_key = str(sku or "").strip()
+        for key in (
+            article,
+            article.casefold() if article else "",
+            sku_key,
+            sku_key.casefold() if sku_key else "",
+        ):
+            if key and mapping.get(key):
+                return True
+        return False
 
 
 class CategoryService:

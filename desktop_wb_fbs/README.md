@@ -55,7 +55,9 @@ python run.py
 - **`FeedPilot FBS.vbs`** — без чёрной консоли
 - **`FeedPilot FBS.bat`** — через `pythonw`; если нет — консоль с ошибкой
 
-Данные: `%APPDATA%/FeedPilotFBS/` (Windows) или `~/.local/share/FeedPilotFBS/` (Linux).
+Данные: папка **`data/`** рядом с программой (`desktop_wb_fbs/data/`).  
+При первом запуске (или если `data` удалили) база и фото **копируются** из старого места  
+`%APPDATA%/FeedPilotFBS/` (Windows) / `~/.local/share/FeedPilotFBS/` (Linux) — оригинал не удаляется.
 
 ## Структура
 

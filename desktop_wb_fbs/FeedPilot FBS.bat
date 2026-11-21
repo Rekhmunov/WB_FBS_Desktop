@@ -7,7 +7,7 @@ if %errorlevel%==0 (
   pythonw run.py
   if errorlevel 1 (
     echo.
-    echo Ошибка запуска. См. %%APPDATA%%\FeedPilotFBS\logs\last_crash.txt
+    echo Ошибка запуска. См. папку data\logs\last_crash.txt рядом с программой
     echo Или установите зависимости:
     echo   python -m pip install -r requirements.txt
     echo.

@@ -23,6 +23,8 @@ _log = logging.getLogger(__name__)
 
 SUPPLY_ID_PREFIX = "OZ-FBS"
 OZON_FBS_SHIP_ALL_PAUSE_SEC = 0.22
+# Dedicated local bucket for delivering postings without a supply (web parity).
+ORPHAN_DELIVERING_SUPPLY_NAME = "Без локальной поставки"
 MSK = ZoneInfo("Europe/Moscow")
 
 ProgressCb = Optional[Callable[[int, int, str], None]]
@@ -101,8 +103,102 @@ class OzonSuppliesService:
             ).fetchall()
         return [self._enrich_supply(Database.row_to_dict(r)) for r in rows]
 
-    def list_awaiting_deliver_supplies(self, source_id: int) -> List[Dict[str, Any]]:
-        """Open local supplies with postings still on awaiting_deliver (or empty)."""
+    def list_orphan_awaiting_deliver_rows(
+        self, source_id: int
+    ) -> List[Dict[str, Any]]:
+        """``awaiting_deliver`` postings with empty ``supply_id`` (loose / orphans)."""
+        with self.db.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM ozon_fbs_postings
+                WHERE source_id = ?
+                  AND tab IN ('assembly', 'awaiting_deliver')
+                  AND COALESCE(supply_id, '') = ''
+                  AND (carriage_id IS NULL OR carriage_id = '')
+                ORDER BY datetime(created_at_wb) DESC, posting_number DESC
+                """,
+                (source_id,),
+            ).fetchall()
+        return [Database.row_to_dict(r) for r in rows]
+
+    def adopt_orphan_awaiting_deliver_postings(
+        self, source_id: int
+    ) -> Dict[str, Any]:
+        """Put orphan awaiting_deliver postings into a *new* local supply.
+
+        Never merges into an already open supply the operator created (so
+        «сироты» do not mix into ОЗОН_ФБС_000 / current collect). Groups by
+        warehouse; each bucket gets its own ``Поставка … · добор`` name.
+        """
+        rows = self.list_orphan_awaiting_deliver_rows(source_id)
+        if not rows:
+            return {
+                "ok": True,
+                "adopted": 0,
+                "created_supplies": [],
+                "group_lines": [],
+            }
+        buckets = {}  # type: Dict[Any, List[Dict[str, Any]]]
+        for row in rows:
+            wh = row.get("warehouse_id")
+            buckets.setdefault(wh, []).append(row)
+
+        open_names = {
+            str(s.get("name") or "").strip()
+            for s in self.list_open_supplies(source_id)
+            if str(s.get("name") or "").strip()
+        }
+        source_name = self.source_display_name(source_id)
+        created = []  # type: List[Dict[str, str]]
+        group_lines = []  # type: List[str]
+        adopted = 0
+        for warehouse_id in sorted(buckets.keys(), key=lambda x: (x is None, str(x))):
+            bucket = buckets[warehouse_id]
+            posting_numbers = [
+                str(r.get("posting_number") or "").strip()
+                for r in bucket
+                if str(r.get("posting_number") or "").strip()
+            ]
+            if not posting_numbers:
+                continue
+            wh_name = (
+                str(bucket[0].get("warehouse_name") or "").strip() if bucket else ""
+            )
+            base = default_supply_name(source_name=source_name) + " · добор"
+            name = unique_supply_name(base, open_names)
+            sid = self.create_supply(
+                source_id,
+                name=name,
+                warehouse_id=warehouse_id,
+                warehouse_name=wh_name,
+                posting_numbers=posting_numbers,
+            )
+            open_names.add(name)
+            created.append({"supply_id": sid, "name": name})
+            group_lines.append(
+                "{}: {} отпр. (осиротевшие)".format(name, len(posting_numbers))
+            )
+            adopted += len(posting_numbers)
+        return {
+            "ok": True,
+            "adopted": adopted,
+            "created_supplies": created,
+            "group_lines": group_lines,
+        }
+
+    def list_awaiting_deliver_supplies(
+        self, source_id: int, *, adopt_orphans: bool = True
+    ) -> List[Dict[str, Any]]:
+        """Open local supplies with postings still on awaiting_deliver (or empty).
+
+        When ``adopt_orphans`` is True (default), loose awaiting_deliver rows are
+        wrapped into a separate «· добор» supply — never into an existing one.
+        """
+        if adopt_orphans:
+            try:
+                self.adopt_orphan_awaiting_deliver_postings(source_id)
+            except Exception as exc:
+                _log.warning("ozon adopt orphans failed: %s", exc)
         open_supplies = self.list_open_supplies(source_id)
         counts = self._order_counts_by_tab(source_id, TAB_AWAITING_DELIVER)
         delivering_ids = self._supply_ids_with_tab(source_id, "delivering")

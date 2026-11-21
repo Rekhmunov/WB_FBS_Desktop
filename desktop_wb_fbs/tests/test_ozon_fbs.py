@@ -878,6 +878,92 @@ class OzonShipStatusParityTest(unittest.TestCase):
             except OSError:
                 pass
 
+    def test_adopt_orphans_creates_separate_supply(self) -> None:
+        import os
+        import tempfile
+
+        from app.db import Database
+        from app.services.ozon_supplies import OzonSuppliesService
+
+        fd, path = tempfile.mkstemp(suffix=".sqlite")
+        os.close(fd)
+        try:
+            db = Database(path)
+            db.init_schema()
+            with db.connect() as conn:
+                conn.execute(
+                    """
+                    INSERT INTO supply_sources(
+                        name, marketplace, client_id, api_key, is_enabled,
+                        lookback_days, created_at
+                    ) VALUES ('Озон ФБС', 'ozon', '1', 'k', 1, 2, '2026-01-01')
+                    """
+                )
+                sid = int(conn.execute("SELECT last_insert_rowid()").fetchone()[0])
+                conn.commit()
+            svc = OzonSuppliesService(db)
+            existing = svc.create_supply(
+                sid,
+                name="Поставка ОЗОН_ФБС_000 от 21.11.2026",
+                warehouse_id=10,
+                warehouse_name="WH",
+                posting_numbers=[],
+            )
+            with db.connect() as conn:
+                conn.execute(
+                    """
+                    INSERT INTO ozon_fbs_postings(
+                        source_id, posting_number, status, tab, supply_id,
+                        warehouse_id, warehouse_name, offer_id, product_name,
+                        synced_at
+                    ) VALUES
+                    (?, 'KEEP-IN', 'awaiting_deliver', 'awaiting_deliver', ?,
+                     10, 'WH', 'A', 'Keep', '2026-01-01'),
+                    (?, 'ORPH-1', 'awaiting_deliver', 'awaiting_deliver', '',
+                     10, 'WH', 'B', 'Orphan', '2026-01-01'),
+                    (?, 'ORPH-2', 'awaiting_deliver', 'awaiting_deliver', '',
+                     10, 'WH', 'C', 'Orphan2', '2026-01-01')
+                    """,
+                    (sid, existing, sid, sid),
+                )
+                conn.commit()
+            out = svc.adopt_orphan_awaiting_deliver_postings(sid)
+            self.assertEqual(int(out.get("adopted") or 0), 2)
+            created = out.get("created_supplies") or []
+            self.assertEqual(len(created), 1)
+            new_sid = str(created[0].get("supply_id") or "")
+            self.assertTrue(new_sid)
+            self.assertNotEqual(new_sid, existing)
+            self.assertIn("добор", str(created[0].get("name") or ""))
+            with db.connect() as conn:
+                rows = {
+                    str(r["posting_number"]): str(r["supply_id"] or "")
+                    for r in conn.execute(
+                        "SELECT posting_number, supply_id FROM ozon_fbs_postings "
+                        "WHERE source_id = ?",
+                        (sid,),
+                    ).fetchall()
+                }
+            self.assertEqual(rows["KEEP-IN"], existing)
+            self.assertEqual(rows["ORPH-1"], new_sid)
+            self.assertEqual(rows["ORPH-2"], new_sid)
+            # Existing supply members unchanged.
+            with db.connect() as conn:
+                members = [
+                    str(r["posting_number"])
+                    for r in conn.execute(
+                        "SELECT posting_number FROM ozon_fbs_postings "
+                        "WHERE supply_id = ?",
+                        (existing,),
+                    ).fetchall()
+                ]
+            self.assertEqual(members, ["KEEP-IN"])
+        finally:
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+
     def test_ship_already_assembled_counts_ok(self) -> None:
         import os
         import tempfile

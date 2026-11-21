@@ -585,8 +585,31 @@ class OzonFbsPage(QWidget):
             return
 
         # awaiting_deliver — local supplies (web parity), fallback to API carriages.
-        supplies = supplies_svc.list_awaiting_deliver_supplies(sid)
+        # Orphans (awaiting_deliver without supply_id) → new «· добор» supply,
+        # never mixed into an existing operator-created supply.
+        adopt = {}  # type: Dict[str, Any]
+        try:
+            adopt = supplies_svc.adopt_orphan_awaiting_deliver_postings(sid)
+        except Exception:
+            adopt = {}
+        supplies = supplies_svc.list_awaiting_deliver_supplies(
+            sid, adopt_orphans=False
+        )
         orphans = self.orders.list_assembly_postings(sid, search=search)
+        adopted_n = int(adopt.get("adopted") or 0)
+        if adopted_n:
+            names = [
+                str(x.get("name") or "")
+                for x in (adopt.get("created_supplies") or [])
+                if str(x.get("name") or "").strip()
+            ]
+            self._show_sync_info(
+                "Оформлено {} отпр. без поставки → «{}»".format(
+                    adopted_n,
+                    "», «".join(names) if names else "новая поставка · добор",
+                ),
+                "ok",
+            )
         if supplies or not self.orders.list_open_carriages(sid):
             self.table.setHorizontalHeaderLabels(
                 ["Поставка / отправление", "Статус / товар", "Отправлений"]

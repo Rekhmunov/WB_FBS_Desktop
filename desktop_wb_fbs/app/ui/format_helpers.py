@@ -226,9 +226,13 @@ def build_order_cell_widget(row: Dict[str, Any]) -> QWidget:
     return wrap
 
 
-def build_ozon_scanit_label(scanit: object) -> Optional[QLabel]:
-    """Instance label ``ii…`` under posting number (web ``_ozonFbsScanitUnderOrderHtml``)."""
-    from app.ozon.sticker_fields import format_scanit_tail_html, normalize_ozon_scanit
+def build_ozon_scanit_label(scanit: object) -> Optional[QWidget]:
+    """Instance label ``ii…`` under posting number (web ``_ozonFbsScanitUnderOrderHtml``).
+
+    Uses two plain QLabels (not RichText): HTML font-size in a single QLabel
+    reports a too-small height, so the date line below overlaps.
+    """
+    from app.ozon.sticker_fields import normalize_ozon_scanit
 
     value = normalize_ozon_scanit(scanit)
     if not value:
@@ -237,12 +241,33 @@ def build_ozon_scanit_label(scanit: object) -> Optional[QLabel]:
         value = normalize_ozon_scanit(raw) if raw else ""
     if not value:
         return None
-    lab = QLabel()
-    lab.setObjectName("sdScanit")
-    lab.setTextFormat(Qt.RichText)
-    lab.setText(format_scanit_tail_html(value))
-    lab.setToolTip(value)
-    return lab
+
+    wrap = QWidget()
+    wrap.setObjectName("sdScanit")
+    wrap.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
+    wrap.setMinimumHeight(28)
+    lay = QHBoxLayout(wrap)
+    lay.setContentsMargins(0, 2, 0, 2)
+    lay.setSpacing(0)
+    lay.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+
+    if len(value) > 4:
+        head = QLabel(value[:-4])
+        head.setObjectName("sdScanitHead")
+        head.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        tail = QLabel(value[-4:])
+        tail.setObjectName("sdScanitTail")
+        tail.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        lay.addWidget(head, 0, Qt.AlignVCenter)
+        lay.addWidget(tail, 0, Qt.AlignVCenter)
+    else:
+        only = QLabel(value)
+        only.setObjectName("sdScanitTail")
+        only.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        lay.addWidget(only, 0, Qt.AlignVCenter)
+    lay.addStretch(1)
+    wrap.setToolTip(value)
+    return wrap
 
 
 def build_ozon_posting_cell_widget(row: Dict[str, Any]) -> QWidget:
@@ -251,39 +276,41 @@ def build_ozon_posting_cell_widget(row: Dict[str, Any]) -> QWidget:
     wrap.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
     lay = QVBoxLayout(wrap)
     lay.setContentsMargins(8, 10, 8, 10)
-    lay.setSpacing(4)
+    lay.setSpacing(6)
+    lay.setAlignment(Qt.AlignTop)
 
     pn = str(row.get("posting_number") or "").strip() or "—"
     oid = QLabel(pn)
     oid.setObjectName("sdOrderId")
+    oid.setWordWrap(False)
     oid.setTextInteractionFlags(Qt.TextSelectableByMouse)
+    oid.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
     lay.addWidget(oid)
 
     scanit_lab = build_ozon_scanit_label(row.get("sticker_scanit"))
     if scanit_lab is not None:
         lay.addWidget(scanit_lab)
 
-    created = str(
-        row.get("created_date")
-        or row.get("in_process_at")
-        or row.get("created_at_wb")
-        or ""
-    ).strip()
-    if created and "T" in created:
-        created = created.split("T", 1)[0]
+    created = str(row.get("created_date") or "").strip()
+    if not created:
+        raw = str(
+            row.get("in_process_at") or row.get("created_at_wb") or ""
+        ).strip()
+        created = format_date_short(raw) if raw else ""
     meta = QLabel("от {}".format(created or "—"))
     meta.setObjectName("sdOrderMeta")
+    meta.setWordWrap(False)
+    meta.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
     lay.addWidget(meta)
 
-    badges = QHBoxLayout()
-    badges.setContentsMargins(0, 0, 0, 0)
-    badges.setSpacing(4)
     cancel_label = str(row.get("cancel_reason") or "").strip()
     if cancel_label or str(row.get("tab") or "").lower() == "cancelled":
+        badges = QHBoxLayout()
+        badges.setContentsMargins(0, 2, 0, 0)
+        badges.setSpacing(4)
         badges.addWidget(make_badge(cancel_label or "отменено", "danger"))
-    badges.addStretch(1)
-    lay.addLayout(badges)
-    lay.addStretch(1)
+        badges.addStretch(1)
+        lay.addLayout(badges)
     return wrap
 
 

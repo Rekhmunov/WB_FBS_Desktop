@@ -1820,6 +1820,71 @@ class OzonPackagingStaleSyncTest(unittest.TestCase):
             except OSError:
                 pass
 
+    def test_reconcile_stale_portal_packaging_refreshes_via_get(self) -> None:
+        import os
+        import tempfile
+        from unittest.mock import MagicMock
+
+        from app.db import Database
+        from app.ozon.sync import reconcile_packaging_to_portal_set
+        from app.services.ozon_orders import OzonOrdersService
+
+        fd, path = tempfile.mkstemp(suffix=".sqlite")
+        os.close(fd)
+        try:
+            db = Database(path)
+            db.init_schema()
+            with db.connect() as conn:
+                conn.execute(
+                    """
+                    INSERT INTO supply_sources(
+                        name, marketplace, client_id, api_key, is_enabled,
+                        lookback_days, created_at
+                    ) VALUES ('Озон', 'ozon', '1', 'k', 1, 2, '2026-01-01')
+                    """
+                )
+                sid = int(conn.execute("SELECT last_insert_rowid()").fetchone()[0])
+                conn.execute(
+                    """
+                    INSERT INTO ozon_fbs_postings(
+                        source_id, posting_number, status, tab, quantity,
+                        supply_id, products_json, synced_at
+                    ) VALUES
+                    (?, 'ON-PORTAL', 'awaiting_packaging', 'awaiting_packaging',
+                     1, '', '[{"sku":1,"quantity":1}]', 't'),
+                    (?, 'STALE', 'awaiting_packaging', 'awaiting_packaging',
+                     1, '', '[{"sku":2,"quantity":1}]', 't')
+                    """,
+                    (sid, sid),
+                )
+                conn.commit()
+
+            client = MagicMock()
+            client.get_posting.return_value = {
+                "posting_number": "STALE",
+                "status": "awaiting_deliver",
+                "products": [{"sku": 2, "offer_id": "o", "name": "n", "quantity": 1}],
+            }
+            fixed = reconcile_packaging_to_portal_set(
+                db, sid, client, seen_packaging={"ON-PORTAL"}
+            )
+            self.assertEqual(fixed, 1)
+            client.get_posting.assert_called_once_with("STALE")
+            counts = OzonOrdersService(db).tab_counts(sid)
+            self.assertEqual(counts.get("awaiting_packaging"), 1)
+            with db.connect() as conn:
+                stale = conn.execute(
+                    "SELECT tab, status FROM ozon_fbs_postings "
+                    "WHERE posting_number='STALE'"
+                ).fetchone()
+            self.assertEqual(stale["tab"], "awaiting_deliver")
+            self.assertEqual(stale["status"], "awaiting_deliver")
+        finally:
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+
     def test_preview_multi_counts_only_multi_units(self) -> None:
         import os
         import tempfile

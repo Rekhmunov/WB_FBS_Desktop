@@ -4,14 +4,17 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Any, Callable, Dict, List, Optional
+import time
+from typing import Any, Callable, Dict, List, Optional, Set
 
 from app.db import Database
 from app.ozon import (
+    PORTAL_PACKAGING_STATUS,
     SYNC_STATUSES,
     TAB_AWAITING_DELIVER,
     TAB_AWAITING_PACKAGING,
     carriage_is_done,
+    is_portal_packaging_status,
     iso_z,
     lookback_window,
     resolve_upsert_status,
@@ -235,6 +238,92 @@ def reconcile_packaging_in_local_supplies(db: Database, source_id: int) -> int:
         return int(cur.rowcount or 0)
 
 
+def _list_stale_portal_packaging(
+    db: Database, source_id: int, seen_packaging: set
+) -> List[str]:
+    """Free local portal-packaging rows not returned by this sync's packaging list."""
+    with db.connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT posting_number FROM ozon_fbs_postings
+            WHERE source_id = ?
+              AND tab IN ('new', 'awaiting_packaging')
+              AND LOWER(COALESCE(status, '')) = ?
+              AND COALESCE(supply_id, '') = ''
+            """,
+            (source_id, PORTAL_PACKAGING_STATUS),
+        ).fetchall()
+    out = []  # type: List[str]
+    for row in rows:
+        pn = str(row["posting_number"] or "").strip()
+        if pn and pn not in seen_packaging:
+            out.append(pn)
+    return out
+
+
+def reconcile_packaging_to_portal_set(
+    db: Database,
+    source_id: int,
+    client: OzonFbsClient,
+    seen_packaging: set,
+    *,
+    stop_requested: Optional[Callable[[], bool]] = None,
+    progress: ProgressCb = None,
+) -> int:
+    """Refresh free packaging rows missing from the portal packaging list.
+
+    After a complete ``statuses=[awaiting_packaging]`` walk, any free local row
+    still marked portal-packaging but absent from ``seen_packaging`` is stale
+    (left the portal tab / left the lookback window). Re-fetch via get and
+    upsert so tab/status match the API — exact method membership, not approx.
+    """
+    stale = _list_stale_portal_packaging(db, source_id, seen_packaging)
+    if not stale:
+        return 0
+    fixed = 0
+    total = len(stale)
+    for i, pn in enumerate(stale, start=1):
+        if stop_requested and stop_requested():
+            break
+        _prog(
+            progress,
+            "Сверка сборки {}/{}…".format(i, total),
+            i,
+        )
+        try:
+            remote = client.get_posting(pn) or {}
+        except Exception as exc:
+            _log.warning("ozon packaging reconcile get %s: %s", pn, exc)
+            remote = {}
+        if isinstance(remote, dict) and str(remote.get("posting_number") or "").strip():
+            upsert_posting(db, source_id, remote)
+            fixed += 1
+        else:
+            # Not found / empty — leave packaging only if still on portal set.
+            now = utc_now()
+            with db.connect() as conn:
+                conn.execute(
+                    """
+                    UPDATE ozon_fbs_postings
+                    SET tab = ?, status = ?, synced_at = ?
+                    WHERE source_id = ? AND posting_number = ?
+                      AND tab IN ('new', 'awaiting_packaging')
+                      AND COALESCE(supply_id, '') = ''
+                    """,
+                    (
+                        TAB_AWAITING_DELIVER,
+                        TAB_AWAITING_DELIVER,
+                        now,
+                        source_id,
+                        pn,
+                    ),
+                )
+                conn.commit()
+            fixed += 1
+        time.sleep(0.05)
+    return fixed
+
+
 def upsert_carriage(
     db: Database,
     source_id: int,
@@ -323,11 +412,18 @@ def sync_source(
 ) -> Dict[str, Any]:
     client = OzonFbsClient(client_id, api_key)
     errors = []  # type: List[str]
-    seen = set()  # type: set
+    seen = set()  # type: Set[str]
+    # Exact portal «Ожидают сборки» membership from list/unfulfilled.
+    seen_packaging = set()  # type: Set[str]
+    packaging_list_ok = False
     count = 0
 
     def stopped() -> bool:
         return bool(stop_requested and stop_requested())
+
+    def _note_packaging(posting: Dict[str, Any], pnum: str) -> None:
+        if is_portal_packaging_status(posting.get("status")):
+            seen_packaging.add(pnum)
 
     try:
         _prog(progress, "Проверка API…", count)
@@ -352,9 +448,31 @@ def sync_source(
                 )
         except Exception as exc:
             errors.append("reconcile packaging: {}".format(exc))
+        # Exact portal set: drop free awaiting_packaging not returned by methods.
+        if packaging_list_ok and not was_stopped and not stopped():
+            try:
+                pruned = reconcile_packaging_to_portal_set(
+                    db,
+                    source_id,
+                    client,
+                    seen_packaging,
+                    stop_requested=stop_requested,
+                    progress=progress,
+                )
+                if pruned:
+                    _log.info(
+                        "ozon sync source=%s refreshed %s stale packaging rows "
+                        "(portal set size=%s)",
+                        source_id,
+                        pruned,
+                        len(seen_packaging),
+                    )
+            except Exception as exc:
+                errors.append("reconcile portal packaging: {}".format(exc))
         return {
             "postings": count,
             "carriages": carriages_n,
+            "packaging": len(seen_packaging),
             "errors": errors,
             "stopped": was_stopped or stopped(),
         }
@@ -384,6 +502,7 @@ def sync_source(
                 if not pnum or pnum in seen:
                     continue
                 seen.add(pnum)
+                _note_packaging(posting, pnum)
                 upsert_posting(db, source_id, posting)
                 count += 1
             _prog(progress, "Необработанные… {}".format(count), count)
@@ -392,8 +511,8 @@ def sync_source(
     except Exception as exc:
         errors.append("unfulfilled: {}".format(exc))
 
-    # Per-status list (web parity) — updates rows that left packaging so the
-    # «Ожидают сборки» tab does not keep stale portal leftovers.
+    # Per-status list (web parity). Packaging pass is the portal source of truth
+    # for «Ожидают сборки» (statuses=[awaiting_packaging]).
     _prog(progress, "Список отправлений…", count)
     for status in SYNC_STATUSES:
         if stopped():
@@ -410,6 +529,10 @@ def sync_source(
                     if not pnum:
                         continue
                     seen.add(pnum)
+                    if status == PORTAL_PACKAGING_STATUS:
+                        seen_packaging.add(pnum)
+                    else:
+                        _note_packaging(posting, pnum)
                     upsert_posting(db, source_id, posting)
                     count += 1
                 _prog(
@@ -417,8 +540,12 @@ def sync_source(
                     "{}… {}".format(label, count),
                     count,
                 )
+            if status == PORTAL_PACKAGING_STATUS:
+                packaging_list_ok = True
         except Exception as exc:
             errors.append("list {}: {}".format(label, exc))
+            if status == PORTAL_PACKAGING_STATUS:
+                packaging_list_ok = False
 
     carriages_n = 0
     _prog(progress, "Отгрузки…", count)

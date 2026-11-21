@@ -329,6 +329,7 @@ class OzonSplitService:
                 SELECT * FROM ozon_fbs_postings
                 WHERE source_id = ?
                   AND tab IN ('new', 'awaiting_packaging')
+                  AND LOWER(COALESCE(status, '')) = 'awaiting_packaging'
                   AND COALESCE(supply_id, '') = ''
                 """,
                 (source_id,),

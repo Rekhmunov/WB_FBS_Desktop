@@ -1830,6 +1830,7 @@ class OzonSuppliesService:
                 SELECT * FROM ozon_fbs_postings
                 WHERE source_id = ?
                   AND tab IN ('new', 'awaiting_packaging')
+                  AND LOWER(COALESCE(status, '')) = 'awaiting_packaging'
                   AND COALESCE(supply_id, '') = ''
                 ORDER BY datetime(created_at_wb) DESC, posting_number DESC
                 """,

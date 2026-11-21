@@ -124,15 +124,15 @@ class OzonOrdersService:
         from app.services.ozon_supplies import OzonSuppliesService
 
         with self.db.connect() as conn:
-            # Free packaging only — rows already in a local supply belong on
-            # «Ожидают отгрузки» (ship/split use the same filter).
+            # Exact portal «Ожидают сборки»: free rows with Seller status
+            # awaiting_packaging (same as /v4/posting/fbs/list statuses=[…]).
             n = conn.execute(
                 """
                 SELECT COUNT(*) AS c FROM ozon_fbs_postings
                 WHERE source_id = ?
                   AND tab IN ('new', 'awaiting_packaging')
+                  AND LOWER(COALESCE(status, '')) = 'awaiting_packaging'
                   AND COALESCE(supply_id, '') = ''
-                  AND LOWER(COALESCE(status, '')) NOT IN ('cancelled', 'not_accepted')
                 """,
                 (source_id,),
             ).fetchone()
@@ -207,8 +207,8 @@ class OzonOrdersService:
         cond = [
             "source_id = ?",
             "tab IN ('new', 'awaiting_packaging')",
+            "LOWER(COALESCE(status, '')) = 'awaiting_packaging'",
             "COALESCE(supply_id, '') = ''",
-            "LOWER(COALESCE(status, '')) NOT IN ('cancelled', 'not_accepted')",
         ]
         params = [source_id]  # type: List[Any]
         q = str(search or "").strip().lower()
@@ -238,8 +238,8 @@ class OzonOrdersService:
         cond = [
             "source_id = ?",
             "tab IN ('new', 'awaiting_packaging')",
+            "LOWER(COALESCE(status, '')) = 'awaiting_packaging'",
             "COALESCE(supply_id, '') = ''",
-            "LOWER(COALESCE(status, '')) NOT IN ('cancelled', 'not_accepted')",
         ]
         params = [source_id]  # type: List[Any]
         q = str(search or "").strip().lower()

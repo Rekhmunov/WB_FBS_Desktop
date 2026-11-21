@@ -50,6 +50,16 @@ _PACKAGING_STATUSES = {
     STATUS_AWAITING_APPROVE,
     STATUS_AWAITING_PACKAGING,
 }
+
+# Portal «Ожидают сборки» is the Seller API status ``awaiting_packaging``.
+# Early statuses may still map to the packaging *tab* via compute_tab, but the
+# portal tab itself is filled from /v4/posting/fbs/list statuses=[awaiting_packaging].
+PORTAL_PACKAGING_STATUS = STATUS_AWAITING_PACKAGING
+
+
+def is_portal_packaging_status(status: object) -> bool:
+    return str(status or "").strip().lower() == PORTAL_PACKAGING_STATUS
+
 _AWAITING_DELIVER_STATUSES = {
     STATUS_AWAITING_DELIVER,
     STATUS_SENT_BY_SELLER,

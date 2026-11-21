@@ -22,6 +22,42 @@ class LegacySchemaMigrateTests(unittest.TestCase):
         """Indexes in SCHEMA_SQL crash legacy DBs before ALTER can run."""
         self.assertNotIn("CREATE INDEX", SCHEMA_SQL.upper())
 
+    def test_exec_schema_tables_skips_create_index(self) -> None:
+        """Defense: even a mistaken CREATE INDEX in DDL must not run early."""
+        self._bootstrap_legacy(
+            """
+            CREATE TABLE ozon_fbs_postings (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                source_id INTEGER NOT NULL,
+                posting_number TEXT NOT NULL,
+                synced_at TEXT NOT NULL,
+                UNIQUE(source_id, posting_number)
+            );
+            """
+        )
+        conn = sqlite3.connect(str(self.path))
+        try:
+            # Would crash if executed before supply_id exists.
+            bad = (
+                SCHEMA_SQL
+                + "\nCREATE INDEX IF NOT EXISTS idx_bad "
+                + "ON ozon_fbs_postings(source_id, supply_id);\n"
+            )
+            import app.db as dbmod
+
+            old = dbmod.SCHEMA_SQL
+            dbmod.SCHEMA_SQL = bad
+            try:
+                Database._exec_schema_tables(conn)
+            finally:
+                dbmod.SCHEMA_SQL = old
+            cols = {
+                str(r[1]) for r in conn.execute("PRAGMA table_info(ozon_fbs_postings)")
+            }
+            self.assertNotIn("supply_id", cols)
+        finally:
+            conn.close()
+
     def _bootstrap_legacy(self, sql: str) -> None:
         conn = sqlite3.connect(str(self.path))
         try:

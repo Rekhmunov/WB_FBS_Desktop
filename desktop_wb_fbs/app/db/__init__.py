@@ -347,7 +347,7 @@ class Database:
         with self.connect() as conn:
             # 1) tables  2) ALTER migrations  3) indexes (legacy-safe order)
             # SCHEMA_SQL must never contain CREATE INDEX — old DBs lack columns.
-            conn.executescript(SCHEMA_SQL)
+            self._exec_schema_tables(conn)
             self._migrate_product_photos(conn)
             self._migrate_supply_sources(conn)
             self._migrate_wb_fbs_supplies(conn)
@@ -356,12 +356,29 @@ class Database:
             conn.commit()
 
     @staticmethod
+    def _split_sql_statements(script: str) -> List[str]:
+        statements = []  # type: List[str]
+        for raw in str(script or "").split(";"):
+            stmt = raw.strip()
+            if stmt:
+                statements.append(stmt)
+        return statements
+
+    @staticmethod
+    def _exec_schema_tables(conn: sqlite3.Connection) -> None:
+        """Apply table DDL only — never CREATE INDEX (legacy column safety)."""
+        for stmt in Database._split_sql_statements(SCHEMA_SQL):
+            head = stmt.lstrip().upper()
+            if head.startswith("CREATE INDEX") or head.startswith(
+                "CREATE UNIQUE INDEX"
+            ):
+                continue
+            conn.execute(stmt)
+
+    @staticmethod
     def _apply_schema_indexes(conn: sqlite3.Connection) -> None:
         """Create indexes one-by-one after migrations (never via SCHEMA_SQL)."""
-        for raw in SCHEMA_INDEXES_SQL.split(";"):
-            stmt = raw.strip()
-            if not stmt:
-                continue
+        for stmt in Database._split_sql_statements(SCHEMA_INDEXES_SQL):
             try:
                 conn.execute(stmt)
             except sqlite3.OperationalError as exc:

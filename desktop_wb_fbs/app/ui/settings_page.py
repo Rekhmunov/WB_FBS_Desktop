@@ -28,7 +28,7 @@ from PyQt5.QtWidgets import (
 
 from app.db import Database
 from app.ui.dialog_utils import make_modal_search_box, prepare_modal_dialog
-from app.ui.format_helpers import make_photo_label
+from app.ui.format_helpers import make_photo_label, photo_display_size
 from app.ui.table_col_widths import PersistentColumnWidths
 from app.services import SourceService
 from app.services.catalog import CategoryService, ProductService, product_matches_search
@@ -38,7 +38,7 @@ _PRODUCT_PHOTO_COL = 0
 _PRODUCT_NAME_COL = 1
 _SRC_COL_DEFAULTS = [200, 56, 80, 64, 180, 180]
 _PROD_COL_DEFAULTS = [
-    _PRODUCT_PHOTO_SIZE + 16,
+    photo_display_size(_PRODUCT_PHOTO_SIZE) + 16,
     220,
     140,
     110,
@@ -665,7 +665,7 @@ class SettingsPage(QWidget):
             else:
                 self.prod_info.setText("Товаров: {}".format(len(all_rows)))
         self.prod_table.setRowCount(len(rows))
-        row_h = _PRODUCT_PHOTO_SIZE + 12
+        row_h = photo_display_size(_PRODUCT_PHOTO_SIZE) + 12
         for i, p in enumerate(rows):
             self.prod_table.setRowHeight(i, row_h)
             photo_wrap = QWidget()

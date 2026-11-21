@@ -770,7 +770,7 @@ class FbsPage(QWidget):
         self.table.setColumnCount(len(cols))
         self.table.setHorizontalHeaderLabels(cols)
         self.table.setRowCount(len(rows))
-        self.table.verticalHeader().setDefaultSectionSize(120)
+        self.table.verticalHeader().setDefaultSectionSize(132)
         for r, row in enumerate(rows):
             oid = int(row["order_id"])
             chk = QTableWidgetItem()
@@ -855,7 +855,7 @@ class FbsPage(QWidget):
             self.table.setCellWidget(r, 3, wh_widget)
 
             self.table.resizeRowToContents(r)
-            self.table.setRowHeight(r, max(self.table.rowHeight(r), 120))
+            self.table.setRowHeight(r, max(self.table.rowHeight(r), 132))
         self.table.blockSignals(False)
         self.table.itemChanged.connect(self._on_check_change)
         self._apply_table_col_widths("new")

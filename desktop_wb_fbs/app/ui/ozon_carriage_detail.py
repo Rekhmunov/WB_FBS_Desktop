@@ -421,7 +421,7 @@ class OzonCarriageDetailDialog(QDialog):
             self.table.setItem(
                 i, 3, QTableWidgetItem("✓" if pick_ok else "—")
             )
-            self.table.setRowHeight(i, 96)
+            self.table.setRowHeight(i, 106)
 
     def open_mark(self) -> None:
         from app.ui.ozon_mark_dialog import OzonMarkDialog

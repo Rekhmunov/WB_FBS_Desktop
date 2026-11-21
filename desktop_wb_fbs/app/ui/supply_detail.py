@@ -498,7 +498,7 @@ class SupplyDetailDialog(QDialog):
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.table.verticalHeader().setVisible(False)
-        self.table.verticalHeader().setDefaultSectionSize(148)
+        self.table.verticalHeader().setDefaultSectionSize(163)
         self.table.setShowGrid(False)
         self.table.setFocusPolicy(Qt.NoFocus)
         self._col_widths = PersistentColumnWidths(
@@ -1323,7 +1323,7 @@ class SupplyDetailDialog(QDialog):
             self.table.setCellWidget(i, 2, self._build_product_cell(r))
             self.table.setCellWidget(i, 3, self._build_row_menu(oid))
             self.table.resizeRowToContents(i)
-            self.table.setRowHeight(i, max(self.table.rowHeight(i), 148))
+            self.table.setRowHeight(i, max(self.table.rowHeight(i), 163))
             if i and i % _RENDER_BATCH == 0:
                 QApplication.processEvents()
         self.table.blockSignals(False)
@@ -1634,7 +1634,7 @@ class SupplyDetailDialog(QDialog):
                 table.setCellWidget(i, 0, self._build_cancelled_order_cell(r))
                 table.setCellWidget(i, 1, self._build_cancelled_product_cell(r))
                 table.resizeRowToContents(i)
-                table.setRowHeight(i, max(int(table.rowHeight(i)), 120))
+                table.setRowHeight(i, max(int(table.rowHeight(i)), 132))
             lead.setText("Найдено отменённых в поставке: {}".format(len(items)))
             if not items:
                 table.setRowCount(1)

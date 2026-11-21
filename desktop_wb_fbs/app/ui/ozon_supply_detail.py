@@ -636,7 +636,7 @@ class OzonSupplyDetailDialog(QDialog):
             self.table.setItem(i, 0, item)
             self.table.setCellWidget(i, 0, build_ozon_posting_cell_widget(r))
             self.table.setCellWidget(i, 1, build_product_cell_widget(r, photo_size=72))
-            self.table.setRowHeight(i, 110)
+            self.table.setRowHeight(i, 121)
 
     def _posting_numbers(self) -> List[str]:
         return [
@@ -1295,7 +1295,7 @@ class OzonSupplyDetailDialog(QDialog):
                     or str(r.get("status_label") or r.get("status") or "отменено")
                 )
                 table.setItem(i, 2, QTableWidgetItem(reason))
-                table.setRowHeight(i, 88)
+                table.setRowHeight(i, 97)
 
         def _refresh() -> None:
             self.reload(hydrate=False)

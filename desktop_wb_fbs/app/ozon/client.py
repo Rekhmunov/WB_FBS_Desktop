@@ -223,13 +223,17 @@ class OzonFbsClient:
             time.sleep(sleep_s)
 
     def iter_postings_window(
-        self, lookback_days: int, *, status: Optional[str] = None, sleep_s: float = 0.25
+        self, lookback_days: int, *, status: Optional[str] = None, sleep_s: float = 0.15
     ):
-        """Yield posting pages; API rejects periods longer than ~90 days."""
+        """Yield posting pages for the configured lookback (settings, max 30 days).
+
+        Matches ``lookback_window`` / ``clamp_lookback_days`` — not a hidden 90d walk.
+        """
         end = lookback_window(1)[1]
-        remaining = max(1, min(int(lookback_days or 2), 90))
+        # Same cap as app.ozon.lookback_window / SourceService.clamp_lookback_days.
+        remaining = max(1, min(int(lookback_days or 2), 30))
         while remaining > 0:
-            span = min(remaining, 90)
+            span = min(remaining, 30)
             start = end - timedelta(days=span)
             since, to = iso_z(start), iso_z(end)
             cursor = ""

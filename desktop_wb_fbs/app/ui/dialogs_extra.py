@@ -4,8 +4,19 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from PyQt5.QtCore import QRect, QRectF, QSize, Qt, QThread, QTimer, pyqtSignal
-from PyQt5.QtGui import QColor, QFontMetrics, QPainter, QPen, QPixmap
+from PyQt5.QtCore import (
+    QByteArray,
+    QBuffer,
+    QIODevice,
+    QRect,
+    QRectF,
+    QSize,
+    Qt,
+    QThread,
+    QTimer,
+    pyqtSignal,
+)
+from PyQt5.QtGui import QColor, QFontMetrics, QImage, QPainter, QPen, QPixmap
 from PyQt5.QtPrintSupport import QPrintDialog, QPrinter
 from PyQt5.QtWidgets import (
     QButtonGroup,
@@ -187,7 +198,7 @@ def _default_pdf_path(title: str) -> str:
 
 
 def _draw_pixmaps_to_printer(printer: QPrinter, pixmaps: List[QPixmap]) -> bool:
-    """Paint each pixmap as one printer/PDF page. Returns False if painter fails."""
+    """Paint each pixmap as one printer page. Returns False if painter fails."""
     valid = _valid_pixmaps(pixmaps)
     if not valid:
         return False
@@ -214,6 +225,138 @@ def _draw_pixmaps_to_printer(printer: QPrinter, pixmaps: List[QPixmap]) -> bool:
     return True
 
 
+def _pixmap_to_jpeg_bytes(
+    pix: QPixmap, *, quality: int = 75, max_side: int = 1400
+) -> Tuple[bytes, int, int]:
+    """Flatten pixmap to JPEG for compact PDF embedding."""
+    src = pix.toImage()
+    flat = QImage(src.size(), QImage.Format_RGB888)
+    flat.fill(QColor(255, 255, 255))
+    painter = QPainter(flat)
+    try:
+        painter.drawImage(0, 0, src)
+    finally:
+        painter.end()
+    if max(flat.width(), flat.height()) > max_side:
+        flat = flat.scaled(
+            max_side,
+            max_side,
+            Qt.KeepAspectRatio,
+            Qt.SmoothTransformation,
+        )
+    blob = QByteArray()
+    buffer = QBuffer(blob)
+    buffer.open(QIODevice.WriteOnly)
+    if not flat.save(buffer, "JPEG", int(quality)):
+        raise RuntimeError("JPEG encode failed")
+    return bytes(blob), int(flat.width()), int(flat.height())
+
+
+def _write_pixmaps_pdf(path: str, pixmaps: List[QPixmap]) -> bool:
+    """
+    Write a compact multi-page PDF (JPEG image XObjects).
+
+    QPrinter(HighResolution)+PdfFormat upscales pages to ~1200 DPI rasters and
+    produces multi‑MB / sometimes unreadable files in Edge. Embed JPEG instead.
+    """
+    valid = _valid_pixmaps(pixmaps)
+    if not valid:
+        return False
+
+    pages = []  # type: List[Tuple[bytes, int, int]]
+    for pix in valid:
+        pages.append(_pixmap_to_jpeg_bytes(pix))
+
+    # A4 in PDF points.
+    page_w = 595.27
+    page_h = 841.89
+    n = len(pages)
+    out = bytearray(b"%PDF-1.4\n")
+    offsets = {}  # type: Dict[int, int]
+
+    def _write_obj(num: int, body: bytes) -> None:
+        offsets[num] = len(out)
+        out.extend("{} 0 obj\n".format(num).encode("ascii"))
+        out.extend(body)
+        if not body.endswith(b"\n"):
+            out.extend(b"\n")
+        out.extend(b"endobj\n")
+
+    kids = " ".join("{} 0 R".format(3 + 3 * i) for i in range(n))
+    _write_obj(1, b"<< /Type /Catalog /Pages 2 0 R >>")
+    _write_obj(
+        2,
+        "<< /Type /Pages /Count {} /Kids [{}] >>".format(n, kids).encode("ascii"),
+    )
+
+    for i, (jpeg, iw, ih) in enumerate(pages):
+        page_id = 3 + 3 * i
+        cont_id = 4 + 3 * i
+        img_id = 5 + 3 * i
+        scale = min(page_w / float(iw), page_h / float(ih))
+        dw = float(iw) * scale
+        dh = float(ih) * scale
+        x = (page_w - dw) / 2.0
+        y = (page_h - dh) / 2.0
+        stream = (
+            "q\n{:.2f} 0 0 {:.2f} {:.2f} {:.2f} cm\n/Im0 Do\nQ\n".format(
+                dw, dh, x, y
+            ).encode("ascii")
+        )
+        _write_obj(
+            page_id,
+            (
+                "<< /Type /Page /Parent 2 0 R "
+                "/MediaBox [0 0 {:.2f} {:.2f}] "
+                "/Contents {} 0 R "
+                "/Resources << /XObject << /Im0 {} 0 R >> >> >>"
+            )
+            .format(page_w, page_h, cont_id, img_id)
+            .encode("ascii"),
+        )
+        _write_obj(
+            cont_id,
+            "<< /Length {} >>\nstream\n".format(len(stream)).encode("ascii")
+            + stream
+            + b"endstream",
+        )
+        _write_obj(
+            img_id,
+            (
+                "<< /Type /XObject /Subtype /Image "
+                "/Width {} /Height {} "
+                "/ColorSpace /DeviceRGB /BitsPerComponent 8 "
+                "/Filter /DCTDecode /Length {} >>\nstream\n"
+            )
+            .format(iw, ih, len(jpeg))
+            .encode("ascii")
+            + jpeg
+            + b"\nendstream",
+        )
+
+    xref_pos = len(out)
+    total_objs = 3 + 3 * n
+    out.extend("xref\n0 {}\n".format(total_objs).encode("ascii"))
+    out.extend(b"0000000000 65535 f \n")
+    for num in range(1, total_objs):
+        out.extend("{:010d} 00000 n \n".format(offsets[num]).encode("ascii"))
+    out.extend(
+        (
+            "trailer\n<< /Size {} /Root 1 0 R >>\n"
+            "startxref\n{}\n%%EOF\n"
+        )
+        .format(total_objs, xref_pos)
+        .encode("ascii")
+    )
+
+    target = Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    tmp = target.with_suffix(target.suffix + ".tmp")
+    tmp.write_bytes(bytes(out))
+    tmp.replace(target)
+    return target.is_file() and target.stat().st_size > 0
+
+
 def _print_pixmaps(parent: QWidget, pixmaps: List[QPixmap]) -> None:
     valid = _valid_pixmaps(pixmaps)
     if not valid:
@@ -233,7 +376,7 @@ def _print_pixmaps(parent: QWidget, pixmaps: List[QPixmap]) -> None:
 def _download_pixmaps_pdf(
     parent: QWidget, pixmaps: List[QPixmap], title: str = ""
 ) -> Optional[str]:
-    """Ask for a path and write pixmaps as a multi-page PDF. Returns saved path."""
+    """Ask for a path and write a compact multi-page PDF. Returns saved path."""
     valid = _valid_pixmaps(pixmaps)
     if not valid:
         QMessageBox.warning(parent, "Скачать", "Нет изображений для сохранения.")
@@ -248,10 +391,11 @@ def _download_pixmaps_pdf(
         return None
     if not str(path).lower().endswith(".pdf"):
         path = path + ".pdf"
-    printer = QPrinter(QPrinter.HighResolution)
-    printer.setOutputFormat(QPrinter.PdfFormat)
-    printer.setOutputFileName(path)
-    if not _draw_pixmaps_to_printer(printer, valid):
+    try:
+        ok = _write_pixmaps_pdf(path, valid)
+    except Exception:
+        ok = False
+    if not ok:
         QMessageBox.warning(parent, "Скачать", "Не удалось сохранить PDF.")
         return None
     QMessageBox.information(parent, "Скачать", "Файл сохранён:\n{}".format(path))

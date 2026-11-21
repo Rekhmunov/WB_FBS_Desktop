@@ -120,7 +120,7 @@ class HtmlPrintPreviewDialog(QDialog):
         self.btn_print.setObjectName("bottomPrimary")
         self.btn_print.setEnabled(False)
         self.btn_print.clicked.connect(self._on_print_clicked)
-        self.btn_pdf = QPushButton("Сохранить PDF")
+        self.btn_pdf = QPushButton("Скачать")
         self.btn_pdf.setObjectName("secondary")
         self.btn_pdf.setEnabled(False)
         self.btn_pdf.clicked.connect(self._save_pdf)
@@ -332,7 +332,7 @@ class HtmlPrintPreviewDialog(QDialog):
         default_name = self._html_path.with_suffix(".pdf").name
         path, _ = QFileDialog.getSaveFileName(
             self,
-            "Сохранить PDF",
+            "Скачать PDF",
             str(self._html_path.parent / default_name),
             "PDF (*.pdf)",
         )
@@ -353,9 +353,11 @@ class HtmlPrintPreviewDialog(QDialog):
                 while app.overrideCursor() is not None:
                     app.restoreOverrideCursor()
         if ok:
-            QMessageBox.information(self, "PDF", "Файл сохранён:\n{}".format(path))
+            QMessageBox.information(
+                self, "Скачать", "Файл сохранён:\n{}".format(path)
+            )
         else:
-            QMessageBox.warning(self, "PDF", "Не удалось сохранить PDF.")
+            QMessageBox.warning(self, "Скачать", "Не удалось сохранить PDF.")
 
 
 def show_html_print_preview(

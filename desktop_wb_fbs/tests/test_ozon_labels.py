@@ -87,6 +87,33 @@ class FetchLabelsTest(unittest.TestCase):
         for call in client.package_label_create_v3.call_args_list:
             self.assertLessEqual(len(call[0][0]), 1000)
 
+    def test_cache_returns_all_batch_parts(self) -> None:
+        client = MagicMock()
+        client.package_label_create_v3.return_value = [
+            {"task_id": 1, "task_type": "small_label"}
+        ]
+        client.package_label_get_v2.return_value = {
+            "file_url": "https://example/x.pdf",
+            "status": {"code": "completed"},
+        }
+        client.fetch_url_bytes.return_value = b"%PDF-1.4 mock"
+        nums = ["P-{}".format(i) for i in range(1005)]
+        first = self.svc.fetch_label_paths(client, 1, nums, use_cache=True)
+        self.assertEqual(len(first), 2)
+        client.reset_mock()
+        client.package_label_create_v3.return_value = [
+            {"task_id": 1, "task_type": "small_label"}
+        ]
+        client.package_label_get_v2.return_value = {
+            "file_url": "https://example/x.pdf",
+            "status": {"code": "completed"},
+        }
+        client.fetch_url_bytes.return_value = b"%PDF-1.4 mock"
+        cached = self.svc.fetch_label_paths(client, 1, nums, use_cache=True)
+        self.assertEqual(len(cached), 2)
+        self.assertEqual(cached, first)
+        client.package_label_create_v3.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

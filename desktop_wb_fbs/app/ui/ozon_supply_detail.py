@@ -796,8 +796,58 @@ class OzonSupplyDetailDialog(QDialog):
         lay.addWidget(close_btn, 0, Qt.AlignRight)
         dlg.exec_()
 
+    def _move_delivering_blockers(self) -> List[str]:
+        """Archive ``_ozonFbsCanMoveToDelivering``: driver + KIZ/pick when needed."""
+        blockers = []  # type: List[str]
+        from app.services.supply_drivers import SupplyDriversService
+
+        assigned = SupplyDriversService(self.db).get_assignment(
+            "ozon", self.source_id, self.supply_id
+        )
+        if not assigned.get("has_driver"):
+            blockers.append("Водитель не выбран")
+        pnums = self._posting_numbers()
+        try:
+            mark_rows = self.mark.marking_rows_for_postings(self.source_id, pnums)
+        except Exception:
+            mark_rows = []
+        try:
+            pick_rows = self.pick.pick_rows_for_postings(self.source_id, pnums)
+        except Exception:
+            pick_rows = []
+        # KIZ rows (have marks) must be synced; plain rows must be pick_verified.
+        kiz_rows = [r for r in mark_rows if r.get("marks")]
+        if kiz_rows:
+            pending = [r for r in kiz_rows if not r.get("marks_synced")]
+            if pending:
+                blockers.append(
+                    "Не завершено сканирование товаров с КИЗ ({}/{})".format(
+                        len(kiz_rows) - len(pending), len(kiz_rows)
+                    )
+                )
+        if pick_rows:
+            pending_pick = [r for r in pick_rows if not r.get("pick_verified")]
+            if pending_pick:
+                blockers.append(
+                    "Не завершено сканирование товаров без КИЗ ({}/{})".format(
+                        len(pick_rows) - len(pending_pick), len(pick_rows)
+                    )
+                )
+        if not kiz_rows and not pick_rows:
+            blockers.append("Нет товаров для проверки КИЗ / ШК")
+        return blockers
+
     def move_to_delivering(self) -> None:
         if self._is_read_only():
+            return
+        blockers = self._move_delivering_blockers()
+        if blockers:
+            QMessageBox.warning(
+                self,
+                "Доставка",
+                "Чтобы перенести в доставку:\n• "
+                + "\n• ".join(blockers),
+            )
             return
         if (
             QMessageBox.question(

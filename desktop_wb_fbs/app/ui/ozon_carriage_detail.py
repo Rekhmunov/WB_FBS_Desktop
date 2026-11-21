@@ -85,7 +85,7 @@ class _CarriageLoadWorker(QThread):
 
 
 class _LabelPrintWorker(QThread):
-    ready = pyqtSignal(str)
+    ready = pyqtSignal(list)
     failed = pyqtSignal(str)
 
     def __init__(
@@ -104,10 +104,10 @@ class _LabelPrintWorker(QThread):
 
     def run(self) -> None:
         try:
-            path = self.labels.fetch_labels(
+            paths = self.labels.fetch_label_paths(
                 self.client, self.source_id, self.posting_numbers
             )
-            self.ready.emit(path)
+            self.ready.emit(list(paths or []))
         except Exception as exc:
             self.failed.emit(str(exc))
 
@@ -435,9 +435,18 @@ class OzonCarriageDetailDialog(QDialog):
         worker.finished.connect(lambda: self.btn_labels.setEnabled(True))
         worker.start()
 
-    def _on_labels_ready(self, path: str) -> None:
-        self.load_info.setText("Этикетки сохранены: {}".format(path))
-        QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
+    def _on_labels_ready(self, paths: object) -> None:
+        path_list = [str(p) for p in (paths or []) if str(p).strip()]
+        if not path_list:
+            QMessageBox.warning(self, "Этикетки", "Ozon не вернул файл этикеток")
+            return
+        self.load_info.setText(
+            "Этикетки: {} файл(ов)".format(len(path_list))
+            if len(path_list) > 1
+            else "Этикетки сохранены: {}".format(path_list[0])
+        )
+        for path in path_list:
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
 
     def _on_labels_failed(self, message: str) -> None:
         QMessageBox.warning(self, "Этикетки", str(message or "Ошибка"))

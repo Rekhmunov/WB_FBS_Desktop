@@ -166,6 +166,22 @@ class OzonLabelService:
             return path
         return None
 
+    def _cache_get_parts(self, source_id: int, key: str) -> List[str]:
+        """Return all cached PDF parts for a label job (key, key#2, …)."""
+        paths = []  # type: List[str]
+        first = self._cache_get(source_id, key)
+        if not first:
+            return []
+        paths.append(first)
+        idx = 2
+        while True:
+            part = self._cache_get(source_id, "{}#{}".format(key, idx))
+            if not part:
+                break
+            paths.append(part)
+            idx += 1
+        return paths
+
     def _cache_put(self, source_id: int, key: str, path: str) -> None:
         with self.db.connect() as conn:
             conn.execute(
@@ -189,7 +205,10 @@ class OzonLabelService:
         use_cache: bool = True,
         timeout_s: float = 180.0,
     ) -> str:
-        """Download label PDF(s); returns path to the first (or only) file."""
+        """Download label PDF(s); returns path to the first (or only) file.
+
+        Prefer ``fetch_label_paths`` when the caller must open every batch PDF.
+        """
         paths = self.fetch_label_paths(
             client,
             source_id,
@@ -212,25 +231,20 @@ class OzonLabelService:
         if not nums:
             raise ValueError("Нет отправлений для этикеток")
         key = self._cache_key(nums)
+        expected_parts = (len(nums) + _LABEL_BATCH - 1) // _LABEL_BATCH
         if use_cache:
-            cached = self._cache_get(source_id, key)
-            if cached:
-                return [cached]
+            cached = self._cache_get_parts(source_id, key)
+            if cached and len(cached) >= expected_parts:
+                return cached[:expected_parts]
         paths = []  # type: List[str]
         for i in range(0, len(nums), _LABEL_BATCH):
             batch = nums[i : i + _LABEL_BATCH]
             pdf = self._fetch_async_pdf(client, batch, timeout_s=timeout_s)
             paths.append(self._write_bytes(pdf))
         if use_cache and paths:
-            # Cache the first path for the full set (parts stay on disk beside it).
             self._cache_put(source_id, key, paths[0])
-            if len(paths) > 1:
-                for idx, part in enumerate(paths[1:], start=2):
-                    self._cache_put(
-                        source_id,
-                        "{}#{}".format(key, idx),
-                        part,
-                    )
+            for idx, part in enumerate(paths[1:], start=2):
+                self._cache_put(source_id, "{}#{}".format(key, idx), part)
         return paths
 
     def _fetch_async_pdf(

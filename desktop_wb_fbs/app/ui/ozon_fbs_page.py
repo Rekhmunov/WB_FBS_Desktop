@@ -253,13 +253,17 @@ class OzonFbsPage(QWidget):
             "Разделить мультизаказы через /v1/posting/fbs/split"
         )
         self.split_multi_btn.clicked.connect(self.split_all_multi)
+        # Archive main FBS: no raw carriage create/open on the page —
+        # local supplies + shipments ШК live under supply detail.
         self.create_carriage_btn = QPushButton("Создать отгрузку")
         self.create_carriage_btn.setObjectName("secondary")
         self.create_carriage_btn.setToolTip("Создать отгрузку (carriage) на Ozon")
         self.create_carriage_btn.clicked.connect(self.create_carriage)
+        self.create_carriage_btn.hide()
         self.open_carriage_btn = QPushButton("Открыть отгрузку")
         self.open_carriage_btn.setToolTip("Открыть выбранную отгрузку")
         self.open_carriage_btn.clicked.connect(self.open_selected_carriage)
+        self.open_carriage_btn.hide()
         self.pvz_returns_btn = QPushButton("Возвраты ПВЗ")
         self.pvz_returns_btn.setObjectName("secondary")
         self.pvz_returns_btn.setToolTip(
@@ -283,8 +287,6 @@ class OzonFbsPage(QWidget):
         tb.addWidget(self.stop_btn)
         tb.addWidget(self.ship_all_btn)
         tb.addWidget(self.split_multi_btn)
-        tb.addWidget(self.create_carriage_btn)
-        tb.addWidget(self.open_carriage_btn)
         tb.addWidget(self.pvz_returns_btn)
         tb.addStretch(1)
         self.search_input = QLineEdit()
@@ -330,6 +332,7 @@ class OzonFbsPage(QWidget):
         self.tab_new = FbsTabButton("Ожидают сборки")
         self.tab_assembly = FbsTabButton("Ожидают отгрузки")
         self.tab_delivery = FbsTabButton("Доставляются")
+        # Archive OZON_FBS_HIDDEN_TABS — keep widgets for sync counts, hide UI.
         self.tab_arbitration = FbsTabButton("Спорные")
         self.tab_finished = FbsTabButton("Доставлены")
         self.tab_cancelled = FbsTabButton("Отменены")
@@ -340,16 +343,13 @@ class OzonFbsPage(QWidget):
         self.tab_finished.clicked.connect(lambda: self.on_tab_change("delivered"))
         self.tab_cancelled.clicked.connect(lambda: self.on_tab_change("cancelled"))
         self.tab_new.setChecked(True)
-        for btn in (
-            self.tab_new,
-            self.tab_assembly,
-            self.tab_delivery,
-            self.tab_arbitration,
-            self.tab_finished,
-            self.tab_cancelled,
-        ):
+        for btn in (self.tab_new, self.tab_assembly, self.tab_delivery):
             tabs_lay.addWidget(btn)
             fit_tab_button(btn)
+        for btn in (self.tab_arbitration, self.tab_finished, self.tab_cancelled):
+            tabs_lay.addWidget(btn)
+            fit_tab_button(btn)
+            btn.hide()
         tabs_lay.addStretch(1)
         root.addWidget(tabs_row)
 
@@ -380,17 +380,29 @@ class OzonFbsPage(QWidget):
         sel_row.addStretch(1)
         bottom_outer.addLayout(sel_row)
         actions = QHBoxLayout()
-        self.btn_create_supply = QPushButton("Создать поставку")
+        # Archive #ozonFbsBottomPackagingActions: local supply only (no raw ship/carriage).
+        self.btn_create_supply = QPushButton("Новая поставка")
+        self.btn_create_supply.setToolTip(
+            "Собрать выбранные отправления в новую локальную поставку"
+        )
         self.btn_create_supply.clicked.connect(self.create_supply_from_selection)
+        self.btn_add_existing_supply = QPushButton("Добавить к существующей")
+        self.btn_add_existing_supply.setObjectName("secondary")
+        self.btn_add_existing_supply.setToolTip(
+            "Добавить выбранные отправления в уже созданную поставку"
+        )
+        self.btn_add_existing_supply.clicked.connect(self.create_supply_from_selection)
+        # Legacy carriage/ship entry points kept hidden for API helpers.
         self.btn_add_carriage = QPushButton("Добавить в отгрузку")
         self.btn_add_carriage.setObjectName("secondary")
         self.btn_add_carriage.clicked.connect(self.add_to_carriage)
+        self.btn_add_carriage.hide()
         self.btn_ship_sel = QPushButton("Собрать (ship)")
         self.btn_ship_sel.setObjectName("secondary")
         self.btn_ship_sel.clicked.connect(self.ship_selected)
+        self.btn_ship_sel.hide()
         actions.addWidget(self.btn_create_supply)
-        actions.addWidget(self.btn_add_carriage)
-        actions.addWidget(self.btn_ship_sel)
+        actions.addWidget(self.btn_add_existing_supply)
         actions.addStretch(1)
         bottom_outer.addLayout(actions)
         self.bottom_bar.hide()
@@ -1361,6 +1373,7 @@ class OzonFbsPage(QWidget):
     def _bottom_action_buttons(self) -> List[QPushButton]:
         return [
             self.btn_create_supply,
+            self.btn_add_existing_supply,
             self.btn_add_carriage,
             self.btn_ship_sel,
             self.btn_select_page,

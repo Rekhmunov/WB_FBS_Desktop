@@ -252,12 +252,14 @@ class OzonPostingV4ClientTest(unittest.TestCase):
             client.ping()
         self.assertEqual(seen, ["/v4/posting/fbs/list"])
 
-    def test_sync_unfulfilled_walks_cursor(self) -> None:
+    def test_sync_status_walks_match_web_no_unfulfilled(self) -> None:
+        """Web sync is SYNC_STATUSES × list only — no unfulfilled pass."""
         import os
         import tempfile
         from unittest.mock import MagicMock
 
         from app.db import Database
+        from app.ozon import SYNC_STATUSES
         from app.ozon.sync import sync_source
 
         fd, path = tempfile.mkstemp(suffix=".sqlite")
@@ -279,15 +281,26 @@ class OzonPostingV4ClientTest(unittest.TestCase):
 
             client = MagicMock()
             client.ping.return_value = {}
-            client.list_unfulfilled.side_effect = [
-                ([{"posting_number": "P1", "status": "awaiting_packaging",
-                   "products": [{"offer_id": "o", "sku": "1", "name": "n", "quantity": 1}]}],
-                 2, "c1", True),
-                ([{"posting_number": "P2", "status": "awaiting_packaging",
-                   "products": [{"offer_id": "o", "sku": "2", "name": "n", "quantity": 1}]}],
-                 2, "c2", False),
-            ]
-            client.iter_postings_window.return_value = iter([])
+
+            def _pages(lookback_days, status=None):
+                del lookback_days
+                if status == "awaiting_packaging":
+                    yield [
+                        {
+                            "posting_number": "P1",
+                            "status": "awaiting_packaging",
+                            "products": [
+                                {
+                                    "offer_id": "o",
+                                    "sku": "1",
+                                    "name": "n",
+                                    "quantity": 1,
+                                }
+                            ],
+                        }
+                    ]
+
+            client.iter_postings_window.side_effect = _pages
             client.iter_carriage_delivery_methods.return_value = iter([])
 
             import app.ozon.sync as sync_mod
@@ -299,19 +312,18 @@ class OzonPostingV4ClientTest(unittest.TestCase):
             finally:
                 sync_mod.OzonFbsClient = original
 
-            self.assertEqual(result.get("postings"), 2)
+            self.assertEqual(result.get("postings"), 1)
             self.assertEqual(result.get("errors"), [])
-            self.assertEqual(client.list_unfulfilled.call_count, 2)
-            first_kw = client.list_unfulfilled.call_args_list[0].kwargs
-            second_kw = client.list_unfulfilled.call_args_list[1].kwargs
-            self.assertEqual(first_kw.get("cursor"), "")
-            self.assertEqual(second_kw.get("cursor"), "c1")
+            self.assertEqual(client.list_unfulfilled.call_count, 0)
+            self.assertEqual(
+                client.iter_postings_window.call_count, len(SYNC_STATUSES)
+            )
             with db.connect() as conn:
                 n = conn.execute(
                     "SELECT COUNT(*) AS c FROM ozon_fbs_postings WHERE source_id = ?",
                     (sid,),
                 ).fetchone()["c"]
-            self.assertEqual(int(n), 2)
+            self.assertEqual(int(n), 1)
         finally:
             try:
                 os.unlink(path)

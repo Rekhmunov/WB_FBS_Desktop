@@ -15,8 +15,6 @@ from app.ozon import (
     TAB_CANCELLED,
     carriage_is_done,
     is_portal_packaging_status,
-    iso_z,
-    lookback_window,
     resolve_upsert_status,
     utc_now,
 )
@@ -412,7 +410,7 @@ def sync_source(
     client = OzonFbsClient(client_id, api_key)
     errors = []  # type: List[str]
     seen = set()  # type: Set[str]
-    # Exact portal «Ожидают сборки» membership from list/unfulfilled.
+    # Exact portal «Ожидают сборки» membership from statuses=[awaiting_packaging].
     seen_packaging = set()  # type: Set[str]
     packaging_list_ok = False
     count = 0
@@ -477,39 +475,9 @@ def sync_source(
     if stopped():
         return _finish(was_stopped=True)
 
-    since, to = lookback_window(lookback_days)
-    _prog(progress, "Необработанные отправления…", count)
-    try:
-        cursor = ""
-        while True:
-            if stopped():
-                return _finish(was_stopped=True)
-            batch, _total, cursor, has_next = client.list_unfulfilled(
-                limit=100,
-                cursor=cursor,
-                cutoff_from=iso_z(since),
-                cutoff_to=iso_z(to),
-            )
-            if not batch:
-                break
-            for posting in batch:
-                if not isinstance(posting, dict):
-                    continue
-                pnum = str(posting.get("posting_number") or "")
-                if not pnum or pnum in seen:
-                    continue
-                seen.add(pnum)
-                _note_packaging(posting, pnum)
-                upsert_posting(db, source_id, posting)
-                count += 1
-            _prog(progress, "Необработанные… {}".format(count), count)
-            if not has_next or not cursor:
-                break
-    except Exception as exc:
-        errors.append("unfulfilled: {}".format(exc))
-
-    # Per-status list (web parity). Packaging pass is the portal source of truth
-    # for «Ожидают сборки» (statuses=[awaiting_packaging]).
+    # Web FeedPilot sync: only SYNC_STATUSES × /v4/posting/fbs/list (no unfulfilled
+    # walk — that was an extra full-window pass and made desktop slower than web).
+    # Packaging pass is the portal source of truth for «Ожидают сборки».
     _prog(progress, "Список отправлений…", count)
     for status in SYNC_STATUSES:
         if stopped():

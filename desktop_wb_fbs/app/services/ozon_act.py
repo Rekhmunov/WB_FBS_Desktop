@@ -328,6 +328,22 @@ class OzonActService:
                 pass
         return []
 
+    def fetch_warehouse_barcode(
+        self, client: OzonFbsClient, warehouse_id: int
+    ) -> Tuple[bytes, str]:
+        """Permanent «Штрихкод для склада» — web ``fetch_warehouse_barcode``.
+
+        Seller API ``/v2/posting/fbs/act/get-barcode`` with ``id=warehouse_id``.
+        This is the default «ШК поставки» print in FeedPilot (not carriage/act).
+        """
+        wid = int(warehouse_id or 0)
+        if wid <= 0:
+            raise RuntimeError("Не указан склад поставки для ШК")
+        content, name = client.act_get_barcode(wid)
+        if not content:
+            raise RuntimeError("Ozon не вернул штрихкод склада")
+        return content, name or "ozon-warehouse-barcode-{}.png".format(wid)
+
     def fetch_barcode(
         self,
         client: OzonFbsClient,

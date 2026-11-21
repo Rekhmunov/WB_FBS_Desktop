@@ -70,7 +70,104 @@ class OzonSupplyPostingCellTest(unittest.TestCase):
         self.assertIsNotNone(table.cellWidget(0, 0))
 
 
+class OzonKizPickBtnCountsTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls._app = _app()
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.db = Database(Path(self.tmp.name) / "t.db")
+        self.db.init_schema()
+        self.svc = OzonSuppliesService(self.db)
+        with self.db.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO supply_sources(
+                    name, marketplace, client_id, api_key, is_enabled,
+                    lookback_days, created_at
+                ) VALUES ('Озон', 'ozon', '1', 'k', 1, 2, '2026-01-01')
+                """
+            )
+            self.source_id = int(
+                conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+            )
+            now = utc_now()
+            conn.execute(
+                """
+                INSERT INTO ozon_fbs_postings(
+                    source_id, posting_number, status, tab, offer_id,
+                    product_name, warehouse_id, warehouse_name,
+                    marks_json, marks_synced, pick_verified, pick_barcode,
+                    synced_at
+                ) VALUES
+                (?, 'KIZ-OK', 'awaiting_deliver', 'awaiting_deliver', 'A',
+                 'KIZ', 10, 'WH', '["mark1"]', 1, 0, '', ?),
+                (?, 'KIZ-EMPTY', 'awaiting_deliver', 'awaiting_deliver', 'B',
+                 'KIZ2', 10, 'WH', '[]', 0, 0, '', ?),
+                (?, 'PICK-OK', 'awaiting_deliver', 'awaiting_deliver', 'C',
+                 'Plain', 10, 'WH', '[]', 0, 1, '4600000000000', ?),
+                (?, 'PICK-EMPTY', 'awaiting_deliver', 'awaiting_deliver', 'D',
+                 'Plain2', 10, 'WH', '[]', 0, 0, '', ?)
+                """,
+                (self.source_id, now, self.source_id, now,
+                 self.source_id, now, self.source_id, now),
+            )
+            conn.commit()
+        self.sid = self.svc.create_supply(
+            self.source_id,
+            name="Main",
+            warehouse_id=10,
+            warehouse_name="WH",
+            posting_numbers=["KIZ-OK", "KIZ-EMPTY", "PICK-OK", "PICK-EMPTY"],
+        )
+
+    def tearDown(self) -> None:
+        self.tmp.cleanup()
+
+    def test_btn_count_label_format(self) -> None:
+        _app()
+        from PyQt5.QtWidgets import QPushButton
+
+        from app.ui.ozon_supply_detail import OzonSupplyDetailDialog
+
+        btn = QPushButton()
+        OzonSupplyDetailDialog._set_action_btn_count(btn, "Товары с КИЗ", 1, 4)
+        self.assertEqual(btn.text(), "Товары с КИЗ (1/4)")
+        OzonSupplyDetailDialog._set_action_btn_count(btn, "Товары без КИЗ", 0, 0)
+        self.assertEqual(btn.text(), "Товары без КИЗ")
+
+    def test_kiz_pick_progress_counts(self) -> None:
+        from app.services.ozon_mark_pick import OzonMarkService, OzonPickService
+        from app.ui.ozon_supply_detail import OzonSupplyDetailDialog
+
+        _app()
+        dlg = OzonSupplyDetailDialog.__new__(OzonSupplyDetailDialog)
+        dlg.source_id = self.source_id
+        dlg.supply_id = self.sid
+        dlg.mark = OzonMarkService(self.db)
+        dlg.pick = OzonPickService(self.db)
+        dlg._detail = {"name": "Main"}
+        dlg._rows = [
+            {"posting_number": "KIZ-OK", "tab": "awaiting_deliver", "status": "awaiting_deliver"},
+            {"posting_number": "KIZ-EMPTY", "tab": "awaiting_deliver", "status": "awaiting_deliver"},
+            {"posting_number": "PICK-OK", "tab": "awaiting_deliver", "status": "awaiting_deliver"},
+            {"posting_number": "PICK-EMPTY", "tab": "awaiting_deliver", "status": "awaiting_deliver"},
+        ]
+        dlg._posting_numbers = lambda: [
+            "KIZ-OK", "KIZ-EMPTY", "PICK-OK", "PICK-EMPTY"
+        ]
+        prog = OzonSupplyDetailDialog._kiz_pick_btn_progress(dlg)
+        # Mark modal: all 4 rows; 1 filled with marks.
+        self.assertEqual(prog["kiz"]["total"], 4)
+        self.assertEqual(prog["kiz"]["done"], 1)
+        # Pick modal: 3 without marks; 1 verified with barcode.
+        self.assertEqual(prog["pick"]["total"], 3)
+        self.assertEqual(prog["pick"]["done"], 1)
+
+
 class OzonForceMoveDeliveringTest(unittest.TestCase):
+
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
         self.db = Database(Path(self.tmp.name) / "t.db")

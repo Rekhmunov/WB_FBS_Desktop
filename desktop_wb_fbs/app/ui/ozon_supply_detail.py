@@ -347,10 +347,12 @@ class OzonSupplyDetailDialog(QDialog):
         self.btn_containers = _sec(QPushButton("Грузоместа"))
         self.btn_containers.setToolTip("Грузоместа Ozon FBS: паллеты, печать ШК")
         self.btn_containers.clicked.connect(self.open_containers)
-        self.btn_mark = _sec(QPushButton("Товары с КИЗ"))
+        self._label_mark = "Товары с КИЗ"
+        self._label_pick = "Товары без КИЗ"
+        self.btn_mark = _sec(QPushButton(self._label_mark))
         self.btn_mark.setToolTip("Товары с КИЗ — коды маркировки «Честный знак»")
         self.btn_mark.clicked.connect(self.open_mark)
-        self.btn_pick = _sec(QPushButton("Товары без КИЗ"))
+        self.btn_pick = _sec(QPushButton(self._label_pick))
         self.btn_pick.setToolTip("Товары без КИЗ — проверка штрихкодов")
         self.btn_pick.clicked.connect(self.open_pick)
         self.btn_driver = _sec(QPushButton("Водитель"))
@@ -513,6 +515,7 @@ class OzonSupplyDetailDialog(QDialog):
             self.meta_chips.addWidget(chip)
         self._set_actions_ready(True)
         self._apply_filter()
+        self._sync_kiz_pick_btn_labels()
         missing = sum(
             1
             for r in self._rows
@@ -703,6 +706,70 @@ class OzonSupplyDetailDialog(QDialog):
         self.supply_mutated = True
         self.reload(hydrate=False)
 
+    @staticmethod
+    def _set_action_btn_count(btn: QPushButton, base_label: str, done: int, total: int) -> None:
+        """Web ``_ozonFbsSetSupplyActionBtnCount``: ``Label (done/total)`` when total>0."""
+        d = max(0, int(done or 0))
+        t = max(0, int(total or 0))
+        if t > 0:
+            btn.setText("{} ({}/{})".format(base_label, d, t))
+        else:
+            btn.setText(base_label)
+
+    def _kiz_pick_btn_progress(self) -> Dict[str, Dict[str, int]]:
+        """Archive ``_ozonFbsComputeKizBtnProgress`` / PickBtnProgress.
+
+        Desktop has no catalog ``kiz_required`` flag yet — partition like the
+        mark/pick modals: KIZ progress over all active rows (filled marks);
+        pick progress over rows without marks (verified + barcode).
+        """
+        pnums = self._posting_numbers()
+        try:
+            mark_rows = self.mark.marking_rows_for_postings(self.source_id, pnums)
+        except Exception:
+            mark_rows = []
+        try:
+            pick_rows = self.pick.rows(
+                self.source_id, "", posting_numbers=pnums
+            )
+        except Exception:
+            pick_rows = []
+        kiz_done = 0
+        for r in mark_rows:
+            marks = [
+                str(m or "").strip()
+                for m in (r.get("marks") or [])
+                if str(m or "").strip()
+            ]
+            if marks:
+                kiz_done += 1
+        pick_done = 0
+        for r in pick_rows:
+            if r.get("pick_verified") and str(r.get("pick_barcode") or "").strip():
+                pick_done += 1
+        return {
+            "kiz": {"done": kiz_done, "total": len(mark_rows)},
+            "pick": {"done": pick_done, "total": len(pick_rows)},
+        }
+
+    def _sync_kiz_pick_btn_labels(self) -> None:
+        """Web ``_ozonFbsSyncKizPickBtnLabels`` — ``Товары с КИЗ (d/t)``."""
+        prog = self._kiz_pick_btn_progress()
+        kiz = prog.get("kiz") or {}
+        pick = prog.get("pick") or {}
+        self._set_action_btn_count(
+            self.btn_mark,
+            self._label_mark,
+            int(kiz.get("done") or 0),
+            int(kiz.get("total") or 0),
+        )
+        self._set_action_btn_count(
+            self.btn_pick,
+            self._label_pick,
+            int(pick.get("done") or 0),
+            int(pick.get("total") or 0),
+        )
+
     def open_mark(self) -> None:
         from app.ui.ozon_mark_dialog import OzonMarkDialog
 
@@ -720,6 +787,8 @@ class OzonSupplyDetailDialog(QDialog):
         if dlg.data_changed:
             self.supply_mutated = True
             self.reload(hydrate=False)
+        else:
+            self._sync_kiz_pick_btn_labels()
 
     def open_pick(self) -> None:
         from app.ui.ozon_pick_dialog import OzonPickDialog
@@ -737,6 +806,8 @@ class OzonSupplyDetailDialog(QDialog):
         if dlg.data_changed:
             self.supply_mutated = True
             self.reload(hydrate=False)
+        else:
+            self._sync_kiz_pick_btn_labels()
 
     def print_labels(self, posting_numbers: Optional[List[str]] = None) -> None:
         pnums = [

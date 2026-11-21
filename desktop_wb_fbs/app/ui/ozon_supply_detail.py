@@ -42,11 +42,13 @@ from app.ui.dialog_utils import (
     fullscreen_parent,
     init_fullscreen_dialog,
     make_modal_search_box,
+    style_app_menu,
 )
 from app.ui.format_helpers import (
     build_ozon_posting_cell_widget,
     build_product_cell_widget,
 )
+from app.ui.layout_utils import FlowLayout
 from app.ui.sticker_print_flow import StickerLoadDialog
 from app.ui.table_col_widths import PersistentColumnWidths
 
@@ -261,88 +263,116 @@ class OzonSupplyDetailDialog(QDialog):
         header = QFrame()
         header.setObjectName("sdHeader")
         hv = QVBoxLayout(header)
-        hv.setContentsMargins(24, 12, 24, 10)
-        hv.setSpacing(8)
+        hv.setContentsMargins(24, 20, 24, 16)
+        hv.setSpacing(12)
 
         title_row = QHBoxLayout()
+        title_row.setSpacing(12)
+        title_row.setAlignment(Qt.AlignVCenter)
         self.title_label = QLabel("Поставка")
         self.title_label.setObjectName("sdTitle")
-        title_row.addWidget(self.title_label)
-        self.meta_chip = QLabel("")
-        self.meta_chip.setObjectName("hint")
-        title_row.addWidget(self.meta_chip)
+        self.title_label.setWordWrap(False)
+        title_row.addWidget(self.title_label, 0, Qt.AlignVCenter)
+        self.btn_rename = QPushButton("✎")
+        self.btn_rename.setObjectName("iconBtn")
+        self.btn_rename.setToolTip("Переименовать поставку")
+        self.btn_rename.setFixedSize(36, 36)
+        self.btn_rename.clicked.connect(self.rename_supply)
+        title_row.addWidget(self.btn_rename, 0, Qt.AlignVCenter)
         title_row.addStretch(1)
         hv.addLayout(title_row)
 
-        actions = QHBoxLayout()
-        actions.setSpacing(8)
+        self.warehouse = QLabel("📍 —")
+        self.warehouse.setObjectName("sdWarehouse")
+        hv.addWidget(self.warehouse)
+
+        meta_row = QHBoxLayout()
+        meta_row.setSpacing(12)
+        chips_wrap = QWidget()
+        self.meta_chips = FlowLayout(chips_wrap, h_spacing=8, v_spacing=4)
+        meta_row.addWidget(chips_wrap, 1)
+        search_box, self.search_input = make_modal_search_box()
+        self.search_input.setPlaceholderText("Поиск по отправлению, товару, ШК…")
+        self.search_input.setToolTip("Поиск по отправлению, названию товара и ШК")
+        self.search_input.textChanged.connect(self._apply_filter)
+        meta_row.addWidget(search_box, 0, Qt.AlignRight | Qt.AlignVCenter)
+        hv.addLayout(meta_row)
+        # Kept for reload() compatibility — content goes into chips.
+        self.meta_chip = QLabel("")
+        self.meta_chip.hide()
+
+        def _sec(btn: QPushButton) -> QPushButton:
+            btn.setObjectName("secondary")
+            btn.setMinimumHeight(40)
+            return btn
+
+        actions_wrap = QWidget()
+        actions = FlowLayout(actions_wrap, h_spacing=8, v_spacing=8)
         # Order matches web archive #ozonFbsSupplyDetailModal actions.
-        self.btn_rename = QPushButton("Переименовать")
-        self.btn_rename.setObjectName("secondary")
-        self.btn_rename.setToolTip("Переименовать поставку")
-        self.btn_rename.clicked.connect(self.rename_supply)
-        self.btn_cancelled = QPushButton("Отмененные заказы")
-        self.btn_cancelled.setObjectName("secondary")
+        self.btn_cancelled = _sec(QPushButton("Отмененные заказы"))
         self.btn_cancelled.setToolTip("Проверить отменённые отправления в поставке")
         self.btn_cancelled.clicked.connect(self.show_cancelled)
-        self.btn_picking = QPushButton("Лист подбора")
-        self.btn_picking.setObjectName("secondary")
+        self.btn_picking = _sec(QPushButton("Лист подбора"))
         self.btn_picking.clicked.connect(self.print_picking_list)
-        # Archive: «Старые стикеры» removed — «Стикеры» + menu «По категориям».
-        self.btn_labels = QPushButton("Стикеры")
-        self.btn_labels.setObjectName("secondary")
+        self.btn_labels = _sec(QPushButton("Стикеры"))
         self.btn_labels.setToolTip(
             "Этикетка отправления Ozon (v3 create + v2 get)"
         )
         self.btn_labels.clicked.connect(self.print_labels)
         self.btn_labels_menu = QToolButton()
-        self.btn_labels_menu.setObjectName("secondary")
+        self.btn_labels_menu.setObjectName("splitCaret")
         self.btn_labels_menu.setText("▾")
         self.btn_labels_menu.setToolTip("Другие варианты печати стикеров")
         self.btn_labels_menu.setPopupMode(QToolButton.InstantPopup)
-        labels_menu = QMenu(self.btn_labels_menu)
+        self.btn_labels_menu.setToolButtonStyle(Qt.ToolButtonTextOnly)
+        self.btn_labels_menu.setArrowType(Qt.NoArrow)
+        self.btn_labels_menu.setFixedSize(36, 40)
+        labels_menu = style_app_menu(QMenu(self.btn_labels_menu))
         labels_menu.addAction(
             "Печать по категориям", self.stickers_by_category
         )
         self.btn_labels_menu.setMenu(labels_menu)
-        self.btn_shipments = QPushButton("ШК поставки")
-        self.btn_shipments.setObjectName("secondary")
+        stickers_pair = QWidget()
+        stickers_pair.setObjectName("splitPair")
+        sp = QHBoxLayout(stickers_pair)
+        sp.setContentsMargins(0, 0, 0, 0)
+        sp.setSpacing(0)
+        sp.addWidget(self.btn_labels)
+        sp.addWidget(self.btn_labels_menu)
+        self.btn_shipments = _sec(QPushButton("ШК поставки"))
         self.btn_shipments.setToolTip(
             "ШК / QR отгрузки Ozon (act/get-barcode) по складу поставки"
         )
         self.btn_shipments.clicked.connect(self.open_shipments_barcode)
-        self.btn_containers = QPushButton("Грузоместа")
-        self.btn_containers.setObjectName("secondary")
+        self.btn_containers = _sec(QPushButton("Грузоместа"))
         self.btn_containers.setToolTip("Грузоместа Ozon FBS: паллеты, печать ШК")
         self.btn_containers.clicked.connect(self.open_containers)
-        self.btn_mark = QPushButton("Товары с КИЗ")
+        self.btn_mark = _sec(QPushButton("Товары с КИЗ"))
         self.btn_mark.setToolTip("Товары с КИЗ — коды маркировки «Честный знак»")
         self.btn_mark.clicked.connect(self.open_mark)
-        self.btn_pick = QPushButton("Товары без КИЗ")
-        self.btn_pick.setObjectName("secondary")
+        self.btn_pick = _sec(QPushButton("Товары без КИЗ"))
         self.btn_pick.setToolTip("Товары без КИЗ — проверка штрихкодов")
         self.btn_pick.clicked.connect(self.open_pick)
-        self.btn_driver = QPushButton("Водитель")
-        self.btn_driver.setObjectName("secondary")
-        self.btn_driver.setToolTip("Водитель поставки: выбрать из справочника и гос. номер ТС")
+        self.btn_driver = _sec(QPushButton("Водитель"))
+        self.btn_driver.setToolTip(
+            "Водитель поставки: выбрать из справочника и гос. номер ТС"
+        )
         self.btn_driver.clicked.connect(self.assign_driver)
-        self.btn_ttn = QPushButton("ТН")
-        self.btn_ttn.setObjectName("secondary")
+        self.btn_ttn = _sec(QPushButton("ТН"))
         self.btn_ttn.clicked.connect(self.open_ttn_draft)
         self.btn_move = QPushButton("Перенести в доставку")
+        self.btn_move.setMinimumHeight(40)
         self.btn_move.setToolTip(
             "Локально перенести поставку в «Доставляются» (без отправки в Ozon)"
         )
         self.btn_move.clicked.connect(self.move_to_delivering)
-        self.btn_refresh = QPushButton("Обновить")
-        self.btn_refresh.setObjectName("secondary")
+        self.btn_refresh = _sec(QPushButton("Обновить"))
         self.btn_refresh.setToolTip("Обновить товары/статусы из Ozon API")
         self.btn_refresh.clicked.connect(self.reload_from_ozon)
-        for b in (
+        for w in (
             self.btn_cancelled,
             self.btn_picking,
-            self.btn_labels,
-            self.btn_labels_menu,
+            stickers_pair,
             self.btn_shipments,
             self.btn_containers,
             self.btn_mark,
@@ -351,16 +381,9 @@ class OzonSupplyDetailDialog(QDialog):
             self.btn_ttn,
             self.btn_move,
             self.btn_refresh,
-            self.btn_rename,
         ):
-            actions.addWidget(b)
-        actions.addStretch(1)
-        search_box, self.search_input = make_modal_search_box()
-        self.search_input.setPlaceholderText("Поиск по отправлению, товару, ШК…")
-        self.search_input.setToolTip("Поиск по отправлению, названию товара и ШК")
-        self.search_input.textChanged.connect(self._apply_filter)
-        actions.addWidget(search_box)
-        hv.addLayout(actions)
+            actions.addWidget(w)
+        hv.addWidget(actions_wrap)
         root.addWidget(header)
 
         self.load_info = QLabel("")
@@ -465,13 +488,25 @@ class OzonSupplyDetailDialog(QDialog):
         name = str(self._detail.get("name") or self.supply_id)
         self.title_label.setText(name)
         self.setWindowTitle(name)
-        self.meta_chip.setText(
-            "{} · {} отпр. · {}".format(
-                self.supply_id,
-                int(self._detail.get("order_count") or 0),
-                self._detail.get("warehouse_label") or "склад —",
-            )
-        )
+        wh = str(self._detail.get("warehouse_label") or "").strip() or "склад —"
+        self.warehouse.setText("📍 {}".format(wh))
+        while self.meta_chips.count():
+            item = self.meta_chips.takeAt(0)
+            w = item.widget() if item is not None else None
+            if w is not None:
+                w.deleteLater()
+        for text in (
+            str(self.supply_id or ""),
+            "{} отпр.".format(int(self._detail.get("order_count") or 0)),
+            wh,
+        ):
+            if not text:
+                continue
+            chip = QLabel(text)
+            chip.setObjectName("sdChip")
+            chip.setFixedHeight(36)
+            chip.setAlignment(Qt.AlignCenter)
+            self.meta_chips.addWidget(chip)
         self._set_actions_ready(True)
         self._apply_filter()
         missing = sum(

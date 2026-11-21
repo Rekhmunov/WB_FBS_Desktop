@@ -555,19 +555,19 @@ QLabel#dialogTitle {
     color: #0f1f33;
 }
 QLabel#sdTitle {
-    font-size: 20px;
+    font-size: 24px;
     font-weight: 700;
-    color: #0f1f33;
-    line-height: 1.2;
+    color: #0f172a;
+    line-height: 1.25;
     padding-right: 4px;
 }
 QLabel#sdMeta {
-    color: #5f7691;
+    color: #64748b;
     font-size: 13px;
 }
 QLabel#sdWarehouse {
-    color: #5f7691;
-    font-size: 13px;
+    color: #475569;
+    font-size: 14px;
     padding: 0 2px;
 }
 QLabel#sdLoadStatus {
@@ -580,22 +580,22 @@ QLabel#sdLoadStatus {
     padding: 8px 12px;
 }
 QLabel#sdChip {
-    background: #f2f8ff;
-    border: 1px solid #d9e8f7;
+    background: #f8fafc;
+    border: 1px solid #e2e8f0;
     border-radius: 8px;
-    padding: 0 10px;
-    font-size: 12px;
+    padding: 0 12px;
+    font-size: 13px;
     font-weight: 600;
-    color: #5f7691;
-    min-height: 32px;
-    max-height: 32px;
+    color: #334155;
+    min-height: 36px;
+    max-height: 36px;
 }
 QFrame#sdChipQr {
-    background: #f2f8ff;
-    border: 1px solid #d9e8f7;
+    background: #f8fafc;
+    border: 1px solid #e2e8f0;
     border-radius: 8px;
-    min-height: 32px;
-    max-height: 32px;
+    min-height: 36px;
+    max-height: 36px;
 }
 QLabel#sdChipQrText {
     font-size: 12px;
@@ -620,7 +620,19 @@ QToolButton#sdQrPrint:hover {
 }
 QFrame#sdHeader {
     background: #ffffff;
-    border-bottom: 1px solid #d9e8f7;
+    border-bottom: 1px solid #e2e8f0;
+}
+QFrame#sdHeader QPushButton#iconBtn {
+    min-width: 36px;
+    max-width: 36px;
+    min-height: 36px;
+    max-height: 36px;
+    padding: 0;
+    color: #64748b;
+    border: 1px solid #e2e8f0;
+    background: #ffffff;
+    border-radius: 8px;
+    font-size: 14px;
 }
 QFrame#sdBody {
     background: #ffffff;
@@ -857,18 +869,27 @@ QTableWidget#sdTable {
     border-radius: 0;
     background: #ffffff;
 }
+QTableWidget#sdTable QHeaderView::section {
+    background: #ffffff;
+    color: #64748b;
+    font-size: 12px;
+    font-weight: 600;
+    border: none;
+    border-bottom: 1px solid #e2e8f0;
+    padding: 12px 16px;
+}
 QTableWidget#sdTable::item {
     padding: 0;
-    border-bottom: 1px solid #f2f8ff;
+    border-bottom: 1px solid #f1f5f9;
 }
 QLabel#sdOrderId {
     font-size: 14px;
     font-weight: 700;
-    color: #0f1f33;
+    color: #0f172a;
 }
 QLabel#sdOrderMeta {
     font-size: 12px;
-    color: #5f7691;
+    color: #64748b;
 }
 QLabel#sdSticker {
     color: #0f1f33;
@@ -878,13 +899,13 @@ QLabel#sdScanit {
     margin-top: 2px;
 }
 QLabel#sdProductName {
-    font-size: 14px;
-    font-weight: 700;
-    color: #0f1f33;
+    font-size: 16px;
+    font-weight: 600;
+    color: #0f172a;
 }
 QLabel#sdProductSub {
-    font-size: 12px;
-    color: #5f7691;
+    font-size: 14px;
+    color: #64748b;
 }
 QLabel#sdBarcode {
     font-size: 22px;
@@ -1167,19 +1188,30 @@ QFrame#kizHeader {
     border-bottom: 1px solid #d9e8f7;
 }
 QLabel#kizTitle {
-    color: #0f1f33;
+    color: #0f172a;
     font-size: 28px;
     font-weight: 800;
     background: transparent;
     padding: 0;
     margin: 0;
 }
-QLabel#kizSub {
-    color: #5f7691;
-    font-size: 14px;
+/* Archive Ozon KIZ/pick titles are 24px (WB stays 28). */
+QLabel#kizTitleOzon {
+    color: #0f172a;
+    font-size: 24px;
+    font-weight: 800;
     background: transparent;
     padding: 0;
     margin: 0;
+}
+QLabel#kizSub {
+    color: #64748b;
+    font-size: 14px;
+    line-height: 1.45;
+    background: transparent;
+    padding: 0;
+    margin: 0;
+    max-width: 640px;
 }
 QFrame#kizHeader QPushButton#bottomPrimary {
     min-width: 0;
@@ -1233,7 +1265,7 @@ QFrame#kizToolbar {
     border-bottom: 1px solid #d9e8f7;
 }
 QCheckBox#kizFilterCheck {
-    color: #5f7691;
+    color: #334155;
     font-size: 14px;
     spacing: 8px;
 }

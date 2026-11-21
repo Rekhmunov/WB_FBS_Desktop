@@ -176,8 +176,6 @@ class PickDialog(QDialog):
         scan_lay = QHBoxLayout(scan_bar)
         scan_lay.setContentsMargins(24, 12, 24, 12)
         scan_lay.setSpacing(12)
-        scan_lab = QLabel("Сканирование")
-        scan_lab.setObjectName("kizScanLabel")
         self.sticker_input = QLineEdit()
         self.sticker_input.setObjectName("kizScanInput")
         self.sticker_input.setPlaceholderText("Сканируйте QR стикера заказа")
@@ -187,7 +185,17 @@ class PickDialog(QDialog):
         sticker_clear.setObjectName("kizScanClear")
         sticker_clear.setText("✕")
         sticker_clear.clicked.connect(self.sticker_input.clear)
-        scan_lay.addWidget(scan_lab)
+        from app.ui.scan_mode import mount_scan_mode_controls
+
+        self._scan_mode_toggle, self._scan_mode_status, self._scan_mode = (
+            mount_scan_mode_controls(
+                scan_lay,
+                insert_at=0,
+                parent=self,
+                deliver=self.deliver_com_scan,
+                db=self.pick.db,
+            )
+        )
         scan_lay.addWidget(self.sticker_input, 1)
         scan_lay.addWidget(sticker_clear)
         root.addWidget(scan_bar)
@@ -267,8 +275,15 @@ class PickDialog(QDialog):
     def showEvent(self, event) -> None:
         super(PickDialog, self).showEvent(event)
         apply_fullscreen_on_show(self)
+        self._scan_mode.activate()
         if self._rows_ready:
             self.sticker_input.setFocus()
+
+    def _teardown_scan_mode(self) -> None:
+        try:
+            self._scan_mode.deactivate()
+        except Exception:
+            pass
 
     def _abort_deferred_load(self) -> None:
         self._closing = True
@@ -279,18 +294,32 @@ class PickDialog(QDialog):
         return self._closing or gen != self._load_gen
 
     def reject(self) -> None:
+        self._teardown_scan_mode()
         self._abort_deferred_load()
         self._hide_sku_prompt(refocus=False)
         self._flush_autosave_sync()
         super(PickDialog, self).reject()
 
     def accept(self) -> None:
+        self._teardown_scan_mode()
         self._abort_deferred_load()
         self._hide_sku_prompt(refocus=False)
         self._flush_autosave_sync()
         super(PickDialog, self).accept()
 
+    def deliver_com_scan(self, value: str) -> None:
+        raw = str(value or "")
+        if not raw.replace(" ", ""):
+            return
+        if self.scan_prompt.isVisible():
+            self.sku_prompt_input.setText(raw)
+            self._on_sku_prompt_enter()
+            return
+        self.sticker_input.setText(raw)
+        self.on_sticker()
+
     def closeEvent(self, event) -> None:
+        self._teardown_scan_mode()
         self._abort_deferred_load()
         self._hide_sku_prompt(refocus=False)
         self._flush_autosave_sync()

@@ -23,6 +23,7 @@ from PyQt5.QtWidgets import (
 from app.ozon.client import OzonFbsClient
 from app.services.ozon_mark_pick import OzonMarkService
 from app.ui.dialog_utils import (
+    apply_fullscreen_on_show,
     block_ru_layout_scan,
     fullscreen_parent,
     init_fullscreen_dialog,
@@ -147,8 +148,6 @@ class OzonMarkDialog(QDialog):
         scan.setObjectName("kizScanBar")
         sl = QHBoxLayout(scan)
         sl.setContentsMargins(24, 12, 24, 12)
-        lab = QLabel("Сканирование")
-        lab.setObjectName("kizScanLabel")
         self.scan_input = QLineEdit()
         self.scan_input.setObjectName("kizScanInput")
         self.scan_input.setPlaceholderText(
@@ -156,7 +155,17 @@ class OzonMarkDialog(QDialog):
         )
         self.scan_input.returnPressed.connect(self.on_scan)
         install_live_ru_layout_guard(self.scan_input, self)
-        sl.addWidget(lab)
+        from app.ui.scan_mode import mount_scan_mode_controls
+
+        self._scan_mode_toggle, self._scan_mode_status, self._scan_mode = (
+            mount_scan_mode_controls(
+                sl,
+                insert_at=0,
+                parent=self,
+                deliver=self.deliver_com_scan,
+                db=self.mark.db,
+            )
+        )
         sl.addWidget(self.scan_input, 1)
         root.addWidget(scan)
 
@@ -172,6 +181,25 @@ class OzonMarkDialog(QDialog):
         root.addWidget(self.table, 1)
 
         self.load_rows()
+
+    def showEvent(self, event) -> None:  # noqa: N802
+        super(OzonMarkDialog, self).showEvent(event)
+        apply_fullscreen_on_show(self)
+        self._scan_mode.activate()
+
+    def closeEvent(self, event) -> None:  # noqa: N802
+        try:
+            self._scan_mode.deactivate()
+        except Exception:
+            pass
+        super(OzonMarkDialog, self).closeEvent(event)
+
+    def deliver_com_scan(self, value: str) -> None:
+        raw = str(value or "")
+        if not raw.replace(" ", ""):
+            return
+        self.scan_input.setText(raw)
+        self.on_scan()
 
     def load_rows(self) -> None:
         if self.posting_number:

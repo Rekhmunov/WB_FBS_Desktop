@@ -11,6 +11,7 @@ from PyQt5.QtCore import (
     QRect,
     QRectF,
     QSize,
+    QSizeF,
     Qt,
     QThread,
     QTimer,
@@ -46,6 +47,11 @@ from app.services.orders import OrdersService
 from app.services.trbx_stickers import StickersService
 from app.ui.dialog_utils import prepare_modal_dialog, standard_window_flags
 from app.wb import default_mgt_supply_name
+
+# WB product / supply stickers — physical label size (web parity).
+STICKER_PAGE_MM = (58.0, 40.0)
+# PDF points for A4 when page_size_mm is omitted (лист подбора).
+_A4_PDF_POINTS = (595.27, 841.89)
 
 
 class MgtCollectButton(QPushButton):
@@ -199,6 +205,58 @@ def _default_pdf_path(title: str) -> str:
     return str(base / name)
 
 
+def _normalize_page_size_mm(
+    page_size_mm: Optional[Tuple[float, float]],
+) -> Optional[Tuple[float, float]]:
+    if not page_size_mm:
+        return None
+    try:
+        width = float(page_size_mm[0])
+        height = float(page_size_mm[1])
+    except (TypeError, ValueError, IndexError):
+        return None
+    if width <= 0 or height <= 0:
+        return None
+    return (width, height)
+
+
+def _page_size_pdf_points(
+    page_size_mm: Optional[Tuple[float, float]] = None,
+) -> Tuple[float, float]:
+    """MediaBox size in PDF points (1 pt = 1/72 in). Default A4."""
+    size = _normalize_page_size_mm(page_size_mm)
+    if size is None:
+        return _A4_PDF_POINTS
+    return (size[0] * 72.0 / 25.4, size[1] * 72.0 / 25.4)
+
+
+def _configure_printer_page_size(
+    printer: QPrinter,
+    page_size_mm: Optional[Tuple[float, float]],
+) -> None:
+    """Force custom label size (e.g. 58×40 mm) with zero margins."""
+    size = _normalize_page_size_mm(page_size_mm)
+    if size is None:
+        return
+    width_mm, height_mm = size
+    try:
+        from PyQt5.QtGui import QPageSize
+
+        printer.setPageSize(
+            QPageSize(QSizeF(width_mm, height_mm), QPageSize.Millimeter)
+        )
+    except Exception:
+        printer.setPaperSize(QSizeF(width_mm, height_mm), QPrinter.Millimeter)
+    try:
+        printer.setFullPage(True)
+    except Exception:
+        pass
+    try:
+        printer.setPageMargins(0, 0, 0, 0, QPrinter.Millimeter)
+    except Exception:
+        pass
+
+
 def _draw_pixmaps_to_printer(printer: QPrinter, pixmaps: List[QPixmap]) -> bool:
     """Paint each pixmap as one printer page. Returns False if painter fails."""
     valid = _valid_pixmaps(pixmaps)
@@ -258,6 +316,7 @@ def _write_pixmaps_pdf(
     path: str,
     pixmaps: List[QPixmap],
     progress: Optional[Any] = None,
+    page_size_mm: Optional[Tuple[float, float]] = None,
 ) -> bool:
     """
     Write a compact multi-page PDF (JPEG image XObjects).
@@ -267,6 +326,7 @@ def _write_pixmaps_pdf(
 
     ``progress`` is optional ``callable(done: int, total: int) -> bool``.
     Return False from it to cancel. Keep the UI alive by pumping events there.
+    ``page_size_mm`` sets MediaBox (e.g. 58×40 for stickers); default A4.
     """
     valid = _valid_pixmaps(pixmaps)
     if not valid:
@@ -286,9 +346,7 @@ def _write_pixmaps_pdf(
     if progress is not None and not progress(total, total):
         return False
 
-    # A4 in PDF points.
-    page_w = 595.27
-    page_h = 841.89
+    page_w, page_h = _page_size_pdf_points(page_size_mm)
     n = len(pages)
     out = bytearray(b"%PDF-1.4\n")
     offsets = {}  # type: Dict[int, int]
@@ -376,16 +434,23 @@ def _write_pixmaps_pdf(
     return target.is_file() and target.stat().st_size > 0
 
 
-def _print_pixmaps(parent: QWidget, pixmaps: List[QPixmap]) -> None:
+def _print_pixmaps(
+    parent: QWidget,
+    pixmaps: List[QPixmap],
+    page_size_mm: Optional[Tuple[float, float]] = None,
+) -> None:
     valid = _valid_pixmaps(pixmaps)
     if not valid:
         QMessageBox.warning(parent, "Печать", "Нет изображений для печати.")
         return
     printer = QPrinter(QPrinter.HighResolution)
+    _configure_printer_page_size(printer, page_size_mm)
     dlg = QPrintDialog(printer, parent)
     dlg.setWindowFlags(standard_window_flags())
     if dlg.exec_() != QDialog.Accepted:
         return
+    # Print dialog may reset paper — re-apply label size after accept.
+    _configure_printer_page_size(printer, page_size_mm)
     if not _draw_pixmaps_to_printer(printer, valid):
         QMessageBox.warning(parent, "Печать", "Не удалось начать печать.")
         return
@@ -398,6 +463,7 @@ def _download_pixmaps_pdf(
     title: str = "",
     *,
     busy_widgets: Optional[List[QWidget]] = None,
+    page_size_mm: Optional[Tuple[float, float]] = None,
 ) -> Optional[str]:
     """Ask for a path and write a compact multi-page PDF. Returns saved path."""
     valid = _valid_pixmaps(pixmaps)
@@ -445,7 +511,14 @@ def _download_pixmaps_pdf(
 
     ok = False
     try:
-        ok = bool(_write_pixmaps_pdf(path, valid, progress=_on_progress))
+        ok = bool(
+            _write_pixmaps_pdf(
+                path,
+                valid,
+                progress=_on_progress,
+                page_size_mm=page_size_mm,
+            )
+        )
     except Exception:
         ok = False
     finally:
@@ -488,6 +561,7 @@ def show_png_list(
     title: str,
     parent: Optional[QWidget] = None,
     sheet_labels: Optional[List[str]] = None,
+    page_size_mm: Optional[Tuple[float, float]] = STICKER_PAGE_MM,
 ) -> None:
     pixmaps = []  # type: List[QPixmap]
     for raw in pngs:
@@ -496,7 +570,11 @@ def show_png_list(
             pix.loadFromData(raw)
         pixmaps.append(pix)
     show_pixmap_print_preview(
-        pixmaps, title, parent, sheet_labels=sheet_labels
+        pixmaps,
+        title,
+        parent,
+        sheet_labels=sheet_labels,
+        page_size_mm=page_size_mm,
     )
 
 
@@ -505,8 +583,13 @@ def show_pixmap_print_preview(
     title: str,
     parent: Optional[QWidget] = None,
     sheet_labels: Optional[List[str]] = None,
+    page_size_mm: Optional[Tuple[float, float]] = None,
 ) -> None:
-    """Scroll preview with one visual sheet per printed page."""
+    """Scroll preview with one visual sheet per printed page.
+
+    ``page_size_mm`` — physical page for Print/PDF (e.g. 58×40 stickers).
+    ``None`` keeps A4 (лист подбора).
+    """
     valid = [p for p in pixmaps if p is not None and not p.isNull()]
     if not valid:
         QMessageBox.warning(
@@ -518,6 +601,7 @@ def show_pixmap_print_preview(
 
     total = len(valid)
     labels = list(sheet_labels or [])
+    label_size = _normalize_page_size_mm(page_size_mm)
     dlg = QDialog(parent)
     dlg.setWindowTitle(title)
     prepare_modal_dialog(
@@ -533,11 +617,17 @@ def show_pixmap_print_preview(
     heading.setObjectName("dialogTitle")
     heading.setWordWrap(True)
     root.addWidget(heading)
-    tip = QLabel(
-        "Предпросмотр по листам · {} стр. Каждый блок = один лист на печати.".format(
-            total
-        )
-    )
+    if label_size is not None:
+        tip_text = (
+            "Предпросмотр · {} стр. · этикетка {:.0f}×{:.0f} мм "
+            "(один стикер = один лист печати)."
+        ).format(total, label_size[0], label_size[1])
+    else:
+        tip_text = (
+            "Предпросмотр по листам · {} стр. "
+            "Каждый блок = один лист на печати."
+        ).format(total)
+    tip = QLabel(tip_text)
     tip.setStyleSheet("color:#64748b;")
     tip.setWordWrap(True)
     root.addWidget(tip)
@@ -601,7 +691,9 @@ def show_pixmap_print_preview(
     buttons = QDialogButtonBox()
     print_btn = buttons.addButton("Печать…", QDialogButtonBox.ActionRole)
     print_btn.setObjectName("bottomPrimary")
-    print_btn.clicked.connect(lambda: _print_pixmaps(dlg, valid))
+    print_btn.clicked.connect(
+        lambda: _print_pixmaps(dlg, valid, page_size_mm=label_size)
+    )
     download_btn = buttons.addButton("Скачать", QDialogButtonBox.ActionRole)
     download_btn.setObjectName("secondary")
     download_btn.clicked.connect(
@@ -610,6 +702,7 @@ def show_pixmap_print_preview(
             valid,
             title,
             busy_widgets=[print_btn, download_btn],
+            page_size_mm=label_size,
         )
     )
     root.addWidget(buttons)

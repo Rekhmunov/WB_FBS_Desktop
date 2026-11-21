@@ -713,7 +713,7 @@ class OzonFbsPage(QWidget):
                     2,
                     QTableWidgetItem(str(r.get("status_label") or "—")),
                 )
-                self.table.setRowHeight(row_i, 120)
+                self.table.setRowHeight(row_i, 132)
                 row_i += 1
             self.pager_total.setText("Ожидают отгрузки: {}".format(total_rows))
             self.page_label.setText("1 / 1")
@@ -759,7 +759,7 @@ class OzonFbsPage(QWidget):
                 2,
                 QTableWidgetItem(str(r.get("status_label") or "—")),
             )
-            self.table.setRowHeight(row_i, 120)
+            self.table.setRowHeight(row_i, 132)
             row_i += 1
         self._apply_ozon_col_widths("supplies")
         self.pager_total.setText("Ожидают отгрузки: {}".format(total_rows))
@@ -798,7 +798,7 @@ class OzonFbsPage(QWidget):
                 self.table.setItem(
                     i, 2, QTableWidgetItem(str(r.get("warehouse_name") or "—"))
                 )
-            self.table.setRowHeight(i, 120)
+            self.table.setRowHeight(i, 132)
         self._apply_ozon_col_widths(
             "postings_status" if status_col else "postings"
         )

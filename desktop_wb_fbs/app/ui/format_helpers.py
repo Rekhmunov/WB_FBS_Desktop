@@ -401,9 +401,23 @@ def make_status_pill(text: str, kind: str = "assembly") -> QLabel:
     return lab
 
 
+# Uniform bump for product thumbnails across FBS / Ozon / settings.
+PHOTO_SIZE_SCALE = 1.1
+
+
+def photo_display_size(size: int = 72) -> int:
+    """Logical photo size → on-screen px (~+10%)."""
+    try:
+        raw = int(size)
+    except (TypeError, ValueError):
+        raw = 72
+    return max(1, int(round(raw * PHOTO_SIZE_SCALE)))
+
+
 def make_photo_label(
     path: Optional[str], size: int = 72, placeholder: str = "—"
 ) -> QLabel:
+    size = photo_display_size(size)
     lab = QLabel()
     lab.setFixedSize(size, size)
     lab.setAlignment(Qt.AlignCenter)

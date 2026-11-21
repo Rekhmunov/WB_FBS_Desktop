@@ -1,8 +1,13 @@
 # -*- coding: utf-8 -*-
-"""One-shot optional dependency install at app open (skip if already present)."""
+"""One-shot optional dependency install at app open (skip if already present).
+
+Presence is checked via ``find_spec`` (no import) so startup stays fast and
+native libs like pymupdf are not loaded until stickers need them.
+"""
 from __future__ import annotations
 
 import importlib
+import importlib.util
 import logging
 import subprocess
 import sys
@@ -20,12 +25,17 @@ _SOFT_DEPS = [
 ]  # type: List[Tuple[str, str]]
 
 
-def _can_import(name: str) -> bool:
+def _package_present(name: str) -> bool:
+    """True if the distribution is on sys.path — does not import / load natives."""
     try:
-        importlib.import_module(name)
-        return True
-    except ImportError:
+        return importlib.util.find_spec(name) is not None
+    except (ImportError, ModuleNotFoundError, ValueError, AttributeError):
         return False
+
+
+# Back-compat alias used by sticker ensure + tests.
+def _can_import(name: str) -> bool:
+    return _package_present(name)
 
 
 def missing_soft_deps(
@@ -36,7 +46,7 @@ def missing_soft_deps(
         items.append(("backports.zoneinfo", "backports.zoneinfo>=0.2.1"))
     out = []  # type: List[Tuple[str, str]]
     for import_name, spec in items:
-        if not _can_import(import_name):
+        if not _package_present(import_name):
             out.append((import_name, spec))
     return out
 
@@ -48,6 +58,8 @@ def pip_install(spec: str) -> None:
         "pip",
         "install",
         "--disable-pip-version-check",
+        "--no-input",
+        "--quiet",
         str(spec),
     ]
     kwargs = {
@@ -84,7 +96,7 @@ def ensure_runtime_deps(status: StatusCb = None) -> List[str]:
         except Exception as exc:
             _log.warning("runtime_deps: failed %s: %s", spec, exc)
             continue
-        if _can_import(import_name):
+        if _package_present(import_name):
             installed.append(import_name)
         else:
             _log.warning(

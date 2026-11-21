@@ -204,36 +204,6 @@ def run() -> int:
     app.setFont(body_font(14))
     install_text_copy_support(app)
 
-    # Soft deps (pymupdf, …): install once at open if missing; skip if present.
-    try:
-        from app.runtime_deps import ensure_runtime_deps, missing_soft_deps
-
-        if missing_soft_deps():
-            from PyQt5.QtWidgets import QProgressDialog
-
-            dlg = QProgressDialog(
-                "Проверка зависимостей…", None, 0, 0, None
-            )
-            dlg.setWindowTitle(APP_NAME)
-            dlg.setWindowModality(Qt.ApplicationModal)
-            dlg.setMinimumDuration(0)
-            dlg.setCancelButton(None)
-            dlg.show()
-            app.processEvents()
-
-            def _dep_status(msg: str) -> None:
-                dlg.setLabelText(msg)
-                app.processEvents()
-
-            installed = ensure_runtime_deps(status=_dep_status)
-            dlg.close()
-            if installed:
-                diag_write("app.deps.installed", packages=installed)
-        else:
-            diag_write("app.deps.ok", packages=[])
-    except Exception as dep_exc:
-        diag_write("app.deps.error", error=str(dep_exc))
-
     db = Database()
     db.init_schema()
 
@@ -244,4 +214,43 @@ def run() -> int:
     # Maximize before show so Windows does not paint an intermediate dark frame.
     win.setWindowState(win.windowState() | Qt.WindowMaximized)
     win.show()
+
+    # Soft deps after UI is visible: find_spec only (no heavy imports);
+    # pip runs only for missing packages, status in the bar — no modal block.
+    def _ensure_deps_after_show() -> None:
+        try:
+            from app.runtime_deps import ensure_runtime_deps, missing_soft_deps
+
+            missing = missing_soft_deps()
+            if not missing:
+                diag_write("app.deps.ok", packages=[])
+                return
+            names = ", ".join(n for n, _ in missing)
+            win.statusBar().showMessage(
+                "Установка зависимостей: {}…".format(names)
+            )
+            app.processEvents()
+
+            def _dep_status(msg: str) -> None:
+                win.statusBar().showMessage(msg)
+                app.processEvents()
+
+            installed = ensure_runtime_deps(status=_dep_status)
+            if installed:
+                diag_write("app.deps.installed", packages=installed)
+                win.statusBar().showMessage(
+                    "Зависимости установлены: {}".format(", ".join(installed)),
+                    5000,
+                )
+            else:
+                diag_write("app.deps.partial", missing=[n for n, _ in missing])
+                win.statusBar().showMessage(
+                    "Не все зависимости установились — стикеры Ozon могут "
+                    "потребовать pip install pymupdf",
+                    8000,
+                )
+        except Exception as dep_exc:
+            diag_write("app.deps.error", error=str(dep_exc))
+
+    QTimer.singleShot(0, _ensure_deps_after_show)
     return app.exec_()

@@ -331,32 +331,35 @@ class SupplyDetailDialog(QDialog):
         header = QFrame()
         header.setObjectName("sdHeader")
         hv = QVBoxLayout(header)
-        hv.setContentsMargins(24, 12, 24, 10)
-        hv.setSpacing(8)
+        hv.setContentsMargins(24, 20, 24, 16)
+        hv.setSpacing(12)
 
-        # One compact top row: title · warehouse · chips
+        # Archive .wb-fbs-sd-header: title → warehouse → meta chips + search → actions
         title_row = QHBoxLayout()
-        title_row.setSpacing(12)
-        title_row.setAlignment(Qt.AlignVCenter)
+        title_row.setSpacing(8)
         self.header = QLabel("Поставка")
         self.header.setObjectName("sdTitle")
         self.header.setWordWrap(False)
-        self.header.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Preferred)
-        self.header.setMaximumWidth(380)
-        title_row.addWidget(self.header, 0, Qt.AlignVCenter)
+        title_row.addWidget(self.header, 1, Qt.AlignVCenter)
+        hv.addLayout(title_row)
 
         self.warehouse = QLabel("📍 —")
         self.warehouse.setObjectName("sdWarehouse")
         self.warehouse.setWordWrap(False)
-        self.warehouse.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Preferred)
-        self.warehouse.setMaximumWidth(220)
-        title_row.addWidget(self.warehouse, 0, Qt.AlignVCenter)
+        hv.addWidget(self.warehouse)
 
+        meta_row = QHBoxLayout()
+        meta_row.setSpacing(12)
         chips_wrap = QWidget()
         chips_wrap.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         self.meta_chips = FlowLayout(chips_wrap, h_spacing=8, v_spacing=4)
-        title_row.addWidget(chips_wrap, 1, Qt.AlignVCenter)
-        hv.addLayout(title_row)
+        meta_row.addWidget(chips_wrap, 1)
+        search_box, self.search_input = make_modal_search_box()
+        self.search_input.textChanged.connect(
+            lambda _t: self._update_search_visibility()
+        )
+        meta_row.addWidget(search_box, 0, Qt.AlignRight | Qt.AlignVCenter)
+        hv.addLayout(meta_row)
 
         self.meta = QLabel("")
         self.meta.setObjectName("sdMeta")
@@ -379,9 +382,6 @@ class SupplyDetailDialog(QDialog):
         self.delivery_ro_banner.setVisible(self.opened_from_delivery)
         hv.addWidget(self.delivery_ro_banner)
 
-        actions_row = QHBoxLayout()
-        actions_row.setSpacing(12)
-        actions_row.setAlignment(Qt.AlignVCenter)
         actions_wrap = QWidget()
         actions_wrap.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         actions = FlowLayout(actions_wrap, h_spacing=8, v_spacing=8)
@@ -422,7 +422,8 @@ class SupplyDetailDialog(QDialog):
         st_caret.setMenu(st_menu)
         actions.addWidget(self._split_pair(st_btn, st_caret))
 
-        kiz_btn = _sec(QPushButton("Товары с маркировкой"))
+        kiz_btn = _sec(QPushButton("Товары с КИЗ"))
+        kiz_btn.setToolTip("Товары с КИЗ — коды маркировки «Честный знак»")
         kiz_btn.clicked.connect(self.open_kiz)
         kiz_ref = _sec(_SpinRefreshButton())
         kiz_ref.setToolTip("Проверить статусы КИЗ на ВБ")
@@ -434,7 +435,8 @@ class SupplyDetailDialog(QDialog):
         self._kiz_split = kiz_split
         actions.addWidget(kiz_split)
 
-        pick_verify_btn = _sec(QPushButton("Товары без маркировки"))
+        pick_verify_btn = _sec(QPushButton("Товары без КИЗ"))
+        pick_verify_btn.setToolTip("Товары без КИЗ — проверка штрихкодов")
         pick_verify_btn.clicked.connect(self.open_pick)
         pick_ref = _sec(_SpinRefreshButton())
         pick_ref.setToolTip("Проверить заполнение стикеров и ШК")
@@ -465,14 +467,7 @@ class SupplyDetailDialog(QDialog):
         portal_btn.setToolTip("Открыть поставку на портале Wildberries")
         portal_btn.clicked.connect(self.open_portal)
         actions.addWidget(portal_btn)
-        actions_row.addWidget(actions_wrap, 1)
-
-        search_box, self.search_input = make_modal_search_box()
-        self.search_input.textChanged.connect(
-            lambda _t: self._update_search_visibility()
-        )
-        actions_row.addWidget(search_box, 0, Qt.AlignRight | Qt.AlignVCenter)
-        hv.addLayout(actions_row)
+        hv.addWidget(actions_wrap)
 
         self._action_widgets = [
             pick_btn,
@@ -940,7 +935,8 @@ class SupplyDetailDialog(QDialog):
                 w.deleteLater()
 
     def _add_chip(self, text: str, *, qr: bool = False) -> QWidget:
-        chip_h = 32
+        # Archive .wb-fbs-sd-chip — 36px (matches QR chip + print icon).
+        chip_h = 36
         if qr:
             chip = QFrame()
             chip.setObjectName("sdChipQr")

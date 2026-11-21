@@ -114,7 +114,7 @@ class PickDialog(QDialog):
         self._load_timer.timeout.connect(self.load_rows)
 
         self.setObjectName("kizModal")
-        self.setWindowTitle("Товары без маркировки · {}".format(supply_id))
+        self.setWindowTitle("Товары без КИЗ · {}".format(supply_id))
         init_fullscreen_dialog(
             self,
             fullscreen=fullscreen,
@@ -133,11 +133,19 @@ class PickDialog(QDialog):
 
         title_row = QHBoxLayout()
         title_row.setSpacing(16)
-        title = QLabel("Товары без маркировки")
+        title_col = QVBoxLayout()
+        title_col.setSpacing(8)
+        title = QLabel("Товары без КИЗ")
         title.setObjectName("kizTitle")
         title.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
-        title_row.addWidget(title, 0, Qt.AlignLeft | Qt.AlignTop)
-        title_row.addStretch(1)
+        title_col.addWidget(title)
+        sub = QLabel(
+            "Сканируйте стикер заказа, затем штрихкод товара на упаковке."
+        )
+        sub.setObjectName("kizSub")
+        sub.setWordWrap(True)
+        title_col.addWidget(sub)
+        title_row.addLayout(title_col, 1)
 
         header_lay.addLayout(title_row)
         root.addWidget(header)

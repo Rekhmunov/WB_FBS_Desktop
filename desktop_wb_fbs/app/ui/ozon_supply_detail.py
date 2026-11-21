@@ -943,16 +943,57 @@ class OzonSupplyDetailDialog(QDialog):
         _sync()
         dlg.exec_()
 
-    def open_shipments_barcode(self) -> None:
-        """Archive shipments modal lite: pick carriage for warehouse → act barcode."""
-        from app.services.ozon_act import OzonActService
-        from app.services.ozon_orders import OzonOrdersService
-
-        wh = 0
+    def _supply_warehouse_id(self) -> int:
         try:
             wh = int(self._detail.get("warehouse_id") or 0)
         except (TypeError, ValueError):
             wh = 0
+        if wh > 0:
+            return wh
+        for r in self._rows or []:
+            try:
+                cand = int(r.get("warehouse_id") or 0)
+            except (TypeError, ValueError):
+                cand = 0
+            if cand > 0:
+                return cand
+        return 0
+
+    def _open_barcode_bytes(self, content: bytes, *, name: str = "") -> None:
+        suffix = ".png"
+        if content[:4] == b"%PDF":
+            suffix = ".pdf"
+        fd, path = tempfile.mkstemp(suffix=suffix, prefix="ozon-ship-barcode-")
+        os.close(fd)
+        with open(path, "wb") as fh:
+            fh.write(content)
+        self.load_info.setText("ШК: {}".format(name or path))
+        QDesktopServices.openUrl(QUrl.fromLocalFile(path))
+
+    def open_shipments_barcode(self) -> None:
+        """Web parity: permanent warehouse ШК via act/get-barcode(id=warehouse_id).
+
+        FeedPilot prints the warehouse barcode by default — not a local carriage
+        act. Carriage picker remains a fallback when warehouse_id is missing.
+        """
+        from app.services.ozon_act import OzonActService
+        from app.services.ozon_orders import OzonOrdersService
+
+        act_svc = OzonActService(self.db)
+        wh = self._supply_warehouse_id()
+        if wh > 0:
+            self.load_info.setText("Загрузка ШК склада…")
+            try:
+                content, name = act_svc.fetch_warehouse_barcode(self.client, wh)
+                self._open_barcode_bytes(content, name=name)
+                return
+            except Exception as exc:
+                # Fall through to carriage/act path if warehouse call fails.
+                self.load_info.setText("")
+                warehouse_err = str(exc)
+        else:
+            warehouse_err = "Не указан склад поставки"
+
         orders = OzonOrdersService(self.db)
         carriages = []  # type: List[Dict[str, Any]]
         try:
@@ -965,16 +1006,26 @@ class OzonSupplyDetailDialog(QDialog):
                     continue
                 carriages.append(c)
             if not carriages:
-                carriages = list(orders.list_delivery_carriages(self.source_id) or [])
+                for c in orders.list_delivery_carriages(self.source_id) or []:
+                    try:
+                        cwh = int(c.get("warehouse_id") or 0)
+                    except (TypeError, ValueError):
+                        cwh = 0
+                    if wh > 0 and cwh > 0 and cwh != wh:
+                        continue
+                    carriages.append(c)
         except Exception as exc:
             QMessageBox.warning(self, "ШК поставки", str(exc))
             return
         if not carriages:
-            QMessageBox.information(
+            QMessageBox.warning(
                 self,
                 "ШК поставки",
-                "Нет отгрузок Ozon для склада этой поставки. "
-                "Сформируйте отгрузку (акт) в Ozon, затем повторите.",
+                "Не удалось получить штрихкод склада{}.\n"
+                "Проверьте API-ключ и warehouse_id поставки "
+                "или сформируйте отгрузку (акт) в Ozon.".format(
+                    ": {}".format(warehouse_err) if warehouse_err else ""
+                ),
             )
             return
         labels = []
@@ -1015,7 +1066,7 @@ class OzonSupplyDetailDialog(QDialog):
             return
         self.load_info.setText("Загрузка ШК отгрузки…")
         try:
-            content, name = OzonActService(self.db).fetch_barcode(
+            content, name = act_svc.fetch_barcode(
                 self.client,
                 self.source_id,
                 cid,
@@ -1026,15 +1077,7 @@ class OzonSupplyDetailDialog(QDialog):
             QMessageBox.warning(self, "ШК поставки", str(exc))
             self.load_info.setText("")
             return
-        suffix = ".png"
-        if content[:4] == b"%PDF":
-            suffix = ".pdf"
-        fd, path = tempfile.mkstemp(suffix=suffix, prefix="ozon-ship-barcode-")
-        os.close(fd)
-        with open(path, "wb") as fh:
-            fh.write(content)
-        self.load_info.setText("ШК: {}".format(name or path))
-        QDesktopServices.openUrl(QUrl.fromLocalFile(path))
+        self._open_barcode_bytes(content, name=name)
 
     def _on_detail_selection_changed(self) -> None:
         n = len(self._selected_posting_numbers_multi())

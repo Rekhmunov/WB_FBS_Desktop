@@ -338,7 +338,8 @@ def build_product_cell_widget(
     text.setContentsMargins(0, 0, 0, 0)
 
     name = str(
-        row.get("product_name")
+        row.get("product_name_display")
+        or row.get("product_name")
         or row.get("article")
         or row.get("offer_id")
         or "—"
@@ -355,6 +356,9 @@ def build_product_cell_widget(
         sub += " · nmId {}".format(nm)
     elif sku:
         sub += " · SKU {}".format(sku)
+    count_lab = str(row.get("product_count_label") or "").strip()
+    if count_lab:
+        sub += " · {}".format(count_lab)
     sub_lab = AdaptiveWrapLabel(sub)
     sub_lab.setObjectName("sdProductSub")
     text.addWidget(sub_lab)

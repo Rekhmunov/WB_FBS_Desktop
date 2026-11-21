@@ -1059,12 +1059,16 @@ class OzonSuppliesService:
                         if prow:
                             row = Database.row_to_dict(prow)
                     status = str((row or {}).get("status") or "")
-                    if posting_needs_ship(status) or not status:
+                    tab = str((row or {}).get("tab") or "")
+                    if posting_needs_ship(status=status, tab=tab) or not (
+                        status or tab
+                    ):
+                        # fast=True: web bulk collect — force awaiting_deliver locally.
                         ship_svc.ship_posting(
-                            client, source_id, pn, posting=row
+                            client, source_id, pn, posting=row, fast=True
                         )
                     else:
-                        # Already shipped on Ozon — still attach to local supply.
+                        # Already past packaging on Ozon — still attach to local supply.
                         pass
                     shipped.append(pn)
                     shipped_here.append(pn)

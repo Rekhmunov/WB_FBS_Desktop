@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
 
+import json
 import unittest
 
 from app.ozon import (
@@ -537,6 +538,164 @@ class OzonSplitHelpersTest(unittest.TestCase):
             fallback_posting_number="PN-1",
         )
         self.assertEqual(nums, ["PN-1", "PN-1-1", "PN-1-2"])
+
+    def test_parse_split_parts_parent_postings(self) -> None:
+        from app.services.ozon_split import build_split_postings, parse_split_parts
+
+        plan = build_split_postings(
+            {"products": [{"sku": 1, "quantity": 2}, {"sku": 2, "quantity": 1}]}
+        )
+        parts = parse_split_parts(
+            {
+                "result": {
+                    "parent_posting": {"posting_number": "PN-1"},
+                    "postings": [
+                        {"posting_number": "PN-1"},
+                        {"posting_number": "PN-1-1"},
+                        {"posting_number": "PN-1-2"},
+                    ],
+                }
+            },
+            fallback_posting_number="PN-1",
+            split_plan=plan,
+        )
+        self.assertEqual([pn for pn, _ in parts], ["PN-1", "PN-1-1", "PN-1-2"])
+
+    def test_parse_split_parts_raises_when_siblings_missing(self) -> None:
+        from app.services.ozon_split import build_split_postings, parse_split_parts
+
+        plan = build_split_postings({"products": [{"sku": 1, "quantity": 3}]})
+        with self.assertRaises(RuntimeError):
+            parse_split_parts(
+                {"result": {"parent_posting": "PN-1", "postings": []}},
+                fallback_posting_number="PN-1",
+                split_plan=plan,
+            )
+
+
+class OzonShipStatusParityTest(unittest.TestCase):
+    def test_posting_needs_ship_by_tab(self) -> None:
+        from app.services.ozon_ship import posting_needs_ship
+
+        self.assertTrue(posting_needs_ship(status="awaiting_packaging"))
+        self.assertTrue(posting_needs_ship(tab="awaiting_packaging"))
+        self.assertFalse(posting_needs_ship(tab="awaiting_deliver"))
+        self.assertFalse(posting_needs_ship(status="awaiting_deliver"))
+
+    def test_ship_forces_awaiting_deliver_when_get_stale(self) -> None:
+        import os
+        import tempfile
+        from unittest.mock import MagicMock
+
+        from app.db import Database
+        from app.services.ozon_ship import OzonShipService
+
+        fd, path = tempfile.mkstemp(suffix=".sqlite")
+        os.close(fd)
+        try:
+            db = Database(path)
+            db.init_schema()
+            with db.connect() as conn:
+                conn.execute(
+                    """
+                    INSERT INTO supply_sources(
+                        name, marketplace, client_id, api_key, is_enabled,
+                        lookback_days, created_at
+                    ) VALUES ('Озон', 'ozon', '1', 'k', 1, 2, '2026-01-01')
+                    """
+                )
+                sid = int(conn.execute("SELECT last_insert_rowid()").fetchone()[0])
+                conn.execute(
+                    """
+                    INSERT INTO ozon_fbs_postings(
+                        source_id, posting_number, status, tab, products_json, synced_at
+                    ) VALUES (?, 'PN-1', 'awaiting_packaging', 'awaiting_packaging',
+                              ?, '2026-01-01')
+                    """,
+                    (sid, json.dumps([{"sku": 111, "quantity": 1}])),
+                )
+                conn.commit()
+
+            client = MagicMock()
+            client.ship_posting.return_value = {"result": ["PN-1"]}
+            # Stale get still returns packaging — must force awaiting_deliver.
+            client.get_posting.return_value = {
+                "posting_number": "PN-1",
+                "status": "awaiting_packaging",
+                "products": [{"sku": 111, "quantity": 1}],
+            }
+            svc = OzonShipService(db)
+            out = svc.ship_posting(client, sid, "PN-1", fast=False)
+            self.assertTrue(out.get("ok"))
+            with db.connect() as conn:
+                row = conn.execute(
+                    "SELECT status, tab FROM ozon_fbs_postings "
+                    "WHERE source_id = ? AND posting_number = 'PN-1'",
+                    (sid,),
+                ).fetchone()
+            self.assertEqual(row["status"], "awaiting_deliver")
+            self.assertEqual(row["tab"], "awaiting_deliver")
+        finally:
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+
+    def test_ship_already_assembled_counts_ok(self) -> None:
+        import os
+        import tempfile
+        from unittest.mock import MagicMock
+
+        from app.db import Database
+        from app.services.ozon_ship import OzonShipService
+
+        fd, path = tempfile.mkstemp(suffix=".sqlite")
+        os.close(fd)
+        try:
+            db = Database(path)
+            db.init_schema()
+            with db.connect() as conn:
+                conn.execute(
+                    """
+                    INSERT INTO supply_sources(
+                        name, marketplace, client_id, api_key, is_enabled,
+                        lookback_days, created_at
+                    ) VALUES ('Озон', 'ozon', '1', 'k', 1, 2, '2026-01-01')
+                    """
+                )
+                sid = int(conn.execute("SELECT last_insert_rowid()").fetchone()[0])
+                conn.execute(
+                    """
+                    INSERT INTO ozon_fbs_postings(
+                        source_id, posting_number, status, tab, products_json, synced_at
+                    ) VALUES (?, 'PN-2', 'awaiting_packaging', 'awaiting_packaging',
+                              ?, '2026-01-01')
+                    """,
+                    (sid, json.dumps([{"sku": 1, "quantity": 1}])),
+                )
+                conn.commit()
+            client = MagicMock()
+            client.get_posting.return_value = {
+                "posting_number": "PN-2",
+                "status": "awaiting_packaging",
+                "products": [{"sku": 1, "quantity": 1}],
+            }
+            client.ship_posting.side_effect = RuntimeError(
+                "POSTING_ALREADY_SHIPPED awaiting_deliver"
+            )
+            out = OzonShipService(db).ship_posting(client, sid, "PN-2", fast=True)
+            self.assertTrue(out.get("ok"))
+            self.assertTrue(out.get("already"))
+            with db.connect() as conn:
+                row = conn.execute(
+                    "SELECT tab FROM ozon_fbs_postings WHERE posting_number='PN-2'"
+                ).fetchone()
+            self.assertEqual(row["tab"], "awaiting_deliver")
+        finally:
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
 
 
 class OzonSelectionPreviewTest(unittest.TestCase):

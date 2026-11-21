@@ -328,6 +328,15 @@ class OzonMarkService:
             "pick_barcode": str(row.get("pick_barcode") or ""),
             "status": str(row.get("status") or ""),
             "status_label": str(row.get("status_label") or ""),
+            "tab": str(row.get("tab") or ""),
+            "cancel_reason": str(row.get("cancel_reason") or "").strip(),
+            "cancel_reason_label": str(
+                row.get("cancel_reason_label") or row.get("cancel_reason") or ""
+            ).strip(),
+            "cancelled": bool(row.get("cancelled"))
+            or str(row.get("tab") or "").lower() == "cancelled"
+            or str(row.get("status") or "").lower()
+            in ("cancelled", "cancelled_from_split_pending", "not_accepted"),
             "skip_gtin_check": bool(prod.get("skip_kiz_gtin_check")),
             "kiz_required": bool(prod.get("requires_kiz")),
             "requires_kiz": bool(prod.get("requires_kiz")),

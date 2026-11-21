@@ -1419,6 +1419,83 @@ class OzonSuppliesService:
                 out.append(item)
         return out
 
+    def remove_cancelled_posting_from_supply(
+        self, source_id: int, supply_id: str, posting_number: str
+    ) -> Dict[str, Any]:
+        """Unlink one cancelled posting from a local supply (web archive)."""
+        sid = str(supply_id or "").strip()
+        pn = str(posting_number or "").strip()
+        if not sid:
+            raise ValueError("Укажите supply_id")
+        if not pn:
+            raise ValueError("Укажите posting_number")
+        with self.db.connect() as conn:
+            row = conn.execute(
+                """
+                SELECT posting_number, supply_id, tab, status, cancel_reason
+                FROM ozon_fbs_postings
+                WHERE source_id = ? AND posting_number = ?
+                """,
+                (int(source_id), pn),
+            ).fetchone()
+            if not row:
+                raise RuntimeError("Отправление не найдено локально")
+            cur_sid = str(row["supply_id"] or "").strip()
+            if cur_sid != sid:
+                raise RuntimeError("Отправление не входит в эту поставку")
+            tab = str(row["tab"] or "").strip().lower()
+            status = str(row["status"] or "").strip().lower()
+            cancel = str(row["cancel_reason"] or "").strip()
+            if not (
+                tab == "cancelled"
+                or status in ("cancelled", "not_accepted")
+                or cancel
+            ):
+                raise ValueError(
+                    "Удалить из поставки можно только отменённое отправление"
+                )
+            conn.execute(
+                """
+                UPDATE ozon_fbs_postings
+                SET supply_id = ''
+                WHERE source_id = ? AND posting_number = ? AND supply_id = ?
+                """,
+                (int(source_id), pn, sid),
+            )
+            srow = conn.execute(
+                """
+                SELECT posting_numbers_json FROM ozon_fbs_supplies
+                WHERE source_id = ? AND supply_id = ?
+                """,
+                (int(source_id), sid),
+            ).fetchone()
+            if srow:
+                kept = [
+                    str(x).strip()
+                    for x in _parse_json_list(srow["posting_numbers_json"])
+                    if str(x).strip() and str(x).strip() != pn
+                ]
+                conn.execute(
+                    """
+                    UPDATE ozon_fbs_supplies
+                    SET posting_numbers_json = ?, updated_at = ?
+                    WHERE source_id = ? AND supply_id = ?
+                    """,
+                    (
+                        json.dumps(kept, ensure_ascii=False),
+                        utc_now(),
+                        int(source_id),
+                        sid,
+                    ),
+                )
+            conn.commit()
+        return {
+            "ok": True,
+            "posting_number": pn,
+            "supply_id": sid,
+            "message": "Отправление {} удалено из поставки".format(pn),
+        }
+
     def render_stickers_sheet_html(self, detail: Dict[str, Any]) -> str:
         """Printable sticker barcode sheet (desktop stand-in for web image pages)."""
         orders = [

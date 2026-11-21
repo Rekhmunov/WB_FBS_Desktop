@@ -1392,6 +1392,24 @@ QToolButton#kizRowMenu::menu-indicator {
     image: none;
     width: 0;
 }
+QToolButton#ozonPostingIconBtn {
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 6px;
+    color: #64748b;
+    font-size: 14px;
+    font-weight: 700;
+    padding: 0;
+}
+QToolButton#ozonPostingIconBtn:hover {
+    background: #f1f5f9;
+    border-color: #cbd5e1;
+    color: #0f172a;
+}
+QToolButton#ozonPostingIconBtn[copied="true"] {
+    color: #166534;
+    background: #dcfce7;
+}
 QFrame#kizToolbar {
     background: #ffffff;
     border-bottom: 1px solid #d9e8f7;

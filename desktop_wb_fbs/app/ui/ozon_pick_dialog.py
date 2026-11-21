@@ -30,12 +30,21 @@ from app.ui.dialog_utils import (
     install_live_ru_layout_guard,
     make_modal_search_box,
 )
-from app.ui.format_helpers import (
-    build_ozon_posting_cell_widget,
-    build_product_cell_widget,
-)
+from app.ui.format_helpers import build_product_cell_widget
 from app.ui.ozon_container_bind import OzonContainerBindController, row_container_ok
+from app.ui.ozon_modal_chrome import (
+    build_ozon_modal_posting_cell,
+    build_ozon_modal_row_menu,
+    exclusive_filled_empty,
+    pick_other_container,
+    print_one_posting_sticker,
+    refresh_posting_status,
+    row_is_cancelled,
+    set_filter_count,
+    supply_id_from_carriage,
+)
 from app.ui.table_col_widths import PersistentColumnWidths
+from app.ui.text_copy import copy_text
 
 
 class OzonPickDialog(QDialog):
@@ -109,11 +118,33 @@ class OzonPickDialog(QDialog):
         tb.setSpacing(16)
         filters = QHBoxLayout()
         filters.setSpacing(16)
-        self.chk_filled = QCheckBox("Проверенные")
-        self.chk_empty = QCheckBox("Непроверенные")
-        for cb in (self.chk_filled, self.chk_empty):
+        self._filter_base = {
+            "filled": "Проверенные",
+            "empty": "Непроверенные",
+            "errors": "С ошибками",
+            "cancelled": "Отмененные",
+        }
+        self.chk_filled = QCheckBox("Проверенные (0)")
+        self.chk_empty = QCheckBox("Непроверенные (0)")
+        self.chk_errors = QCheckBox("С ошибками (0)")
+        self.chk_cancelled = QCheckBox("Отмененные (0)")
+        for cb in (
+            self.chk_filled,
+            self.chk_empty,
+            self.chk_errors,
+            self.chk_cancelled,
+        ):
             cb.setObjectName("kizFilterCheck")
-            cb.toggled.connect(self._render_table)
+        self.chk_filled.toggled.connect(self._on_filter_filled)
+        self.chk_empty.toggled.connect(self._on_filter_empty)
+        self.chk_errors.toggled.connect(self._render_table)
+        self.chk_cancelled.toggled.connect(self._render_table)
+        for cb in (
+            self.chk_filled,
+            self.chk_empty,
+            self.chk_errors,
+            self.chk_cancelled,
+        ):
             filters.addWidget(cb)
         tb.addLayout(filters, 0)
         tb.addStretch(1)
@@ -198,11 +229,11 @@ class OzonPickDialog(QDialog):
         il.addWidget(self.info)
         root.addWidget(self.info_banner)
 
-        self.table = QTableWidget(0, 4)
+        self.table = QTableWidget(0, 5)
         self.table.setObjectName("kizTable")
         self.table.setAlternatingRowColors(False)
         self.table.setHorizontalHeaderLabels(
-            ["Отправление", "Товар", "Проверка ШК", "ШК грузоместа"]
+            ["Отправление", "Товар", "Проверка ШК", "ШК грузоместа", ""]
         )
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.SingleSelection)
@@ -212,8 +243,8 @@ class OzonPickDialog(QDialog):
         self._col_widths = PersistentColumnWidths(
             self.pick.db,
             self.table,
-            "ozon_pick_modal_table_cols_v3",
-            [200, 360, 240, 160],
+            "ozon_pick_modal_table_cols_v4",
+            [220, 420, 240, 160, 52],
             parent=self,
         )
         self._col_widths.apply()
@@ -264,6 +295,14 @@ class OzonPickDialog(QDialog):
             self.scan_input.setPlaceholderText(
                 "Сканируйте этикетку Ozon (QR или ii…), затем ШК товара"
             )
+
+    def _on_filter_filled(self, _checked: bool = False) -> None:
+        exclusive_filled_empty(self.chk_filled, self.chk_empty, which="filled")
+        self._render_table()
+
+    def _on_filter_empty(self, _checked: bool = False) -> None:
+        exclusive_filled_empty(self.chk_filled, self.chk_empty, which="empty")
+        self._render_table()
 
     def _on_gm_changed(self) -> None:
         if self._gm is None:
@@ -348,58 +387,231 @@ class OzonPickDialog(QDialog):
             return row_container_ok(r)
         return True
 
+    def _row_error(self, r: Dict[str, Any]) -> bool:
+        return bool(
+            r.get("pick_error")
+            or r.get("error")
+            or r.get("container_sync_error")
+        )
+
+    def _row_matches_search(self, r: Dict[str, Any], q: str) -> bool:
+        if not q:
+            return True
+        blob = " ".join(
+            [
+                str(r.get("posting_number") or ""),
+                str(r.get("product_name") or ""),
+                str(r.get("offer_id") or ""),
+                str(r.get("sticker_scanit") or ""),
+                str(r.get("pick_barcode") or ""),
+                str(r.get("container_barcode") or ""),
+            ]
+        ).lower()
+        return q in blob
+
+    def _update_filter_counts(self) -> None:
+        q = self.search_input.text().strip().lower()
+        filled = empty = errors = cancelled = 0
+        for r in self.rows:
+            if not self._row_matches_search(r, q):
+                continue
+            if row_is_cancelled(r):
+                cancelled += 1
+                continue
+            if self._row_complete(r):
+                filled += 1
+            else:
+                empty += 1
+            if self._row_error(r):
+                errors += 1
+        set_filter_count(self.chk_filled, self._filter_base["filled"], filled)
+        set_filter_count(self.chk_empty, self._filter_base["empty"], empty)
+        set_filter_count(self.chk_errors, self._filter_base["errors"], errors)
+        set_filter_count(
+            self.chk_cancelled, self._filter_base["cancelled"], cancelled
+        )
+
     def _render_table(self) -> None:
         q = self.search_input.text().strip().lower()
         want_filled = self.chk_filled.isChecked()
         want_empty = self.chk_empty.isChecked()
+        want_errors = self.chk_errors.isChecked()
+        want_cancelled = self.chk_cancelled.isChecked()
         show_gm = self._gm is not None and self._gm.gm_ui_visible(self.rows)
         self.table.setColumnHidden(3, not show_gm)
         visible = []  # type: List[Dict[str, Any]]
         for r in self.rows:
             complete = self._row_complete(r)
+            err = self._row_error(r)
+            cancelled = row_is_cancelled(r)
             if want_filled and not complete:
                 continue
             if want_empty and complete:
                 continue
-            if q:
-                blob = " ".join(
-                    [
-                        str(r.get("posting_number") or ""),
-                        str(r.get("product_name") or ""),
-                        str(r.get("offer_id") or ""),
-                        str(r.get("sticker_scanit") or ""),
-                        str(r.get("pick_barcode") or ""),
-                        str(r.get("container_barcode") or ""),
-                    ]
-                ).lower()
-                if q not in blob:
-                    continue
+            if want_errors and not err:
+                continue
+            if want_cancelled and not cancelled:
+                continue
+            if not self._row_matches_search(r, q):
+                continue
             visible.append(r)
 
         self._col_widths.begin_update()
         try:
             self.table.setRowCount(len(visible))
             for i, r in enumerate(visible):
-                self.table.setCellWidget(i, 0, build_ozon_posting_cell_widget(r))
+                cancelled = row_is_cancelled(r)
                 self.table.setCellWidget(
-                    i, 1, build_product_cell_widget(r, photo_size=120)
+                    i,
+                    0,
+                    build_ozon_modal_posting_cell(
+                        r,
+                        on_copy=self._copy_posting,
+                        on_refresh=self._refresh_posting_status,
+                    ),
+                )
+                self.table.setCellWidget(
+                    i, 1, build_product_cell_widget(r, photo_size=72)
                 )
                 self.table.setCellWidget(i, 2, self._build_status_widget(r))
                 if show_gm and self._gm is not None:
                     self.table.setCellWidget(i, 3, self._gm.build_cell_widget(r))
+                can_move = bool(
+                    self._gm is not None
+                    and self._gm.has_containers
+                    and row_container_ok(r)
+                )
+                self.table.setCellWidget(
+                    i,
+                    4,
+                    build_ozon_modal_row_menu(
+                        r,
+                        can_move_gm=can_move,
+                        on_print=self._print_sticker,
+                        on_move_gm=self._move_to_other_gm if can_move else None,
+                        on_remove_cancelled=self._remove_cancelled
+                        if cancelled
+                        else None,
+                    ),
+                )
                 self.table.setRowHeight(
                     i, max(148, self.table.sizeHintForRow(i))
                 )
         finally:
             self._col_widths.end_update()
         self._update_counter()
+        self._update_filter_counts()
 
     def _update_counter(self) -> None:
-        total = len(self.rows)
-        ok = sum(1 for r in self.rows if self._pick_ok(r))
+        active = [r for r in self.rows if not row_is_cancelled(r)]
+        total = len(active)
+        ok = sum(1 for r in active if self._pick_ok(r))
         self.counter.setText("Проверено {} из {}".format(ok, total))
         if self._gm is not None:
             self._gm.update_counter(self.rows)
+
+    def _copy_posting(self, posting_number: str) -> None:
+        copy_text(posting_number)
+        self._set_info("Скопировано: {}".format(posting_number), ok=True)
+
+    def _refresh_posting_status(self, posting_number: str) -> None:
+        if self.client is None:
+            QMessageBox.warning(self, "Статус заказа", "Нет клиента Ozon.")
+            return
+        try:
+            refresh_posting_status(
+                db=self.pick.db,
+                client=self.client,
+                source_id=self.source_id,
+                posting_number=posting_number,
+                rows=self.rows,
+                parent=self,
+            )
+            self.data_changed = True
+            self._render_table()
+        except Exception as exc:
+            QMessageBox.warning(self, "Статус заказа", str(exc))
+
+    def _print_sticker(self, posting_number: str) -> None:
+        if self.client is None:
+            QMessageBox.warning(self, "Стикер", "Нет клиента Ozon.")
+            return
+        print_one_posting_sticker(
+            db=self.pick.db,
+            client=self.client,
+            source_id=self.source_id,
+            posting_number=posting_number,
+            parent=self,
+        )
+
+    def _move_to_other_gm(self, posting_number: str) -> None:
+        if self._gm is None:
+            return
+        row = next(
+            (
+                r
+                for r in self.rows
+                if str(r.get("posting_number") or "") == posting_number
+            ),
+            None,
+        )
+        if not row:
+            return
+        try:
+            prev = int(row.get("container_id") or 0)
+        except (TypeError, ValueError):
+            prev = 0
+        next_id = pick_other_container(
+            self._gm.containers, exclude_id=prev, parent=self
+        )
+        if not next_id:
+            return
+        self._gm._pending_cell = (posting_number, str(next_id))
+        self._gm.apply_pending_cell(self.rows)
+        self.data_changed = True
+        self._render_table()
+
+    def _remove_cancelled(self, posting_number: str) -> None:
+        sid = supply_id_from_carriage(self.carriage_id)
+        if not sid:
+            QMessageBox.information(
+                self,
+                "Поставка",
+                "Удаление из поставки доступно только из модалки поставки.",
+            )
+            return
+        if (
+            QMessageBox.question(
+                self,
+                "Удалить из поставки",
+                "Удалить отправление {} из поставки?\n\n"
+                "Товар исчезнет из списков КИЗ / без КИЗ.".format(
+                    posting_number
+                ),
+            )
+            != QMessageBox.Yes
+        ):
+            return
+        try:
+            from app.services.ozon_supplies import OzonSuppliesService
+
+            OzonSuppliesService(self.pick.db).remove_cancelled_posting_from_supply(
+                self.source_id, sid, posting_number
+            )
+        except Exception as exc:
+            QMessageBox.warning(self, "Поставка", str(exc))
+            return
+        self.rows = [
+            r
+            for r in self.rows
+            if str(r.get("posting_number") or "") != posting_number
+        ]
+        self.data_changed = True
+        self._render_table()
+        self._set_info(
+            "Отправление {} удалено из поставки".format(posting_number),
+            ok=True,
+        )
 
     def on_scan(self) -> None:
         if block_ru_layout_scan(self.scan_input):

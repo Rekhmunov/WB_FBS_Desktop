@@ -134,6 +134,7 @@ class OzonFbsPage(QWidget):
         self._tab = "awaiting_packaging"
         self._page = 0
         self._sync_worker = None  # type: Optional[OzonSyncWorker]
+        self._sync_busy = False
         self._selected_postings = set()  # type: set
         self.stickers = OzonStickersService(db)
 
@@ -167,8 +168,10 @@ class OzonFbsPage(QWidget):
         self.split_multi_btn.clicked.connect(self.split_all_multi)
         self.create_carriage_btn = QPushButton("Создать отгрузку")
         self.create_carriage_btn.setObjectName("secondary")
+        self.create_carriage_btn.setToolTip("Создать отгрузку (carriage) на Ozon")
         self.create_carriage_btn.clicked.connect(self.create_carriage)
         self.open_carriage_btn = QPushButton("Открыть отгрузку")
+        self.open_carriage_btn.setToolTip("Открыть выбранную отгрузку")
         self.open_carriage_btn.clicked.connect(self.open_selected_carriage)
         self.pvz_returns_btn = QPushButton("Возвраты ПВЗ")
         self.pvz_returns_btn.setObjectName("secondary")
@@ -176,6 +179,14 @@ class OzonFbsPage(QWidget):
             "Возвраты FBS ReceivedBySeller (локальный кэш + sync)"
         )
         self.pvz_returns_btn.clicked.connect(self.open_pvz_returns)
+        # Idle tooltips — restored after sync (web: «Идёт синхронизация, подождите»).
+        self._action_tooltips = {
+            self.ship_all_btn: self.ship_all_btn.toolTip(),
+            self.split_multi_btn: self.split_multi_btn.toolTip(),
+            self.create_carriage_btn: self.create_carriage_btn.toolTip(),
+            self.open_carriage_btn: self.open_carriage_btn.toolTip(),
+            self.pvz_returns_btn: self.pvz_returns_btn.toolTip(),
+        }
         tb.addWidget(self.sync_btn)
         tb.addWidget(self.stop_btn)
         tb.addWidget(self.ship_all_btn)
@@ -199,11 +210,24 @@ class OzonFbsPage(QWidget):
         tb.addWidget(self.scan_input)
         root.addWidget(toolbar)
 
+        # Sync banner (web #ozonFbsSyncInfo / .wb-fbs-sync-info) — green ok / red error.
+        self.sync_info_frame = QFrame()
+        self.sync_info_frame.setObjectName("syncInfo")
+        self.sync_info_frame.setProperty("state", "")
+        sif = QHBoxLayout(self.sync_info_frame)
+        sif.setContentsMargins(16, 12, 12, 12)
+        sif.setSpacing(12)
         self.sync_info = QLabel("")
         self.sync_info.setObjectName("syncInfoText")
         self.sync_info.setWordWrap(True)
-        self.sync_info.hide()
-        root.addWidget(self.sync_info)
+        sif.addWidget(self.sync_info, 1)
+        self.sync_info_close = QPushButton("✕")
+        self.sync_info_close.setObjectName("iconBtn")
+        self.sync_info_close.setToolTip("Скрыть")
+        self.sync_info_close.clicked.connect(self._close_sync_info)
+        sif.addWidget(self.sync_info_close, 0, Qt.AlignTop)
+        self.sync_info_frame.hide()
+        root.addWidget(self.sync_info_frame)
 
         tabs_row = QFrame()
         tabs_row.setObjectName("tabsRow")
@@ -704,6 +728,8 @@ class OzonFbsPage(QWidget):
             self.reload_table()
 
     def open_pvz_returns(self) -> None:
+        if self._guard_sync_busy():
+            return
         src = self.current_source()
         if not src:
             QMessageBox.information(
@@ -756,8 +782,7 @@ class OzonFbsPage(QWidget):
             return
         pnum = str(row.get("posting_number") or "").strip()
         supply_id = str(row.get("supply_id") or "").strip()
-        self.sync_info.show()
-        self.sync_info.setText("Скан → {}".format(pnum))
+        self._show_sync_info("Скан → {}".format(pnum), "")
         if supply_id:
             self._open_supply_by_id(src, supply_id)
             return
@@ -780,6 +805,8 @@ class OzonFbsPage(QWidget):
         return text or None
 
     def open_selected_carriage(self) -> None:
+        if self._guard_sync_busy():
+            return
         src = self.current_source()
         cid = self._selected_carriage_id()
         if not src or not cid:
@@ -825,6 +852,8 @@ class OzonFbsPage(QWidget):
             self.reload_table()
 
     def split_all_multi(self) -> None:
+        if self._guard_sync_busy():
+            return
         src = self.current_source()
         if not src:
             QMessageBox.information(self, "Ozon FBS", "Выберите источник Ozon FBS.")
@@ -868,6 +897,8 @@ class OzonFbsPage(QWidget):
         self.reload_table()
 
     def ship_all_collect(self) -> None:
+        if self._guard_sync_busy():
+            return
         src = self.current_source()
         if not src:
             QMessageBox.information(self, "Ozon FBS", "Выберите источник Ozon FBS.")
@@ -1068,6 +1099,8 @@ class OzonFbsPage(QWidget):
             QMessageBox.warning(self, "Ship", str(exc))
 
     def create_carriage(self) -> None:
+        if self._guard_sync_busy():
+            return
         src = self.current_source()
         if not src:
             QMessageBox.information(self, "Ozon FBS", "Выберите источник Ozon FBS.")
@@ -1147,6 +1180,53 @@ class OzonFbsPage(QWidget):
         lay.addLayout(text, 1)
         return wrap
 
+    def _close_sync_info(self) -> None:
+        self.sync_info_frame.hide()
+
+    def _set_sync_state(self, state: str) -> None:
+        self.sync_info_frame.setProperty("state", state or "")
+        self.sync_info_frame.style().unpolish(self.sync_info_frame)
+        self.sync_info_frame.style().polish(self.sync_info_frame)
+
+    def _show_sync_info(self, text: str, state: str = "") -> None:
+        self.sync_info.setText(text)
+        self._set_sync_state(state)
+        self.sync_info_frame.show()
+
+    def _action_buttons(self) -> List[QPushButton]:
+        return [
+            self.ship_all_btn,
+            self.split_multi_btn,
+            self.create_carriage_btn,
+            self.open_carriage_btn,
+            self.pvz_returns_btn,
+        ]
+
+    def _set_sync_busy(self, busy: bool) -> None:
+        """Web parity: while sync runs, packaging/supply actions stay locked."""
+        self._sync_busy = bool(busy)
+        tip = "Идёт синхронизация, подождите"
+        self.sync_btn.setEnabled(not busy)
+        self.stop_btn.setVisible(busy)
+        self.stop_btn.setEnabled(busy)
+        for btn in self._action_buttons():
+            btn.setEnabled(not busy)
+            if busy:
+                btn.setToolTip(tip)
+            else:
+                btn.setToolTip(self._action_tooltips.get(btn, ""))
+
+    def _guard_sync_busy(self) -> bool:
+        """Return True if an action must abort because sync is running."""
+        if not self._sync_busy:
+            return False
+        QMessageBox.information(
+            self,
+            "Синхронизация",
+            "Дождитесь окончания синхронизации.",
+        )
+        return True
+
     def run_sync(self) -> None:
         enabled = self.sources.list_ozon_fbs_enabled()
         if not enabled:
@@ -1159,10 +1239,8 @@ class OzonFbsPage(QWidget):
             return
         if self._sync_worker and self._sync_worker.isRunning():
             return
-        self.sync_btn.setEnabled(False)
-        self.stop_btn.show()
-        self.sync_info.show()
-        self.sync_info.setText("Синхронизация Ozon FBS…")
+        self._set_sync_busy(True)
+        self._show_sync_info("Синхронизация Ozon FBS…", "")
         worker = OzonSyncWorker(self.db, enabled, self)
         self._sync_worker = worker
         worker.progress.connect(self._on_sync_progress)
@@ -1176,29 +1254,30 @@ class OzonFbsPage(QWidget):
             self._sync_worker.request_stop()
 
     def _on_sync_progress(self, text: str, _n: int) -> None:
-        self.sync_info.setText(text or "Синхронизация…")
+        self._show_sync_info(text or "Синхронизация…", "")
 
     def _on_sync_done(self, result: object) -> None:
         res = result if isinstance(result, dict) else {}
         errs = [str(e) for e in (res.get("errors") or []) if str(e).strip()]
-        msg = "Синхронизация Ozon: отправлений {}, отгрузок {}.".format(
+        stopped = bool(res.get("stopped"))
+        msg = "Готово: отправлений {}, отгрузок {}.".format(
             int(res.get("postings") or 0), int(res.get("carriages") or 0)
         )
+        if stopped:
+            msg = "Остановлено. " + msg
         if errs:
             msg += " Предупреждения: {}.".format(len(errs))
-        self.sync_info.setText(msg)
-        self.sync_info.setProperty("state", "error" if errs else "ok")
-        self.sync_info.style().unpolish(self.sync_info)
-        self.sync_info.style().polish(self.sync_info)
+            msg += "\n" + "\n".join(errs[:3])
+        # Web #ozonFbsSyncInfo: green (is-ok) when done without errors.
+        self._show_sync_info(msg, "error" if errs else "ok")
         self.reload_sources()
 
     def _on_sync_failed(self, message: str) -> None:
-        self.sync_info.setText(str(message or "Ошибка синхронизации"))
-        self.sync_info.setProperty("state", "error")
-        self.sync_info.style().unpolish(self.sync_info)
-        self.sync_info.style().polish(self.sync_info)
+        self._show_sync_info(
+            str(message or "Ошибка синхронизации"),
+            "error",
+        )
 
     def _on_sync_finished(self) -> None:
-        self.sync_btn.setEnabled(True)
-        self.stop_btn.hide()
+        self._set_sync_busy(False)
         self._sync_worker = None

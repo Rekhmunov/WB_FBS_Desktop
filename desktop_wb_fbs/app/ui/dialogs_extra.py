@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from PyQt5.QtCore import QRect, QRectF, QSize, Qt, QThread, QTimer, pyqtSignal
@@ -11,6 +12,7 @@ from PyQt5.QtWidgets import (
     QComboBox,
     QDialog,
     QDialogButtonBox,
+    QFileDialog,
     QFrame,
     QHBoxLayout,
     QLabel,
@@ -163,8 +165,57 @@ class _CollectMgtWorker(QThread):
             self.failed.emit(str(exc))
 
 
+def _valid_pixmaps(pixmaps: List[QPixmap]) -> List[QPixmap]:
+    return [p for p in pixmaps if p is not None and not p.isNull()]
+
+
+def _safe_pdf_filename(title: str) -> str:
+    raw = str(title or "document").strip() or "document"
+    cleaned = "".join(
+        ch if (ch.isalnum() or ch in " ._-+()") else "_" for ch in raw
+    ).strip(" ._")
+    if not cleaned:
+        cleaned = "document"
+    return cleaned[:80] + ".pdf"
+
+
+def _default_pdf_path(title: str) -> str:
+    name = _safe_pdf_filename(title)
+    downloads = Path.home() / "Downloads"
+    base = downloads if downloads.is_dir() else Path.home()
+    return str(base / name)
+
+
+def _draw_pixmaps_to_printer(printer: QPrinter, pixmaps: List[QPixmap]) -> bool:
+    """Paint each pixmap as one printer/PDF page. Returns False if painter fails."""
+    valid = _valid_pixmaps(pixmaps)
+    if not valid:
+        return False
+    painter = QPainter()
+    if not painter.begin(printer):
+        return False
+    try:
+        for index, pix in enumerate(valid):
+            if index > 0:
+                printer.newPage()
+            page = printer.pageRect(QPrinter.DevicePixel)
+            # PdfFormat pageRect is QRectF — QPixmap.scaled needs integer QSize.
+            target = QSize(max(1, int(page.width())), max(1, int(page.height())))
+            scaled = pix.scaled(
+                target,
+                Qt.KeepAspectRatio,
+                Qt.SmoothTransformation,
+            )
+            x = int(page.x()) + max(0, (target.width() - scaled.width()) // 2)
+            y = int(page.y()) + max(0, (target.height() - scaled.height()) // 2)
+            painter.drawPixmap(x, y, scaled)
+    finally:
+        painter.end()
+    return True
+
+
 def _print_pixmaps(parent: QWidget, pixmaps: List[QPixmap]) -> None:
-    valid = [p for p in pixmaps if p is not None and not p.isNull()]
+    valid = _valid_pixmaps(pixmaps)
     if not valid:
         QMessageBox.warning(parent, "Печать", "Нет изображений для печати.")
         return
@@ -173,26 +224,38 @@ def _print_pixmaps(parent: QWidget, pixmaps: List[QPixmap]) -> None:
     dlg.setWindowFlags(standard_window_flags())
     if dlg.exec_() != QDialog.Accepted:
         return
-    painter = QPainter()
-    if not painter.begin(printer):
+    if not _draw_pixmaps_to_printer(printer, valid):
         QMessageBox.warning(parent, "Печать", "Не удалось начать печать.")
         return
-    try:
-        for index, pix in enumerate(valid):
-            if index > 0:
-                printer.newPage()
-            page = printer.pageRect(QPrinter.DevicePixel)
-            scaled = pix.scaled(
-                page.size(),
-                Qt.KeepAspectRatio,
-                Qt.SmoothTransformation,
-            )
-            x = page.x() + max(0, (page.width() - scaled.width()) // 2)
-            y = page.y() + max(0, (page.height() - scaled.height()) // 2)
-            painter.drawPixmap(x, y, scaled)
-    finally:
-        painter.end()
-    QMessageBox.information(parent, "Печать", "Стикер отправлен на печать.")
+    QMessageBox.information(parent, "Печать", "Документ отправлен на печать.")
+
+
+def _download_pixmaps_pdf(
+    parent: QWidget, pixmaps: List[QPixmap], title: str = ""
+) -> Optional[str]:
+    """Ask for a path and write pixmaps as a multi-page PDF. Returns saved path."""
+    valid = _valid_pixmaps(pixmaps)
+    if not valid:
+        QMessageBox.warning(parent, "Скачать", "Нет изображений для сохранения.")
+        return None
+    path, _ = QFileDialog.getSaveFileName(
+        parent,
+        "Скачать PDF",
+        _default_pdf_path(title),
+        "PDF (*.pdf)",
+    )
+    if not path:
+        return None
+    if not str(path).lower().endswith(".pdf"):
+        path = path + ".pdf"
+    printer = QPrinter(QPrinter.HighResolution)
+    printer.setOutputFormat(QPrinter.PdfFormat)
+    printer.setOutputFileName(path)
+    if not _draw_pixmaps_to_printer(printer, valid):
+        QMessageBox.warning(parent, "Скачать", "Не удалось сохранить PDF.")
+        return None
+    QMessageBox.information(parent, "Скачать", "Файл сохранён:\n{}".format(path))
+    return path
 
 
 def show_png_list(
@@ -314,6 +377,11 @@ def show_pixmap_print_preview(
     print_btn = buttons.addButton("Печать…", QDialogButtonBox.ActionRole)
     print_btn.setObjectName("bottomPrimary")
     print_btn.clicked.connect(lambda: _print_pixmaps(dlg, valid))
+    download_btn = buttons.addButton("Скачать", QDialogButtonBox.ActionRole)
+    download_btn.setObjectName("secondary")
+    download_btn.clicked.connect(
+        lambda: _download_pixmaps_pdf(dlg, valid, title)
+    )
     root.addWidget(buttons)
     dlg.exec_()
 

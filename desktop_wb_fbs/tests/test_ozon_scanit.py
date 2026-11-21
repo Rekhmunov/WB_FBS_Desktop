@@ -56,6 +56,25 @@ class ScanitHelpersTest(unittest.TestCase):
         self.assertIn("1234", html)
         self.assertIn("22px", html)
 
+    def test_scanit_widget_uses_plain_labels(self) -> None:
+        """RichText scanit used to report a short height and overlap the date."""
+        import os
+
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+        from PyQt5.QtWidgets import QApplication, QLabel
+
+        app = QApplication.instance()
+        if app is None:
+            app = QApplication([])
+        from app.ui.format_helpers import build_ozon_scanit_label
+
+        self.assertIsNone(build_ozon_scanit_label(""))
+        w = build_ozon_scanit_label("iiABCDEF1234")
+        self.assertIsNotNone(w)
+        parts = [c.text() for c in w.findChildren(QLabel)]
+        self.assertEqual(parts, ["iiABCDEF", "1234"])
+        self.assertGreaterEqual(int(w.minimumHeight()), 28)
+
 
 class ScanitPersistTest(unittest.TestCase):
     def setUp(self) -> None:

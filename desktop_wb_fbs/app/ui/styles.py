@@ -886,17 +886,41 @@ QLabel#sdOrderId {
     font-size: 14px;
     font-weight: 700;
     color: #0f172a;
+    min-height: 18px;
+    padding: 0;
+    margin: 0;
 }
 QLabel#sdOrderMeta {
     font-size: 12px;
     color: #64748b;
+    min-height: 16px;
+    padding: 0;
+    margin: 0;
 }
 QLabel#sdSticker {
     color: #0f1f33;
 }
-QLabel#sdScanit {
+QWidget#sdScanit {
+    background: transparent;
+    min-height: 28px;
+    max-height: 32px;
+}
+QLabel#sdScanitHead {
+    font-size: 14px;
+    font-weight: 700;
     color: #0f172a;
-    margin-top: 2px;
+    padding: 0;
+    margin: 0;
+    background: transparent;
+}
+QLabel#sdScanitTail {
+    font-size: 22px;
+    font-weight: 700;
+    color: #0f172a;
+    min-height: 28px;
+    padding: 0;
+    margin: 0;
+    background: transparent;
 }
 QLabel#sdProductName {
     font-size: 16px;

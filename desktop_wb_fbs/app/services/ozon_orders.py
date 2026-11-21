@@ -700,26 +700,67 @@ class OzonOrdersService:
     def _enrich_posting(self, row: Dict[str, Any]) -> Dict[str, Any]:
         photos = self._photo_map()
         catalog = self._catalog_maps()
-        offer = str(row.get("offer_id") or "").strip().lower()
-        sku = str(row.get("sku") or "").strip().lower()
+        try:
+            products = json.loads(str(row.get("products_json") or "[]"))
+            row["products"] = products if isinstance(products, list) else []
+        except Exception:
+            row["products"] = []
+        # Prefer denormalized columns; fall back to first products_json line
+        # (after ship/force some rows keep products_json but empty offer/sku).
+        first = {}  # type: Dict[str, Any]
+        for p in row["products"]:
+            if isinstance(p, dict):
+                first = p
+                break
+        offer_raw = str(row.get("offer_id") or first.get("offer_id") or "").strip()
+        sku_raw = str(
+            row.get("sku")
+            or first.get("sku")
+            or first.get("product_id")
+            or ""
+        ).strip()
+        name_raw = str(
+            row.get("product_name") or first.get("name") or ""
+        ).strip()
+        if offer_raw and not str(row.get("offer_id") or "").strip():
+            row["offer_id"] = offer_raw
+        if sku_raw and not str(row.get("sku") or "").strip():
+            row["sku"] = sku_raw
+        if name_raw and not str(row.get("product_name") or "").strip():
+            row["product_name"] = name_raw
+        offer = offer_raw.lower()
+        sku = sku_raw.lower()
         prod = catalog.get(offer) or catalog.get(sku)
         catalog_name = str(prod.get("name") or "") if prod else ""
         row["product_name_display"] = (
-            catalog_name or str(row.get("product_name") or "") or offer or sku or "—"
+            catalog_name or name_raw or offer_raw or sku_raw or "—"
         )
         row["product_name"] = row["product_name_display"]
         row["product_photo"] = photos.get(offer) or photos.get(sku) or ""
+        if not row["product_photo"] and row["products"]:
+            for p in row["products"]:
+                if not isinstance(p, dict):
+                    continue
+                fa = str(p.get("offer_id") or "").strip().lower()
+                fs = str(p.get("sku") or p.get("product_id") or "").strip().lower()
+                photo = photos.get(fa) or photos.get(fs) or ""
+                if photo:
+                    row["product_photo"] = photo
+                    break
         row["status_label"] = status_label(str(row.get("status") or ""))
         row["created_date"] = _date_short(row.get("created_at_wb"))
         try:
             row["barcodes"] = json.loads(str(row.get("barcodes_json") or "[]"))
         except Exception:
             row["barcodes"] = []
-        try:
-            products = json.loads(str(row.get("products_json") or "[]"))
-            row["products"] = products if isinstance(products, list) else []
-        except Exception:
-            row["products"] = []
+        # Package sticker barcodes from dedicated columns (scan / print).
+        sticker_codes = []  # type: List[str]
+        for key in ("sticker_barcode", "sticker_lower_barcode"):
+            val = str(row.get(key) or "").strip()
+            if val and val not in sticker_codes:
+                sticker_codes.append(val)
+        if sticker_codes and not row["barcodes"]:
+            row["barcodes"] = list(sticker_codes)
         if row.get("products") and len(row["products"]) > 1:
             row["product_count_label"] = "{} тов.".format(len(row["products"]))
         else:

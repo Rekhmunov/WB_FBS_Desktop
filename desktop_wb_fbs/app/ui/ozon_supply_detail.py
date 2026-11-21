@@ -88,6 +88,49 @@ class _LabelPrintWorker(QThread):
             self.failed.emit(str(exc))
 
 
+class _SupplyHydrateWorker(QThread):
+    """Background get_posting for rows missing product/SKU/barcodes."""
+
+    progress = pyqtSignal(int, int, str)
+    finished_ok = pyqtSignal(dict)
+    failed = pyqtSignal(str)
+
+    def __init__(
+        self,
+        supplies: OzonSuppliesService,
+        client: OzonFbsClient,
+        source_id: int,
+        posting_numbers: List[str],
+        *,
+        only_missing: bool = True,
+        parent: Optional[QWidget] = None,
+    ) -> None:
+        super(_SupplyHydrateWorker, self).__init__(parent)
+        self.supplies = supplies
+        self.client = client
+        self.source_id = int(source_id)
+        self.posting_numbers = list(posting_numbers or [])
+        self.only_missing = bool(only_missing)
+        self._stop = False
+
+    def request_stop(self) -> None:
+        self._stop = True
+
+    def run(self) -> None:
+        try:
+            result = self.supplies.refresh_postings_from_ozon(
+                self.client,
+                self.source_id,
+                self.posting_numbers,
+                only_missing=self.only_missing,
+                progress=lambda d, t, m: self.progress.emit(int(d), int(t), str(m or "")),
+                stop_requested=lambda: self._stop,
+            )
+            self.finished_ok.emit(result if isinstance(result, dict) else {})
+        except Exception as exc:
+            self.failed.emit(str(exc))
+
+
 class _StickersPrintWorker(QThread):
     ready = pyqtSignal(dict)
     failed = pyqtSignal(str)
@@ -151,6 +194,7 @@ class OzonSupplyDetailDialog(QDialog):
         self._rows = []  # type: List[Dict[str, Any]]
         self._label_worker = None  # type: Optional[_LabelPrintWorker]
         self._stickers_worker = None  # type: Optional[_StickersPrintWorker]
+        self._hydrate_worker = None  # type: Optional[_SupplyHydrateWorker]
         self.supply_mutated = False
         self._force_read_only = bool(read_only)
 
@@ -184,57 +228,72 @@ class OzonSupplyDetailDialog(QDialog):
 
         actions = QHBoxLayout()
         actions.setSpacing(8)
+        # Order matches web archive #ozonFbsSupplyDetailModal actions.
         self.btn_rename = QPushButton("Переименовать")
         self.btn_rename.setObjectName("secondary")
+        self.btn_rename.setToolTip("Переименовать поставку")
         self.btn_rename.clicked.connect(self.rename_supply)
-        self.btn_mark = QPushButton("Товары с КИЗ")
-        self.btn_mark.clicked.connect(self.open_mark)
-        self.btn_pick = QPushButton("Товары без КИЗ")
-        self.btn_pick.setObjectName("secondary")
-        self.btn_pick.clicked.connect(self.open_pick)
-        self.btn_labels = QPushButton("Этикетки")
-        self.btn_labels.setObjectName("secondary")
-        self.btn_labels.clicked.connect(self.print_labels)
-        self.btn_stickers = QPushButton("Стикеры / QR")
-        self.btn_stickers.setObjectName("secondary")
-        self.btn_stickers.clicked.connect(self.print_stickers_sheet)
+        self.btn_cancelled = QPushButton("Отмененные заказы")
+        self.btn_cancelled.setObjectName("secondary")
+        self.btn_cancelled.setToolTip("Проверить отменённые отправления в поставке")
+        self.btn_cancelled.clicked.connect(self.show_cancelled)
         self.btn_picking = QPushButton("Лист подбора")
         self.btn_picking.setObjectName("secondary")
         self.btn_picking.clicked.connect(self.print_picking_list)
+        self.btn_stickers = QPushButton("Старые стикеры")
+        self.btn_stickers.setObjectName("secondary")
+        self.btn_stickers.setToolTip("Лист стикеров / QR (локальная печать)")
+        self.btn_stickers.clicked.connect(self.print_stickers_sheet)
+        self.btn_labels = QPushButton("Стикеры")
+        self.btn_labels.setObjectName("secondary")
+        self.btn_labels.setToolTip("Этикетка отправления Ozon (package-label)")
+        self.btn_labels.clicked.connect(self.print_labels)
         self.btn_containers = QPushButton("Грузоместа")
         self.btn_containers.setObjectName("secondary")
+        self.btn_containers.setToolTip("Грузоместа Ozon FBS: паллеты, печать ШК")
         self.btn_containers.clicked.connect(self.open_containers)
-        self.btn_cancelled = QPushButton("Отменённые")
-        self.btn_cancelled.setObjectName("secondary")
-        self.btn_cancelled.clicked.connect(self.show_cancelled)
+        self.btn_mark = QPushButton("Товары с КИЗ")
+        self.btn_mark.setToolTip("Товары с КИЗ — коды маркировки «Честный знак»")
+        self.btn_mark.clicked.connect(self.open_mark)
+        self.btn_pick = QPushButton("Товары без КИЗ")
+        self.btn_pick.setObjectName("secondary")
+        self.btn_pick.setToolTip("Товары без КИЗ — проверка штрихкодов")
+        self.btn_pick.clicked.connect(self.open_pick)
         self.btn_driver = QPushButton("Водитель")
         self.btn_driver.setObjectName("secondary")
+        self.btn_driver.setToolTip("Водитель поставки: выбрать из справочника и гос. номер ТС")
         self.btn_driver.clicked.connect(self.assign_driver)
         self.btn_ttn = QPushButton("ТН")
         self.btn_ttn.setObjectName("secondary")
         self.btn_ttn.clicked.connect(self.open_ttn_draft)
         self.btn_move = QPushButton("Перенести в доставку")
+        self.btn_move.setToolTip(
+            "Локально перенести поставку в «Доставляются» (без отправки в Ozon)"
+        )
         self.btn_move.clicked.connect(self.move_to_delivering)
         self.btn_refresh = QPushButton("Обновить")
         self.btn_refresh.setObjectName("secondary")
-        self.btn_refresh.clicked.connect(self.reload)
+        self.btn_refresh.setToolTip("Обновить товары/статусы из Ozon API")
+        self.btn_refresh.clicked.connect(self.reload_from_ozon)
         for b in (
-            self.btn_rename,
+            self.btn_cancelled,
+            self.btn_picking,
+            self.btn_stickers,
+            self.btn_labels,
+            self.btn_containers,
             self.btn_mark,
             self.btn_pick,
-            self.btn_labels,
-            self.btn_stickers,
-            self.btn_picking,
-            self.btn_containers,
-            self.btn_cancelled,
             self.btn_driver,
             self.btn_ttn,
             self.btn_move,
             self.btn_refresh,
+            self.btn_rename,
         ):
             actions.addWidget(b)
         actions.addStretch(1)
         search_box, self.search_input = make_modal_search_box()
+        self.search_input.setPlaceholderText("Поиск по отправлению, товару, ШК…")
+        self.search_input.setToolTip("Поиск по отправлению, названию товара и ШК")
         self.search_input.textChanged.connect(self._apply_filter)
         actions.addWidget(search_box)
         hv.addLayout(actions)
@@ -255,25 +314,42 @@ class OzonSupplyDetailDialog(QDialog):
         self.table.doubleClicked.connect(self._open_selected_posting)
         root.addWidget(self.table, 1)
 
-        self.reload()
+        self.reload(hydrate=True)
+
+    def closeEvent(self, event) -> None:  # type: ignore[override]
+        if self._hydrate_worker and self._hydrate_worker.isRunning():
+            self._hydrate_worker.request_stop()
+        super(OzonSupplyDetailDialog, self).closeEvent(event)
 
     def _is_read_only(self) -> bool:
         return self._force_read_only or bool(self._detail.get("read_only"))
 
-    def _set_actions_ready(self) -> None:
+    def _action_buttons(self) -> List[QPushButton]:
+        return [
+            self.btn_cancelled,
+            self.btn_picking,
+            self.btn_stickers,
+            self.btn_labels,
+            self.btn_containers,
+            self.btn_mark,
+            self.btn_pick,
+            self.btn_driver,
+            self.btn_ttn,
+            self.btn_move,
+            self.btn_refresh,
+            self.btn_rename,
+        ]
+
+    def _set_actions_ready(self, ready: bool = True) -> None:
         ro = self._is_read_only()
-        self.btn_rename.setEnabled(not ro)
-        self.btn_mark.setEnabled(True)
-        self.btn_pick.setEnabled(True)
-        self.btn_labels.setEnabled(True)
-        self.btn_stickers.setEnabled(True)
-        self.btn_picking.setEnabled(True)
-        self.btn_containers.setEnabled(True)
-        self.btn_cancelled.setEnabled(True)
-        self.btn_move.setEnabled(not ro)
+        for btn in self._action_buttons():
+            btn.setEnabled(bool(ready))
+        if ready:
+            self.btn_rename.setEnabled(not ro)
+            self.btn_move.setEnabled(not ro)
         self.btn_move.setVisible(not ro)
 
-    def reload(self) -> None:
+    def reload(self, *, hydrate: bool = True) -> None:
         try:
             self._detail = self.supplies.get_detail(
                 self.source_id,
@@ -294,26 +370,122 @@ class OzonSupplyDetailDialog(QDialog):
                 self._detail.get("warehouse_label") or "склад —",
             )
         )
-        self._set_actions_ready()
+        self._set_actions_ready(True)
         self._apply_filter()
-        self.load_info.setText(
-            "Только просмотр"
-            if self._is_read_only()
-            else "Готово · {} отправлений".format(len(self._rows))
+        missing = sum(
+            1
+            for r in self._rows
+            if self.supplies.posting_needs_ozon_product_refresh(r)
         )
+        if self._is_read_only():
+            self.load_info.setText("Только просмотр · {} отпр.".format(len(self._rows)))
+        elif missing and hydrate:
+            self.load_info.setText(
+                "Готово · {} отпр. · подгружаю товары из Ozon ({} без данных)…".format(
+                    len(self._rows), missing
+                )
+            )
+            self._start_hydrate(only_missing=True)
+        else:
+            self.load_info.setText(
+                "Готово · {} отправлений".format(len(self._rows))
+            )
+
+    def reload_from_ozon(self) -> None:
+        """Manual refresh — re-fetch all supply postings from Ozon API."""
+        if self._hydrate_worker and self._hydrate_worker.isRunning():
+            return
+        self.reload(hydrate=False)
+        self.load_info.setText("Обновление из Ozon…")
+        self._start_hydrate(only_missing=False)
+
+    def _start_hydrate(self, *, only_missing: bool) -> None:
+        if self._is_read_only():
+            return
+        if self._hydrate_worker and self._hydrate_worker.isRunning():
+            return
+        pnums = [
+            str(r.get("posting_number") or "").strip()
+            for r in self._rows
+            if str(r.get("posting_number") or "").strip()
+        ]
+        if not pnums:
+            return
+        if only_missing:
+            pnums = [
+                str(r.get("posting_number") or "").strip()
+                for r in self._rows
+                if self.supplies.posting_needs_ozon_product_refresh(r)
+                and str(r.get("posting_number") or "").strip()
+            ]
+            if not pnums:
+                return
+        self._set_actions_ready(False)
+        self.btn_refresh.setEnabled(False)
+        worker = _SupplyHydrateWorker(
+            self.supplies,
+            self.client,
+            self.source_id,
+            pnums,
+            only_missing=only_missing,
+            parent=self,
+        )
+        self._hydrate_worker = worker
+        worker.progress.connect(self._on_hydrate_progress)
+        worker.finished_ok.connect(self._on_hydrate_done)
+        worker.failed.connect(self._on_hydrate_failed)
+        worker.finished.connect(self._on_hydrate_finished)
+        worker.start()
+
+    def _on_hydrate_progress(self, done: int, total: int, msg: str) -> None:
+        self.load_info.setText(str(msg or "Загрузка из Ozon… {}/{}".format(done, total)))
+
+    def _on_hydrate_done(self, result: object) -> None:
+        res = result if isinstance(result, dict) else {}
+        # Reload local enriched rows after upserts.
+        self.reload(hydrate=False)
+        refreshed = int(res.get("refreshed") or 0)
+        failed = int(res.get("failed") or 0)
+        skipped = int(res.get("skipped") or 0)
+        parts = ["Готово · {} отпр.".format(len(self._rows))]
+        if refreshed:
+            parts.append("обновлено из Ozon: {}".format(refreshed))
+        if skipped:
+            parts.append("уже были данные: {}".format(skipped))
+        if failed:
+            parts.append("ошибок: {}".format(failed))
+        self.load_info.setText(" · ".join(parts))
+
+    def _on_hydrate_failed(self, message: str) -> None:
+        self.load_info.setText(str(message or "Ошибка загрузки из Ozon"))
+        self._set_actions_ready(True)
+
+    def _on_hydrate_finished(self) -> None:
+        self._hydrate_worker = None
+        self._set_actions_ready(True)
 
     def _apply_filter(self) -> None:
         q = self.search_input.text().strip().lower()
         rows = self._rows
         if q:
-            rows = [
-                r
-                for r in self._rows
-                if q in str(r.get("posting_number") or "").lower()
-                or q in str(r.get("offer_id") or "").lower()
-                or q in str(r.get("product_name") or "").lower()
-                or q in str(r.get("sku") or "").lower()
-            ]
+            def _match(r: Dict[str, Any]) -> bool:
+                if q in str(r.get("posting_number") or "").lower():
+                    return True
+                if q in str(r.get("offer_id") or "").lower():
+                    return True
+                if q in str(r.get("product_name") or r.get("product_name_display") or "").lower():
+                    return True
+                if q in str(r.get("sku") or "").lower():
+                    return True
+                for code in r.get("barcodes") or []:
+                    if q in str(code or "").lower():
+                        return True
+                for key in ("sticker_barcode", "sticker_lower_barcode"):
+                    if q in str(r.get(key) or "").lower():
+                        return True
+                return False
+
+            rows = [r for r in self._rows if _match(r)]
         self.table.setRowCount(len(rows))
         for i, r in enumerate(rows):
             pnum = str(r.get("posting_number") or "")
@@ -390,7 +562,7 @@ class OzonSupplyDetailDialog(QDialog):
         dlg.exec_()
         if getattr(dlg, "posting_mutated", False):
             self.supply_mutated = True
-            self.reload()
+            self.reload(hydrate=False)
 
     def rename_supply(self) -> None:
         if self._is_read_only():
@@ -407,7 +579,7 @@ class OzonSupplyDetailDialog(QDialog):
             QMessageBox.warning(self, "Поставка", str(exc))
             return
         self.supply_mutated = True
-        self.reload()
+        self.reload(hydrate=False)
 
     def open_mark(self) -> None:
         from app.ui.ozon_mark_dialog import OzonMarkDialog
@@ -425,7 +597,7 @@ class OzonSupplyDetailDialog(QDialog):
         dlg.exec_()
         if dlg.data_changed:
             self.supply_mutated = True
-            self.reload()
+            self.reload(hydrate=False)
 
     def open_pick(self) -> None:
         from app.ui.ozon_pick_dialog import OzonPickDialog
@@ -442,7 +614,7 @@ class OzonSupplyDetailDialog(QDialog):
         dlg.exec_()
         if dlg.data_changed:
             self.supply_mutated = True
-            self.reload()
+            self.reload(hydrate=False)
 
     def print_labels(self) -> None:
         pnums = self._posting_numbers()
@@ -470,7 +642,7 @@ class OzonSupplyDetailDialog(QDialog):
 
     def _on_labels_ready(self, path: str) -> None:
         self.load_info.setText("Этикетки: {}".format(path))
-        self.reload()
+        self.reload(hydrate=False)
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
 
     def _on_labels_failed(self, message: str) -> None:
@@ -547,7 +719,7 @@ class OzonSupplyDetailDialog(QDialog):
         res = result if isinstance(result, dict) else {}
         pdf_path = str(res.get("pdf_path") or "")
         html = str(res.get("sheet_html") or "")
-        self.reload()
+        self.reload(hydrate=False)
         if html:
             fd, path = tempfile.mkstemp(suffix=".html", prefix="ozon-stickers-")
             os.close(fd)
@@ -683,7 +855,7 @@ class OzonSupplyDetailDialog(QDialog):
                 table.setRowHeight(i, 88)
 
         def _refresh() -> None:
-            self.reload()
+            self.reload(hydrate=False)
             items = self.supplies.list_cancelled_in_supply(
                 self.source_id, self.supply_id
             )
@@ -719,4 +891,4 @@ class OzonSupplyDetailDialog(QDialog):
         self.supply_mutated = True
         QMessageBox.information(self, "Доставка", "Поставка перенесена в доставку.")
         self._force_read_only = True
-        self.reload()
+        self.reload(hydrate=False)

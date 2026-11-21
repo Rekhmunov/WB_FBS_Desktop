@@ -379,6 +379,111 @@ class OzonSuppliesService:
             "done": int(supply.get("done") or 0),
         }
 
+    @staticmethod
+    def posting_needs_ozon_product_refresh(row: Dict[str, Any]) -> bool:
+        """True when local row has no usable product identity (name/SKU/offer)."""
+        offer = str(row.get("offer_id") or "").strip()
+        sku = str(row.get("sku") or "").strip()
+        name = str(row.get("product_name") or "").strip()
+        if offer or sku or (name and name != "—"):
+            return False
+        raw = row.get("products_json")
+        if isinstance(raw, list):
+            products = raw
+        else:
+            try:
+                products = json.loads(str(raw or "[]"))
+            except Exception:
+                products = []
+        if not isinstance(products, list):
+            return True
+        for p in products:
+            if not isinstance(p, dict):
+                continue
+            if str(p.get("offer_id") or "").strip():
+                return False
+            if str(p.get("sku") or p.get("product_id") or "").strip():
+                return False
+            if str(p.get("name") or "").strip():
+                return False
+        return True
+
+    def refresh_postings_from_ozon(
+        self,
+        client: OzonFbsClient,
+        source_id: int,
+        posting_numbers: List[str],
+        *,
+        only_missing: bool = True,
+        progress: Optional[Any] = None,
+        stop_requested: Optional[Any] = None,
+        sleep_s: float = 0.05,
+    ) -> Dict[str, Any]:
+        """Live ``/v3/posting/fbs/get`` hydrate (web ``refresh_supply_postings_from_ozon``).
+
+        Used when opening a supply so empty product/SKU/barcode rows refill from Ozon.
+        Keeps local ``supply_id`` (upsert does not clear it).
+        """
+        from app.ozon.sync import upsert_posting
+
+        nums = [str(x).strip() for x in (posting_numbers or []) if str(x).strip()]
+        if not nums:
+            return {"ok": True, "refreshed": 0, "skipped": 0, "failed": 0, "total": 0}
+        need = []  # type: List[str]
+        if only_missing:
+            with self.db.connect() as conn:
+                for pn in nums:
+                    if stop_requested and stop_requested():
+                        break
+                    row = conn.execute(
+                        """
+                        SELECT offer_id, sku, product_name, products_json
+                        FROM ozon_fbs_postings
+                        WHERE source_id = ? AND posting_number = ?
+                        """,
+                        (source_id, pn),
+                    ).fetchone()
+                    if row is None or self.posting_needs_ozon_product_refresh(
+                        Database.row_to_dict(row)
+                    ):
+                        need.append(pn)
+        else:
+            need = list(nums)
+        total = len(need)
+        refreshed = 0
+        failed = 0
+        skipped = len(nums) - total
+        if progress:
+            progress(0, total, "Загрузка товаров из Ozon… 0/{}".format(total))
+        for i, pn in enumerate(need):
+            if stop_requested and stop_requested():
+                break
+            try:
+                remote = client.get_posting(pn)
+                if isinstance(remote, dict) and remote:
+                    upsert_posting(self.db, source_id, remote)
+                    refreshed += 1
+                else:
+                    failed += 1
+            except Exception as exc:
+                failed += 1
+                _log.warning("ozon supply detail refresh %s: %s", pn, exc)
+            if progress:
+                progress(
+                    i + 1,
+                    total,
+                    "Загрузка товаров из Ozon… {}/{}".format(i + 1, total),
+                )
+            if sleep_s and i + 1 < total:
+                time.sleep(float(sleep_s))
+        return {
+            "ok": failed == 0,
+            "refreshed": refreshed,
+            "skipped": skipped,
+            "failed": failed,
+            "total": total,
+        }
+
     def bind_stickers_from_postings(
         self,
         client: OzonFbsClient,

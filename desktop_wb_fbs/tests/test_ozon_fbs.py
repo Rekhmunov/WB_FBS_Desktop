@@ -707,6 +707,132 @@ class OzonShipStatusParityTest(unittest.TestCase):
             except OSError:
                 pass
 
+    def test_enrich_fills_from_products_json(self) -> None:
+        import os
+        import tempfile
+
+        from app.db import Database
+        from app.services.ozon_orders import OzonOrdersService
+
+        fd, path = tempfile.mkstemp(suffix=".sqlite")
+        os.close(fd)
+        try:
+            db = Database(path)
+            db.init_schema()
+            row = {
+                "posting_number": "X-1",
+                "status": "awaiting_deliver",
+                "tab": "awaiting_deliver",
+                "offer_id": "",
+                "sku": "",
+                "product_name": "",
+                "products_json": json.dumps(
+                    [
+                        {
+                            "sku": 777,
+                            "offer_id": "ART-777",
+                            "name": "Из JSON",
+                            "quantity": 1,
+                        }
+                    ],
+                    ensure_ascii=False,
+                ),
+                "barcodes_json": "[]",
+                "sticker_barcode": "QR-1",
+                "sticker_lower_barcode": "",
+            }
+            enriched = OzonOrdersService(db)._enrich_posting(dict(row))
+            self.assertEqual(enriched.get("offer_id"), "ART-777")
+            self.assertEqual(str(enriched.get("sku")), "777")
+            self.assertEqual(enriched.get("product_name_display"), "Из JSON")
+            self.assertEqual(enriched.get("barcodes"), ["QR-1"])
+        finally:
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+
+    def test_refresh_postings_from_ozon_only_missing(self) -> None:
+        import os
+        import tempfile
+        from unittest.mock import MagicMock
+
+        from app.db import Database
+        from app.ozon.sync import upsert_posting
+        from app.services.ozon_supplies import OzonSuppliesService
+
+        fd, path = tempfile.mkstemp(suffix=".sqlite")
+        os.close(fd)
+        try:
+            db = Database(path)
+            db.init_schema()
+            with db.connect() as conn:
+                conn.execute(
+                    """
+                    INSERT INTO supply_sources(
+                        name, marketplace, client_id, api_key, is_enabled,
+                        lookback_days, created_at
+                    ) VALUES ('Озон ФБС', 'ozon', '1', 'k', 1, 2, '2026-01-01')
+                    """
+                )
+                sid = int(conn.execute("SELECT last_insert_rowid()").fetchone()[0])
+                conn.commit()
+            upsert_posting(
+                db,
+                sid,
+                {
+                    "posting_number": "OK-1",
+                    "status": "awaiting_deliver",
+                    "products": [
+                        {"sku": 1, "offer_id": "A", "name": "Good", "quantity": 1}
+                    ],
+                },
+            )
+            with db.connect() as conn:
+                conn.execute(
+                    """
+                    INSERT INTO ozon_fbs_postings(
+                        source_id, posting_number, status, tab, supply_id,
+                        offer_id, sku, product_name, products_json, synced_at
+                    ) VALUES (?, 'EMPTY-1', 'awaiting_deliver', 'awaiting_deliver',
+                              'OZ-1', '', '', '', '[]', '2026-01-01')
+                    """,
+                    (sid,),
+                )
+                conn.commit()
+            client = MagicMock()
+            client.get_posting.return_value = {
+                "posting_number": "EMPTY-1",
+                "status": "awaiting_deliver",
+                "products": [
+                    {"sku": 9, "offer_id": "E9", "name": "Filled", "quantity": 1}
+                ],
+                "barcodes": {"upper_barcode": "UP", "lower_barcode": "LO"},
+            }
+            svc = OzonSuppliesService(db)
+            out = svc.refresh_postings_from_ozon(
+                client, sid, ["OK-1", "EMPTY-1"], only_missing=True
+            )
+            self.assertEqual(int(out.get("refreshed") or 0), 1)
+            self.assertEqual(int(out.get("skipped") or 0), 1)
+            client.get_posting.assert_called_once_with("EMPTY-1")
+            with db.connect() as conn:
+                row = dict(
+                    conn.execute(
+                        "SELECT offer_id, sku, product_name, supply_id "
+                        "FROM ozon_fbs_postings WHERE posting_number='EMPTY-1'"
+                    ).fetchone()
+                )
+            self.assertEqual(row["offer_id"], "E9")
+            self.assertEqual(row["sku"], "9")
+            self.assertEqual(row["product_name"], "Filled")
+            self.assertEqual(row["supply_id"], "OZ-1")
+        finally:
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+
     def test_assembly_list_excludes_supply_members(self) -> None:
         import os
         import tempfile

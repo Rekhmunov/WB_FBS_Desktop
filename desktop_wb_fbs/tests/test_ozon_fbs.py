@@ -890,6 +890,124 @@ class OzonSplitShipSupplyFlowTest(unittest.TestCase):
             except OSError:
                 pass
 
+    def test_split_all_multi_reports_progress_and_stop(self) -> None:
+        import os
+        import tempfile
+        from unittest.mock import MagicMock
+
+        from app.db import Database
+        from app.services.ozon_split import OzonSplitService
+
+        fd, path = tempfile.mkstemp(suffix=".sqlite")
+        os.close(fd)
+        try:
+            db = Database(path)
+            db.init_schema()
+            sid = self._seed_source(db)
+            with db.connect() as conn:
+                for i, pn in enumerate(("M-A", "M-B"), start=1):
+                    conn.execute(
+                        """
+                        INSERT INTO ozon_fbs_postings(
+                            source_id, posting_number, status, tab,
+                            warehouse_id, products_json, quantity, synced_at
+                        ) VALUES (?, ?, 'awaiting_packaging', 'awaiting_packaging',
+                                  10, ?, 2, '2026-01-01')
+                        """,
+                        (
+                            sid,
+                            pn,
+                            json.dumps(
+                                [{"sku": i, "quantity": 2, "offer_id": "O"}],
+                                ensure_ascii=False,
+                            ),
+                        ),
+                    )
+                conn.commit()
+
+            calls = []  # type: list
+
+            def _progress(done, total, msg):
+                calls.append((int(done), int(total), str(msg or "")))
+
+            client = MagicMock()
+            parent_skus = {"M-A": 1, "M-B": 2, "M-C": 9}
+
+            def _get(pn):
+                # Parent still multi until after split; children are unit qty.
+                parent = pn[:-2] if pn.endswith("-1") else pn
+                sku = parent_skus.get(parent, 1)
+                return {
+                    "posting_number": pn,
+                    "status": "awaiting_packaging",
+                    "products": [
+                        {
+                            "sku": sku,
+                            "quantity": 1 if pn.endswith("-1") else 2,
+                            "offer_id": "O",
+                            "name": "Item",
+                        }
+                    ],
+                    "barcodes": {"upper_barcode": "U", "lower_barcode": "L"},
+                    "analytics_data": {"warehouse": "WH", "warehouse_id": 10},
+                }
+
+            client.get_posting.side_effect = _get
+            client.split_posting.side_effect = lambda pn, postings: {
+                "result": {
+                    "parent_posting": {"posting_number": pn},
+                    "postings": [
+                        {"posting_number": pn},
+                        {"posting_number": pn + "-1"},
+                    ],
+                }
+            }
+            out = OzonSplitService(db).split_all_multi(
+                client, sid, progress=_progress
+            )
+            self.assertEqual(int(out.get("split") or 0), 2)
+            self.assertTrue(calls)
+            self.assertEqual(calls[0][1], 2)
+            self.assertTrue(any(c[0] == 2 and c[1] == 2 for c in calls))
+            self.assertTrue(
+                any("Разделение" in c[2] for c in calls),
+                calls,
+            )
+
+            # Stop before first posting
+            calls.clear()
+            with db.connect() as conn:
+                conn.execute(
+                    """
+                    INSERT INTO ozon_fbs_postings(
+                        source_id, posting_number, status, tab,
+                        warehouse_id, products_json, quantity, synced_at
+                    ) VALUES (?, 'M-C', 'awaiting_packaging', 'awaiting_packaging',
+                              10, ?, 2, '2026-01-01')
+                    """,
+                    (
+                        sid,
+                        json.dumps(
+                            [{"sku": 9, "quantity": 2, "offer_id": "O"}],
+                            ensure_ascii=False,
+                        ),
+                    ),
+                )
+                conn.commit()
+            stopped = OzonSplitService(db).split_all_multi(
+                client,
+                sid,
+                progress=_progress,
+                stop_requested=lambda: True,
+            )
+            self.assertTrue(stopped.get("stopped"))
+            self.assertEqual(int(stopped.get("split") or 0), 0)
+        finally:
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+
 
 class OzonSelectionPreviewTest(unittest.TestCase):
     def test_preview_rejects_wrong_tab_and_existing_supply(self) -> None:

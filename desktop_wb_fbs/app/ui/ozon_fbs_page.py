@@ -119,6 +119,91 @@ class OzonSyncWorker(QThread):
         self.finished_ok.emit(totals)
 
 
+class OzonSplitWorker(QThread):
+    """Background «Разделить мультизаказы» with live done/total progress."""
+
+    progress = pyqtSignal(int, int, str)
+    finished_ok = pyqtSignal(dict)
+    failed = pyqtSignal(str)
+
+    def __init__(
+        self,
+        db: Database,
+        source: Dict[str, Any],
+        parent: Optional[QWidget] = None,
+    ) -> None:
+        super(OzonSplitWorker, self).__init__(parent)
+        self.db = db
+        self.source = dict(source or {})
+        self._stop = False
+
+    def request_stop(self) -> None:
+        self._stop = True
+
+    def run(self) -> None:
+        from app.ozon.client import OzonFbsClient
+        from app.services.ozon_split import OzonSplitService
+
+        try:
+            client = OzonFbsClient(
+                str(self.source.get("client_id") or ""),
+                str(self.source.get("api_key") or ""),
+            )
+            result = OzonSplitService(self.db).split_all_multi(
+                client,
+                int(self.source["id"]),
+                progress=lambda d, t, m: self.progress.emit(int(d), int(t), str(m or "")),
+                stop_requested=lambda: self._stop,
+            )
+            self.finished_ok.emit(result if isinstance(result, dict) else {})
+        except Exception as exc:
+            self.failed.emit(str(exc))
+
+
+class OzonShipAllWorker(QThread):
+    """Background «Собрать все заказы» with live done/total progress."""
+
+    progress = pyqtSignal(int, int, str)
+    finished_ok = pyqtSignal(dict)
+    failed = pyqtSignal(str)
+
+    def __init__(
+        self,
+        db: Database,
+        source: Dict[str, Any],
+        decisions: List[Dict[str, Any]],
+        parent: Optional[QWidget] = None,
+    ) -> None:
+        super(OzonShipAllWorker, self).__init__(parent)
+        self.db = db
+        self.source = dict(source or {})
+        self.decisions = list(decisions or [])
+        self._stop = False
+
+    def request_stop(self) -> None:
+        self._stop = True
+
+    def run(self) -> None:
+        from app.ozon.client import OzonFbsClient
+        from app.services.ozon_supplies import OzonSuppliesService
+
+        try:
+            client = OzonFbsClient(
+                str(self.source.get("client_id") or ""),
+                str(self.source.get("api_key") or ""),
+            )
+            result = OzonSuppliesService(self.db).execute_ship_all(
+                int(self.source["id"]),
+                client,
+                decisions=self.decisions,
+                progress=lambda d, t, m: self.progress.emit(int(d), int(t), str(m or "")),
+                stop_requested=lambda: self._stop,
+            )
+            self.finished_ok.emit(result if isinstance(result, dict) else {})
+        except Exception as exc:
+            self.failed.emit(str(exc))
+
+
 class OzonFbsPage(QWidget):
     def __init__(
         self,
@@ -134,7 +219,9 @@ class OzonFbsPage(QWidget):
         self._tab = "awaiting_packaging"
         self._page = 0
         self._sync_worker = None  # type: Optional[OzonSyncWorker]
-        self._sync_busy = False
+        self._split_worker = None  # type: Optional[OzonSplitWorker]
+        self._ship_worker = None  # type: Optional[OzonShipAllWorker]
+        self._ops_busy = ""  # "", "sync", "split", "ship"
         self._selected_postings = set()  # type: set
         self.stickers = OzonStickersService(db)
 
@@ -179,13 +266,18 @@ class OzonFbsPage(QWidget):
             "Возвраты FBS ReceivedBySeller (локальный кэш + sync)"
         )
         self.pvz_returns_btn.clicked.connect(self.open_pvz_returns)
-        # Idle tooltips — restored after sync (web: «Идёт синхронизация, подождите»).
+        # Idle labels/tooltips — restored after sync/split/ship (web busy UI).
         self._action_tooltips = {
             self.ship_all_btn: self.ship_all_btn.toolTip(),
             self.split_multi_btn: self.split_multi_btn.toolTip(),
             self.create_carriage_btn: self.create_carriage_btn.toolTip(),
             self.open_carriage_btn: self.open_carriage_btn.toolTip(),
             self.pvz_returns_btn: self.pvz_returns_btn.toolTip(),
+        }
+        self._idle_btn_text = {
+            self.sync_btn: "Синхронизировать",
+            self.ship_all_btn: "Собрать все заказы",
+            self.split_multi_btn: "Разделить мультизаказы",
         }
         tb.addWidget(self.sync_btn)
         tb.addWidget(self.stop_btn)
@@ -675,6 +767,8 @@ class OzonFbsPage(QWidget):
         self.next_btn.setEnabled(self._page + 1 < pages)
 
     def _on_row_double_click(self, _index) -> None:
+        if self._guard_ops_busy():
+            return
         src = self.current_source()
         if not src:
             return
@@ -728,7 +822,7 @@ class OzonFbsPage(QWidget):
             self.reload_table()
 
     def open_pvz_returns(self) -> None:
-        if self._guard_sync_busy():
+        if self._guard_ops_busy():
             return
         src = self.current_source()
         if not src:
@@ -743,6 +837,8 @@ class OzonFbsPage(QWidget):
 
     def on_sticker_scan(self) -> None:
         """Resolve posting by package QR / lower barcode / posting_number (web parity)."""
+        if self._guard_ops_busy():
+            return
         if block_ru_layout_scan(self.scan_input):
             return
         raw = self.scan_input.text().strip()
@@ -805,7 +901,7 @@ class OzonFbsPage(QWidget):
         return text or None
 
     def open_selected_carriage(self) -> None:
-        if self._guard_sync_busy():
+        if self._guard_ops_busy():
             return
         src = self.current_source()
         cid = self._selected_carriage_id()
@@ -852,18 +948,15 @@ class OzonFbsPage(QWidget):
             self.reload_table()
 
     def split_all_multi(self) -> None:
-        if self._guard_sync_busy():
+        if self._guard_ops_busy():
             return
         src = self.current_source()
         if not src:
             QMessageBox.information(self, "Ozon FBS", "Выберите источник Ozon FBS.")
             return
-        from app.ozon.client import OzonFbsClient
         from app.services.ozon_split import OzonSplitService
 
-        sid = int(src["id"])
-        svc = OzonSplitService(self.db)
-        preview = svc.preview_multi(sid)
+        preview = OzonSplitService(self.db).preview_multi(int(src["id"]))
         multi = int(preview.get("multi_posting_count") or 0)
         if multi <= 0:
             QMessageBox.information(
@@ -881,31 +974,59 @@ class OzonFbsPage(QWidget):
         )
         if reply != QMessageBox.Yes:
             return
-        client = OzonFbsClient(
-            str(src.get("client_id") or ""), str(src.get("api_key") or "")
-        )
-        try:
-            result = svc.split_all_multi(client, sid)
-        except Exception as exc:
-            QMessageBox.warning(self, "Разделить мультизаказы", str(exc))
+        if self._split_worker and self._split_worker.isRunning():
             return
-        msg = str(result.get("message") or "")
-        errs = result.get("errors") or []
+        self._set_ops_busy("split")
+        self._show_sync_info("Запуск разделения мультизаказов…", "")
+        self.split_multi_btn.setText("Подготовка…")
+        worker = OzonSplitWorker(self.db, src, self)
+        self._split_worker = worker
+        worker.progress.connect(self._on_split_progress)
+        worker.finished_ok.connect(self._on_split_done)
+        worker.failed.connect(self._on_split_failed)
+        worker.finished.connect(self._on_split_finished)
+        worker.start()
+
+    def _on_split_progress(self, done: int, total: int, msg: str) -> None:
+        text = str(msg or "").strip()
+        if not text:
+            text = (
+                "Разделение {}/{}".format(done, total)
+                if total
+                else "Разделение…"
+            )
+        self._show_sync_info(text, "")
+        self.split_multi_btn.setText(
+            "Разделение {}/{}".format(done, total) if total else "Разделение…"
+        )
+
+    def _on_split_done(self, result: object) -> None:
+        res = result if isinstance(result, dict) else {}
+        errs = [str(e) for e in (res.get("errors") or []) if str(e).strip()]
+        msg = str(res.get("message") or "Разделение завершено")
         if errs:
-            msg += "\n" + "\n".join(str(e) for e in errs[:8])
-        QMessageBox.information(self, "Разделить мультизаказы", msg or "Готово")
+            msg += "\n" + "\n".join(errs[:5])
+        state = "ok" if res.get("ok") and not errs else "error"
+        if int(res.get("split") or 0) and not errs:
+            state = "ok"
+        self._show_sync_info(msg, state)
         self.reload_table()
 
+    def _on_split_failed(self, message: str) -> None:
+        self._show_sync_info(str(message or "Ошибка разделения"), "error")
+
+    def _on_split_finished(self) -> None:
+        self._set_ops_busy("")
+        self._split_worker = None
+
     def ship_all_collect(self) -> None:
-        if self._guard_sync_busy():
+        if self._guard_ops_busy():
             return
         src = self.current_source()
         if not src:
             QMessageBox.information(self, "Ozon FBS", "Выберите источник Ozon FBS.")
             return
-        from app.ozon.client import OzonFbsClient
         from app.services.ozon_supplies import OzonSuppliesService
-        from PyQt5.QtWidgets import QProgressDialog
 
         sid = int(src["id"])
         svc = OzonSuppliesService(self.db)
@@ -931,53 +1052,61 @@ class OzonFbsPage(QWidget):
         if choose.exec_() != QDialog.Accepted:
             return
         decisions = choose.decisions()
-        client = OzonFbsClient(
-            str(src.get("client_id") or ""), str(src.get("api_key") or "")
-        )
-        progress = QProgressDialog(
-            "Сборка заказов…", "Стоп", 0, max(1, int(preview.get("posting_count") or 1)), self
-        )
-        progress.setWindowModality(Qt.WindowModal)
-        progress.setMinimumDuration(0)
-        stop = {"v": False}
-
-        def _stop() -> bool:
-            return bool(stop["v"] or progress.wasCanceled())
-
-        def _prog(done: int, total: int, msg: str) -> None:
-            progress.setMaximum(max(1, int(total) or 1))
-            progress.setValue(int(done))
-            progress.setLabelText(str(msg or ""))
-
-        progress.canceled.connect(lambda: stop.__setitem__("v", True))
-        try:
-            result = svc.execute_ship_all(
-                sid,
-                client,
-                decisions=decisions,
-                progress=_prog,
-                stop_requested=_stop,
-            )
-        except Exception as exc:
-            progress.close()
-            QMessageBox.warning(self, "Собрать все заказы", str(exc))
+        if self._ship_worker and self._ship_worker.isRunning():
             return
-        progress.close()
-        errs = result.get("errors") or []
-        msg = str(result.get("message") or "")
-        if errs:
-            msg += "\n" + "\n".join(
-                "{}: {}".format(e.get("posting_number"), e.get("error"))
-                for e in errs[:8]
-                if isinstance(e, dict)
-            )
-        QMessageBox.information(self, "Собрать все заказы", msg or "Готово")
-        if result.get("goto_awaiting_deliver"):
+        self._set_ops_busy("ship")
+        self._show_sync_info("Запуск сборки…", "")
+        self.ship_all_btn.setText("Сборка…")
+        worker = OzonShipAllWorker(self.db, src, decisions, self)
+        self._ship_worker = worker
+        worker.progress.connect(self._on_ship_progress)
+        worker.finished_ok.connect(self._on_ship_done)
+        worker.failed.connect(self._on_ship_failed)
+        worker.finished.connect(self._on_ship_finished)
+        worker.start()
+
+    def _on_ship_progress(self, done: int, total: int, msg: str) -> None:
+        text = str(msg or "").strip()
+        if not text:
+            text = "Сборка… {} из {}".format(done, total) if total else "Сборка…"
+        self._show_sync_info(text, "")
+        self.ship_all_btn.setText(
+            "Сборка {}/{}".format(done, total) if total else "Сборка…"
+        )
+
+    def _on_ship_done(self, result: object) -> None:
+        res = result if isinstance(result, dict) else {}
+        errs = res.get("errors") or []
+        msg = str(res.get("message") or "Сборка завершена")
+        err_lines = []
+        for e in errs[:8]:
+            if isinstance(e, dict):
+                err_lines.append(
+                    "{}: {}".format(e.get("posting_number"), e.get("error"))
+                )
+            else:
+                err_lines.append(str(e))
+        if err_lines:
+            msg += "\n" + "\n".join(err_lines)
+        state = "ok" if res.get("ok") else "error"
+        if int(res.get("shipped") or 0) and err_lines:
+            state = "error"
+        self._show_sync_info(msg, state)
+        if res.get("goto_awaiting_deliver"):
             self.on_tab_change("awaiting_deliver")
         else:
             self.reload_table()
 
+    def _on_ship_failed(self, message: str) -> None:
+        self._show_sync_info(str(message or "Ошибка сборки"), "error")
+
+    def _on_ship_finished(self) -> None:
+        self._set_ops_busy("")
+        self._ship_worker = None
+
     def add_to_carriage(self) -> None:
+        if self._guard_ops_busy():
+            return
         src = self.current_source()
         pnums = self._selected_posting_numbers()
         if not src or not pnums:
@@ -1034,6 +1163,8 @@ class OzonFbsPage(QWidget):
         self.on_tab_change("awaiting_deliver")
 
     def create_supply_from_selection(self) -> None:
+        if self._guard_ops_busy():
+            return
         src = self.current_source()
         pnums = self._selected_posting_numbers()
         if not src or not pnums:
@@ -1073,6 +1204,8 @@ class OzonFbsPage(QWidget):
             self.reload_table()
 
     def ship_selected(self) -> None:
+        if self._guard_ops_busy():
+            return
         src = self.current_source()
         pnums = self._selected_posting_numbers()
         if not src or not pnums:
@@ -1099,7 +1232,7 @@ class OzonFbsPage(QWidget):
             QMessageBox.warning(self, "Ship", str(exc))
 
     def create_carriage(self) -> None:
-        if self._guard_sync_busy():
+        if self._guard_ops_busy():
             return
         src = self.current_source()
         if not src:
@@ -1202,32 +1335,65 @@ class OzonFbsPage(QWidget):
             self.pvz_returns_btn,
         ]
 
-    def _set_sync_busy(self, busy: bool) -> None:
-        """Web parity: while sync runs, packaging/supply actions stay locked."""
-        self._sync_busy = bool(busy)
-        tip = "Идёт синхронизация, подождите"
+    def _bottom_action_buttons(self) -> List[QPushButton]:
+        return [
+            self.btn_create_supply,
+            self.btn_add_carriage,
+            self.btn_ship_sel,
+            self.btn_select_page,
+        ]
+
+    def _ops_busy_title(self) -> str:
+        kind = str(self._ops_busy or "")
+        if kind == "sync":
+            return "Дождитесь окончания синхронизации"
+        if kind == "split":
+            return "Дождитесь окончания разделения мультизаказов"
+        if kind == "ship":
+            return "Дождитесь окончания сборки заказов"
+        return "Дождитесь окончания операции"
+
+    def _ops_busy_tooltip(self) -> str:
+        kind = str(self._ops_busy or "")
+        if kind == "sync":
+            return "Идёт синхронизация, подождите"
+        if kind == "split":
+            return "Идёт разделение, подождите"
+        if kind == "ship":
+            return "Идёт сборка, подождите"
+        return "Идёт операция, подождите"
+
+    def _set_ops_busy(self, kind: str) -> None:
+        """Lock packaging actions during sync / split / ship (web parity)."""
+        self._ops_busy = str(kind or "")
+        busy = bool(self._ops_busy)
+        tip = self._ops_busy_tooltip() if busy else ""
         self.sync_btn.setEnabled(not busy)
         self.stop_btn.setVisible(busy)
         self.stop_btn.setEnabled(busy)
         for btn in self._action_buttons():
             btn.setEnabled(not busy)
-            if busy:
-                btn.setToolTip(tip)
-            else:
-                btn.setToolTip(self._action_tooltips.get(btn, ""))
+            btn.setToolTip(tip if busy else self._action_tooltips.get(btn, ""))
+        for btn in self._bottom_action_buttons():
+            btn.setEnabled(not busy)
+        if not busy:
+            for btn, text in self._idle_btn_text.items():
+                btn.setText(text)
 
-    def _guard_sync_busy(self) -> bool:
-        """Return True if an action must abort because sync is running."""
-        if not self._sync_busy:
+    def _guard_ops_busy(self) -> bool:
+        """Return True if an action must abort because an op is running."""
+        if not self._ops_busy:
             return False
         QMessageBox.information(
             self,
-            "Синхронизация",
-            "Дождитесь окончания синхронизации.",
+            "Ozon FBS",
+            self._ops_busy_title() + ".",
         )
         return True
 
     def run_sync(self) -> None:
+        if self._guard_ops_busy():
+            return
         enabled = self.sources.list_ozon_fbs_enabled()
         if not enabled:
             QMessageBox.information(
@@ -1239,8 +1405,9 @@ class OzonFbsPage(QWidget):
             return
         if self._sync_worker and self._sync_worker.isRunning():
             return
-        self._set_sync_busy(True)
+        self._set_ops_busy("sync")
         self._show_sync_info("Синхронизация Ozon FBS…", "")
+        self.sync_btn.setText("Синхронизация…")
         worker = OzonSyncWorker(self.db, enabled, self)
         self._sync_worker = worker
         worker.progress.connect(self._on_sync_progress)
@@ -1250,11 +1417,22 @@ class OzonFbsPage(QWidget):
         worker.start()
 
     def stop_sync(self) -> None:
-        if self._sync_worker:
+        """Stop the active sync / split / ship worker (Стоп)."""
+        if self._sync_worker and self._sync_worker.isRunning():
             self._sync_worker.request_stop()
+        if self._split_worker and self._split_worker.isRunning():
+            self._split_worker.request_stop()
+        if self._ship_worker and self._ship_worker.isRunning():
+            self._ship_worker.request_stop()
 
     def _on_sync_progress(self, text: str, _n: int) -> None:
-        self._show_sync_info(text or "Синхронизация…", "")
+        msg = text or "Синхронизация…"
+        self._show_sync_info(msg, "")
+        # Keep button label short when multi-line progress.
+        line = str(msg).split("\n")[0].strip() or "Синхронизация…"
+        if len(line) > 42:
+            line = line[:39] + "…"
+        self.sync_btn.setText(line)
 
     def _on_sync_done(self, result: object) -> None:
         res = result if isinstance(result, dict) else {}
@@ -1279,5 +1457,5 @@ class OzonFbsPage(QWidget):
         )
 
     def _on_sync_finished(self) -> None:
-        self._set_sync_busy(False)
+        self._set_ops_busy("")
         self._sync_worker = None

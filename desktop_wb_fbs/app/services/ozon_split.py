@@ -434,21 +434,41 @@ class OzonSplitService:
         self,
         client: OzonFbsClient,
         source_id: int,
+        *,
+        progress: Optional[Any] = None,
+        stop_requested: Optional[Any] = None,
     ) -> Dict[str, Any]:
+        """Split every multi-unit packaging posting.
+
+        ``progress(done, total, message)`` — web-like live counter.
+        """
         preview = self.preview_multi(source_id)
         nums = list(preview.get("posting_numbers") or [])
+        total = len(nums)
         if not nums:
+            if progress:
+                progress(0, 0, "Нет мультизаказов для разделения")
             return {
                 "ok": True,
                 "split": 0,
                 "failed": 0,
+                "done": 0,
+                "total": 0,
                 "message": "Нет мультизаказов для разделения",
                 "errors": [],
+                "stopped": False,
             }
         split_n = 0
         failed = 0
+        done = 0
+        stopped = False
         errors = []  # type: List[str]
+        if progress:
+            progress(0, total, "Разделение 0/{}".format(total))
         for pn in nums:
+            if stop_requested and stop_requested():
+                stopped = True
+                break
             try:
                 out = self.split_posting(client, source_id, pn)
                 if not out.get("skipped"):
@@ -457,16 +477,29 @@ class OzonSplitService:
                 failed += 1
                 errors.append("{}: {}".format(pn, exc))
                 _log.warning("ozon split-all %s: %s", pn, exc)
-        if split_n and not failed:
-            message = "Разделено {} мультизаказов → «Ожидают сборки»".format(split_n)
+            done += 1
+            if progress:
+                progress(
+                    done,
+                    total,
+                    "Разделение {}/{}".format(done, total)
+                    + (" · ошибок {}".format(failed) if failed else ""),
+                )
+        if stopped:
+            message = "Остановлено. Разделено {} из {}".format(split_n, total)
+        elif split_n and not failed:
+            message = "Готово: разделено {} → «Ожидают сборки»".format(split_n)
         elif split_n:
             message = "Разделено {}, ошибок {}".format(split_n, failed)
         else:
             message = "Не удалось разделить мультизаказы"
         return {
-            "ok": split_n > 0 and failed == 0,
+            "ok": split_n > 0 and failed == 0 and not stopped,
             "split": split_n,
             "failed": failed,
+            "done": done,
+            "total": total,
             "message": message,
             "errors": errors,
+            "stopped": stopped,
         }

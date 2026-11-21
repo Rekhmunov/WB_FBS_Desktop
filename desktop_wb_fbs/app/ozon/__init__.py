@@ -127,6 +127,79 @@ def compute_tab(*, status: str, carriage_id: str = "") -> str:
     return TAB_AWAITING_PACKAGING
 
 
+# Operational pipeline only (not cancelled / arbitration) — web parity.
+_PIPELINE_STATUS_RANK = {
+    TAB_AWAITING_PACKAGING: 10,
+    TAB_AWAITING_DELIVER: 20,
+    TAB_DELIVERING: 30,
+    TAB_DELIVERED: 40,
+}
+
+# Statuses synced per lookback window (web SYNC_STATUSES).
+SYNC_STATUSES = [
+    STATUS_AWAITING_PACKAGING,
+    STATUS_AWAITING_DELIVER,
+    STATUS_DELIVERING,
+    STATUS_ARBITRATION,
+    STATUS_CLIENT_ARBITRATION,
+    STATUS_DELIVERED,
+    STATUS_CANCELLED,
+]
+
+
+def is_cancelled_posting(*, status: object = "", tab: object = "") -> bool:
+    s = str(status or "").strip().lower()
+    t = normalize_tab(tab)
+    if t == TAB_CANCELLED:
+        return True
+    return s in _CANCELLED_STATUSES or s == "cancelled_from_split_pending"
+
+
+def pipeline_status_rank(*, status: object = "", tab: object = "") -> Optional[int]:
+    """Rank for packaging→deliver→delivering→delivered. None = non-pipeline."""
+    if is_cancelled_posting(status=status, tab=tab):
+        return None
+    t = normalize_tab(tab)
+    if not t:
+        t = compute_tab(status=str(status or ""))
+    st = str(status or "").strip().lower()
+    if t == TAB_ARBITRATION or st in _ARBITRATION_STATUSES:
+        return None
+    return _PIPELINE_STATUS_RANK.get(t)
+
+
+def resolve_upsert_status(
+    *,
+    local_status: object = "",
+    local_tab: object = "",
+    remote_status: object = "",
+) -> Tuple[str, str]:
+    """Pick status/tab for upsert; never regress packaging←deliver mid-sync.
+
+    Concurrent sync can still hold an ``awaiting_packaging`` page fetched before
+    ship; applying it after local ship would bounce rows back to «Ожидают сборки».
+    Cancelled / arbitration from Ozon always win.
+    """
+    new_status = str(remote_status or "").strip().lower()
+    new_tab = compute_tab(status=new_status)
+    if is_cancelled_posting(status=new_status, tab=new_tab):
+        return new_status or TAB_CANCELLED, TAB_CANCELLED
+    if new_tab == TAB_ARBITRATION or new_status in _ARBITRATION_STATUSES:
+        return new_status or TAB_ARBITRATION, TAB_ARBITRATION
+
+    old_status = str(local_status or "").strip().lower()
+    old_tab = normalize_tab(local_tab) or compute_tab(status=old_status)
+    old_rank = pipeline_status_rank(status=old_status, tab=old_tab)
+    new_rank = pipeline_status_rank(status=new_status, tab=new_tab)
+    if (
+        old_rank is not None
+        and new_rank is not None
+        and new_rank < old_rank
+    ):
+        return old_status or old_tab, old_tab
+    return new_status, new_tab
+
+
 def status_label(status: str) -> str:
     labels = {
         STATUS_AWAITING_REGISTRATION: "Ожидает регистрации",

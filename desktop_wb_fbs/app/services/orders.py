@@ -7,7 +7,8 @@ import time
 from typing import Any, Dict, List, Optional, Tuple
 
 from app.db import Database
-from app.services.catalog import ProductService
+from app.paths import resolve_product_photo_path
+from app.services.catalog import ProductService, add_catalog_listener
 from app.wb import (
     assembly_stage_label,
     cargo_type_label,
@@ -49,6 +50,7 @@ class OrdersService:
     def __init__(self, db: Database) -> None:
         self.db = db
         self._product_maps_cache = None  # type: ignore
+        add_catalog_listener(self.invalidate_product_cache)
 
     def invalidate_product_cache(self) -> None:
         self._product_maps_cache = None
@@ -62,7 +64,7 @@ class OrdersService:
         photo_by = {}  # type: Dict[str, str]
         for p in ProductService(self.db).list_all():
             name = str(p.get("name") or "").strip()
-            photo = str(p.get("photo_path") or "").strip()
+            photo = resolve_product_photo_path(p.get("photo_path"))
             art = str(p.get("supplier_article") or "").strip().lower()
             nm = str(p.get("wb_nmid") or "").strip()
             if name:

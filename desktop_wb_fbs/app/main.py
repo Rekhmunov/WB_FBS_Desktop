@@ -137,8 +137,11 @@ class MainWindow(QMainWindow):
         self.fbs_page.source_combo.setVisible(index == 0)
         self.ozon_fbs_page.source_combo.setVisible(index == 1)
         if index == 0:
+            # Refresh so newly saved product photos appear without restart.
+            self.orders.invalidate_product_cache()
             self.fbs_page.reload_sources()
         elif index == 1:
+            self.ozon_orders.invalidate_catalog_cache()
             self.ozon_fbs_page.reload_sources()
 
     def _on_autosync_tick(self) -> None:

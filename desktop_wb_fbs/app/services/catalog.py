@@ -4,11 +4,31 @@ from __future__ import annotations
 import csv
 import shutil
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from app.db import Database
-from app.paths import photos_dir
+from app.paths import photos_dir, resolve_product_photo_path
 from app.wb import utc_now
+
+# Orders / Ozon pages cache catalog maps; notify them after mutations.
+_catalog_listeners = []  # type: List[Callable[[], None]]
+
+
+def add_catalog_listener(callback: Callable[[], None]) -> None:
+    if callback not in _catalog_listeners:
+        _catalog_listeners.append(callback)
+
+
+def clear_catalog_listeners_for_tests() -> None:
+    del _catalog_listeners[:]
+
+
+def notify_catalog_changed() -> None:
+    for cb in list(_catalog_listeners):
+        try:
+            cb()
+        except Exception:
+            pass
 
 
 def _truthy_flag(value: object) -> bool:
@@ -147,6 +167,7 @@ class ProductService:
                     ),
                 )
                 conn.commit()
+                notify_catalog_changed()
                 return int(product_id)
 
             cur = conn.execute(
@@ -172,6 +193,7 @@ class ProductService:
                 ),
             )
             conn.commit()
+            notify_catalog_changed()
             return int(cur.lastrowid)
 
     def find_id_by_article_or_nmid(
@@ -346,6 +368,7 @@ class ProductService:
                     p.unlink()
             except Exception:
                 pass
+        notify_catalog_changed()
 
     def skip_gtin_map(self) -> Dict[str, bool]:
         """Keys: supplier_article lower + nm_id string."""

@@ -352,47 +352,63 @@ QDialogButtonBox QPushButton {
 }
 
 /* ========== Inputs — kill native XP look ========== */
-QLineEdit, QComboBox, QSpinBox, QTextEdit, QPlainTextEdit {
+QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox, QTextEdit, QPlainTextEdit, QDateEdit, QTimeEdit, QDateTimeEdit {
     background: #ffffff;
     border: 1px solid #d9e8f7;
     border-radius: 10px;
     padding: 0 12px;
-    min-height: 36px;
+    min-height: 40px;
+    max-height: 40px;
     color: #0f1f33;
     font-size: 14px;
     selection-background-color: #ddf1ff;
     selection-color: #0f1f33;
 }
-QLineEdit:hover, QComboBox:hover, QSpinBox:hover {
+QTextEdit, QPlainTextEdit {
+    max-height: none;
+    min-height: 72px;
+    padding: 10px 12px;
+}
+QLineEdit:hover, QComboBox:hover, QSpinBox:hover, QDoubleSpinBox:hover,
+QDateEdit:hover, QTimeEdit:hover, QDateTimeEdit:hover {
     border-color: #79c3ff;
     background: #ffffff;
 }
-QLineEdit:focus, QComboBox:focus, QSpinBox:focus, QTextEdit:focus {
+QLineEdit:focus, QComboBox:focus, QSpinBox:focus, QDoubleSpinBox:focus,
+QTextEdit:focus, QPlainTextEdit:focus,
+QDateEdit:focus, QTimeEdit:focus, QDateTimeEdit:focus {
     border: 1px solid #3ba4f7;
     background: #ffffff;
 }
-QLineEdit:disabled, QComboBox:disabled, QSpinBox:disabled {
+QLineEdit:disabled, QComboBox:disabled, QSpinBox:disabled, QDoubleSpinBox:disabled,
+QDateEdit:disabled, QTimeEdit:disabled, QDateTimeEdit:disabled {
     background: #f2f8ff;
     color: #8aa0b8;
     border-color: #d9e8f7;
 }
 QComboBox {
-    padding-right: 28px;
+    padding-right: 32px;
 }
 QComboBox::drop-down {
     subcontrol-origin: padding;
     subcontrol-position: center right;
-    width: 28px;
+    width: 32px;
     border: none;
+    border-left: 1px solid #e8f0f8;
     background: transparent;
+    border-top-right-radius: 10px;
+    border-bottom-right-radius: 10px;
+}
+QComboBox::drop-down:hover {
+    background: #f2f8ff;
 }
 QComboBox::down-arrow {
     width: 0;
     height: 0;
-    border-left: 4px solid transparent;
-    border-right: 4px solid transparent;
-    border-top: 5px solid #5f7691;
-    margin-right: 10px;
+    border-left: 5px solid transparent;
+    border-right: 5px solid transparent;
+    border-top: 6px solid #5f7691;
+    margin-right: 4px;
 }
 QComboBox QAbstractItemView {
     background: #ffffff;
@@ -401,17 +417,26 @@ QComboBox QAbstractItemView {
     outline: none;
     selection-background-color: #ddf1ff;
     selection-color: #0f1f33;
-    padding: 4px;
+    padding: 6px;
     font-size: 14px;
 }
 QComboBox QAbstractItemView::item {
-    min-height: 32px;
-    padding: 4px 12px;
+    min-height: 36px;
+    padding: 6px 12px;
+    border-radius: 8px;
+}
+QComboBox QAbstractItemView::item:selected {
+    background: #ddf1ff;
+    color: #0f1f33;
+}
+QComboBox QAbstractItemView::item:hover {
+    background: #f2f8ff;
 }
 QComboBox#sourceCombo {
     min-width: 180px;
     max-width: 280px;
-    min-height: 36px;
+    min-height: 40px;
+    max-height: 40px;
     background: #ffffff;
     border: 1px solid #d9e8f7;
     border-radius: 10px;
@@ -421,35 +446,37 @@ QComboBox#sourceCombo {
 QFrame#topBar QComboBox#sourceCombo {
     margin: 0;
 }
-QSpinBox {
+QSpinBox, QDoubleSpinBox {
     padding-right: 28px;
 }
-QSpinBox::up-button, QSpinBox::down-button {
+QSpinBox::up-button, QSpinBox::down-button,
+QDoubleSpinBox::up-button, QDoubleSpinBox::down-button {
     subcontrol-origin: border;
-    width: 22px;
+    width: 24px;
     border: none;
     background: transparent;
     border-left: 1px solid #d9e8f7;
 }
-QSpinBox::up-button {
+QSpinBox::up-button, QDoubleSpinBox::up-button {
     subcontrol-position: top right;
-    border-top-right-radius: 8px;
+    border-top-right-radius: 9px;
 }
-QSpinBox::down-button {
+QSpinBox::down-button, QDoubleSpinBox::down-button {
     subcontrol-position: bottom right;
-    border-bottom-right-radius: 8px;
+    border-bottom-right-radius: 9px;
 }
-QSpinBox::up-button:hover, QSpinBox::down-button:hover {
+QSpinBox::up-button:hover, QSpinBox::down-button:hover,
+QDoubleSpinBox::up-button:hover, QDoubleSpinBox::down-button:hover {
     background: #f2f8ff;
 }
-QSpinBox::up-arrow {
+QSpinBox::up-arrow, QDoubleSpinBox::up-arrow {
     width: 0;
     height: 0;
     border-left: 4px solid transparent;
     border-right: 4px solid transparent;
     border-bottom: 5px solid #5f7691;
 }
-QSpinBox::down-arrow {
+QSpinBox::down-arrow, QDoubleSpinBox::down-arrow {
     width: 0;
     height: 0;
     border-left: 4px solid transparent;
@@ -457,16 +484,96 @@ QSpinBox::down-arrow {
     border-top: 5px solid #5f7691;
 }
 QComboBox#pageSizeCombo {
-    min-width: 72px;
-    max-width: 88px;
-    min-height: 36px;
+    min-width: 88px;
+    max-width: 110px;
+    min-height: 40px;
+    max-height: 40px;
     padding-left: 12px;
     font-weight: 500;
 }
 QLabel#fieldLabel {
-    font-size: 13px;
+    font-size: 12px;
     font-weight: 600;
-    color: #5f7691;
+    color: #64748b;
+    letter-spacing: 0.01em;
+}
+
+/* Web-parity quantity stepper (−  N  +) for грузоместа / TRBX */
+QFrame#trbxStepper {
+    background: #ffffff;
+    border: 1px solid #e2e8f0;
+    border-radius: 8px;
+    min-height: 40px;
+    max-height: 40px;
+}
+QPushButton#trbxStepBtn {
+    min-width: 40px;
+    max-width: 40px;
+    min-height: 40px;
+    max-height: 40px;
+    padding: 0;
+    margin: 0;
+    border: none;
+    border-radius: 0;
+    background: #f8fafc;
+    color: #0f172a;
+    font-size: 20px;
+    font-weight: 600;
+}
+QPushButton#trbxStepBtn:hover {
+    background: #f1f5f9;
+    border: none;
+    color: #0f172a;
+}
+QPushButton#trbxStepBtn:pressed {
+    background: #e2e8f0;
+    border: none;
+}
+QPushButton#trbxStepBtn:disabled {
+    background: #f8fafc;
+    color: #94a3b8;
+    border: none;
+    opacity: 0.7;
+}
+QSpinBox#trbxAmount {
+    min-width: 64px;
+    max-width: 72px;
+    min-height: 40px;
+    max-height: 40px;
+    padding: 0 8px;
+    margin: 0;
+    border: none;
+    border-left: 1px solid #e2e8f0;
+    border-right: 1px solid #e2e8f0;
+    border-radius: 0;
+    background: #ffffff;
+    font-size: 16px;
+    font-weight: 600;
+    color: #0f172a;
+}
+QSpinBox#trbxAmount:hover, QSpinBox#trbxAmount:focus {
+    border: none;
+    border-left: 1px solid #e2e8f0;
+    border-right: 1px solid #e2e8f0;
+    background: #ffffff;
+}
+QComboBox#formSelect {
+    min-height: 40px;
+    max-height: 40px;
+    min-width: 160px;
+    padding-left: 12px;
+    padding-right: 32px;
+    border: 1px solid #e2e8f0;
+    border-radius: 8px;
+    background: #ffffff;
+    font-size: 14px;
+    color: #0f172a;
+}
+QComboBox#formSelect:hover {
+    border-color: #cbd5e1;
+}
+QComboBox#formSelect:focus {
+    border-color: #3ba4f7;
 }
 
 /* ========== Panels ========== */
@@ -1607,7 +1714,9 @@ QLabel#trbxBoxId {
     background: transparent;
 }
 QToolButton#trbxBoxBtn,
-QToolButton#trbxBoxDeleteBtn {
+QToolButton#trbxBoxDeleteBtn,
+QPushButton#trbxBoxBtn,
+QPushButton#trbxBoxDeleteBtn {
     min-width: 40px;
     max-width: 40px;
     min-height: 40px;
@@ -1621,15 +1730,26 @@ QToolButton#trbxBoxDeleteBtn {
     font-weight: 600;
 }
 QToolButton#trbxBoxBtn:hover,
-QToolButton#trbxBoxDeleteBtn:hover {
-    background: #f2f8ff;
+QToolButton#trbxBoxDeleteBtn:hover,
+QPushButton#trbxBoxBtn:hover,
+QPushButton#trbxBoxDeleteBtn:hover {
+    background: #eaf4ff;
+    border-color: #c2d9f2;
 }
-QToolButton#trbxBoxDeleteBtn {
+QToolButton#trbxBoxDeleteBtn,
+QPushButton#trbxBoxDeleteBtn {
     color: #b91c1c;
 }
-QToolButton#trbxBoxDeleteBtn:hover {
+QToolButton#trbxBoxDeleteBtn:hover,
+QPushButton#trbxBoxDeleteBtn:hover {
     background: #fef2f2;
     border-color: #fecaca;
+}
+QPushButton#trbxBoxBtn:disabled,
+QPushButton#trbxBoxDeleteBtn:disabled {
+    color: #94a3b8;
+    background: #f8fafc;
+    border-color: #e2e8f0;
 }
 
 /* ========== Collect MGT confirm / result modals ========== */

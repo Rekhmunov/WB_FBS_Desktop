@@ -9,6 +9,7 @@ from PyQt5.QtCore import QRect, Qt, QThread, QTimer, QUrl, pyqtSignal
 from PyQt5.QtGui import QCursor, QDesktopServices, QPainter
 from PyQt5.QtWidgets import (
     QAbstractItemView,
+    QAbstractSpinBox,
     QApplication,
     QCheckBox,
     QDialog,
@@ -2318,25 +2319,32 @@ class TrbxDialog(QDialog):
         root.addWidget(lead)
 
         stepper_row = QHBoxLayout()
-        stepper_row.setSpacing(8)
+        stepper_row.setSpacing(12)
+        stepper = QFrame()
+        stepper.setObjectName("trbxStepper")
+        step_lay = QHBoxLayout(stepper)
+        step_lay.setContentsMargins(0, 0, 0, 0)
+        step_lay.setSpacing(0)
         self.minus_btn = QPushButton("−")
-        self.minus_btn.setObjectName("secondary")
-        self.minus_btn.setFixedWidth(44)
+        self.minus_btn.setObjectName("trbxStepBtn")
+        self.minus_btn.setCursor(Qt.PointingHandCursor)
         self.minus_btn.clicked.connect(partial(self._step_amount, -1))
         self.amount = QSpinBox()
+        self.amount.setObjectName("trbxAmount")
         self.amount.setRange(1, 1000)
         self.amount.setValue(1)
-        self.amount.setMinimumWidth(88)
+        self.amount.setAlignment(Qt.AlignCenter)
+        self.amount.setButtonSymbols(QAbstractSpinBox.NoButtons)
         self.plus_btn = QPushButton("+")
-        self.plus_btn.setObjectName("secondary")
-        self.plus_btn.setFixedWidth(44)
+        self.plus_btn.setObjectName("trbxStepBtn")
+        self.plus_btn.setCursor(Qt.PointingHandCursor)
         self.plus_btn.clicked.connect(partial(self._step_amount, 1))
+        step_lay.addWidget(self.minus_btn)
+        step_lay.addWidget(self.amount)
+        step_lay.addWidget(self.plus_btn)
         self.create_btn = QPushButton("Создать")
         self.create_btn.clicked.connect(self.create_boxes)
-        stepper_row.addWidget(self.minus_btn)
-        stepper_row.addWidget(self.amount)
-        stepper_row.addWidget(self.plus_btn)
-        stepper_row.addSpacing(8)
+        stepper_row.addWidget(stepper)
         stepper_row.addWidget(self.create_btn)
         stepper_row.addStretch(1)
         root.addLayout(stepper_row)

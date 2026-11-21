@@ -494,6 +494,7 @@ class SettingsPage(QWidget):
 
             enabled = QCheckBox("Включить автосинк")
             interval = QComboBox()
+            interval.setObjectName("formSelect")
             for m in allowed_intervals_minutes():
                 if m < 60:
                     label = "{} мин".format(m)
@@ -1119,6 +1120,7 @@ class ProductEditDialog(QDialog):
         if p.get("box_qty"):
             self.box_spin.setValue(int(p["box_qty"]))
         self.cat_combo = QComboBox()
+        self.cat_combo.setObjectName("formSelect")
         self.cat_combo.setEditable(True)
         self.cat_combo.addItem("")
         for c in categories:

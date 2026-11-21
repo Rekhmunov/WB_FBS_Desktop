@@ -303,6 +303,10 @@ class OzonMarkService:
         self, row: Dict[str, Any], prod: Dict[str, Any], marks: List[str]
     ) -> Dict[str, Any]:
         barcodes = _parse_barcodes(row.get("barcodes_json"))
+        try:
+            container_id = int(row.get("container_id") or 0)
+        except (TypeError, ValueError):
+            container_id = 0
         return {
             "posting_number": str(row.get("posting_number") or ""),
             "offer_id": str(row.get("offer_id") or ""),
@@ -327,6 +331,22 @@ class OzonMarkService:
             "skip_gtin_check": bool(prod.get("skip_kiz_gtin_check")),
             "kiz_required": bool(prod.get("requires_kiz")),
             "requires_kiz": bool(prod.get("requires_kiz")),
+            # Stickers — needed for ii… under posting # and scan matching.
+            "sticker_scanit": str(row.get("sticker_scanit") or "").strip(),
+            "sticker_barcode": str(row.get("sticker_barcode") or "").strip(),
+            "sticker_lower_barcode": str(
+                row.get("sticker_lower_barcode") or ""
+            ).strip(),
+            "created_date": str(row.get("created_date") or "").strip(),
+            "in_process_at": str(row.get("in_process_at") or "").strip(),
+            "created_at_wb": str(row.get("created_at_wb") or "").strip(),
+            # Грузоместо bind (archive KIZ/pick column).
+            "container_id": container_id if container_id > 0 else None,
+            "container_barcode": str(row.get("container_barcode") or "").strip(),
+            "container_synced": bool(int(row.get("container_synced") or 0)),
+            "container_sync_error": str(
+                row.get("container_sync_error") or ""
+            ).strip(),
         }
 
     def _posting_needs_mark(

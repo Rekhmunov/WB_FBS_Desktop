@@ -429,6 +429,24 @@ class OzonCarriageDetailDialog(QDialog):
         finally:
             self._col_widths.end_update()
 
+    def _carriage_warehouse_id(self) -> int:
+        wh = 0
+        c = self._carriage or {}
+        try:
+            wh = int(c.get("warehouse_id") or 0)
+        except (TypeError, ValueError):
+            wh = 0
+        if wh > 0:
+            return wh
+        for r in self._rows:
+            try:
+                wh = int(r.get("warehouse_id") or 0)
+            except (TypeError, ValueError):
+                wh = 0
+            if wh > 0:
+                return wh
+        return 0
+
     def open_mark(self) -> None:
         from app.ui.ozon_mark_dialog import OzonMarkDialog
 
@@ -439,6 +457,7 @@ class OzonCarriageDetailDialog(QDialog):
             self.carriage_id,
             self,
             fullscreen=True,
+            warehouse_id=self._carriage_warehouse_id(),
         )
         dlg.exec_()
         if dlg.data_changed:
@@ -455,6 +474,8 @@ class OzonCarriageDetailDialog(QDialog):
             self.carriage_id,
             self,
             fullscreen=True,
+            client=self.client,
+            warehouse_id=self._carriage_warehouse_id(),
         )
         dlg.exec_()
         if dlg.data_changed:

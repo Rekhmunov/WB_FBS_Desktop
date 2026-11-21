@@ -777,11 +777,12 @@ class OzonSupplyDetailDialog(QDialog):
             self.mark,
             self.client,
             self.source_id,
-            "",
+            "supply:{}".format(self.supply_id),
             self,
             fullscreen=True,
             posting_numbers=self._posting_numbers(),
             title_hint=str(self._detail.get("name") or self.supply_id),
+            warehouse_id=self._supply_warehouse_id(),
         )
         dlg.exec_()
         if dlg.data_changed:
@@ -796,11 +797,13 @@ class OzonSupplyDetailDialog(QDialog):
         dlg = OzonPickDialog(
             self.pick,
             self.source_id,
-            "",
+            "supply:{}".format(self.supply_id),
             self,
             fullscreen=True,
             posting_numbers=self._posting_numbers(),
             title_hint=str(self._detail.get("name") or self.supply_id),
+            client=self.client,
+            warehouse_id=self._supply_warehouse_id(),
         )
         dlg.exec_()
         if dlg.data_changed:

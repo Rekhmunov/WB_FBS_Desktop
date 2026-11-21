@@ -37,6 +37,7 @@ from app.ui.format_helpers import (
     build_ozon_posting_cell_widget,
     build_product_cell_widget,
 )
+from app.ui.ozon_container_bind import OzonContainerBindController, row_container_ok
 from app.ui.table_col_widths import PersistentColumnWidths
 
 
@@ -85,12 +86,14 @@ class OzonMarkDialog(QDialog):
         posting_number: str = "",
         posting_numbers: Optional[List[str]] = None,
         title_hint: str = "",
+        warehouse_id: int = 0,
     ) -> None:
         super(OzonMarkDialog, self).__init__(fullscreen_parent(parent, fullscreen))
         self.mark = mark
         self.client = client
         self.source_id = source_id
         self.carriage_id = str(carriage_id or "")
+        self.warehouse_id = int(warehouse_id or 0)
         self.posting_number = str(posting_number or "").strip()
         self.posting_numbers = [
             str(p).strip() for p in (posting_numbers or []) if str(p).strip()
@@ -100,6 +103,7 @@ class OzonMarkDialog(QDialog):
         self._inputs = {}  # type: Dict[str, QLineEdit]
         self.data_changed = False
         self._save_worker = None  # type: Optional[_OzonMarkSaveWorker]
+        self._gm = None  # type: Optional[OzonContainerBindController]
 
         self.setObjectName("kizModal")
         scope = (
@@ -177,6 +181,20 @@ class OzonMarkDialog(QDialog):
         self.counter = QLabel("Просканировано 0 из 0 КИЗ")
         self.counter.setObjectName("kizScanCount")
         tb.addWidget(self.counter, 0)
+        self._gm = OzonContainerBindController(
+            db=self.mark.db,
+            client=self.client,
+            source_id=self.source_id,
+            warehouse_id=self.warehouse_id,
+            carriage_id=self.carriage_id
+            or "supply:{}".format(title_hint or "0"),
+            set_info=self._set_info,
+            on_changed=self._on_gm_changed,
+            parent=self,
+        )
+        self._gm.mount_toolbar_widgets(tb)
+        if self._gm.chk_scan_gm is not None:
+            self._gm.chk_scan_gm.toggled.connect(self._on_scan_gm_check)
         root.addWidget(toolbar)
 
         scan = QFrame()
@@ -237,11 +255,11 @@ class OzonMarkDialog(QDialog):
         il.addWidget(self.info)
         root.addWidget(self.info_banner)
 
-        self.table = QTableWidget(0, 3)
+        self.table = QTableWidget(0, 4)
         self.table.setObjectName("kizTable")
         self.table.setAlternatingRowColors(False)
         self.table.setHorizontalHeaderLabels(
-            ["Отправление", "Товар", "Код маркировки"]
+            ["Отправление", "Товар", "Код маркировки", "ШК грузоместа"]
         )
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.SingleSelection)
@@ -251,13 +269,14 @@ class OzonMarkDialog(QDialog):
         self._col_widths = PersistentColumnWidths(
             self.mark.db,
             self.table,
-            "ozon_mark_modal_table_cols_v2",
-            [220, 420, 320],
+            "ozon_mark_modal_table_cols_v3",
+            [200, 360, 280, 160],
             parent=self,
         )
         self._col_widths.apply()
         root.addWidget(self.table, 1)
 
+        self._gm.prepare()
         self.load_rows()
 
     def showEvent(self, event) -> None:  # noqa: N802
@@ -294,6 +313,22 @@ class OzonMarkDialog(QDialog):
         self.info_banner.style().unpolish(self.info_banner)
         self.info_banner.style().polish(self.info_banner)
         self.info_banner.show()
+
+    def _on_scan_gm_check(self, checked: bool) -> None:
+        if checked:
+            self.scan_input.setPlaceholderText("Сканируйте QR грузоместа")
+        else:
+            self.scan_input.setPlaceholderText(
+                "Сканируйте этикетку Ozon (QR или ii…), затем КИЗ"
+            )
+
+    def _on_gm_changed(self) -> None:
+        if self._gm is None:
+            return
+        self._gm.apply_pending_cell(self.rows)
+        self._gm.apply_pending_clear(self.rows)
+        self.data_changed = True
+        self._render_table()
 
     def load_rows(self) -> None:
         if self.posting_number:
@@ -332,17 +367,30 @@ class OzonMarkDialog(QDialog):
         self._update_counter()
         self._set_info("Статусы обновлены из Ozon", ok=True)
 
-    def _row_filled(self, r: Dict[str, Any]) -> bool:
+    def _marks_filled(self, r: Dict[str, Any]) -> bool:
         return bool([m for m in (r.get("marks") or []) if str(m or "").strip()])
 
+    def _row_filled(self, r: Dict[str, Any]) -> bool:
+        if not self._marks_filled(r):
+            return False
+        if self._gm is not None and self._gm.gm_required_in_filters(self.rows):
+            return row_container_ok(r)
+        return True
+
     def _row_error(self, r: Dict[str, Any]) -> bool:
-        return bool(r.get("mark_error") or r.get("error"))
+        return bool(
+            r.get("mark_error")
+            or r.get("error")
+            or r.get("container_sync_error")
+        )
 
     def _render_table(self) -> None:
         q = self.search_input.text().strip().lower()
         want_filled = self.chk_filled.isChecked()
         want_empty = self.chk_empty.isChecked()
         want_errors = self.chk_errors.isChecked()
+        show_gm = self._gm is not None and self._gm.gm_ui_visible(self.rows)
+        self.table.setColumnHidden(3, not show_gm)
         visible = []  # type: List[Dict[str, Any]]
         for r in self.rows:
             filled = self._row_filled(r)
@@ -360,6 +408,7 @@ class OzonMarkDialog(QDialog):
                         str(r.get("product_name") or ""),
                         str(r.get("offer_id") or ""),
                         str(r.get("sticker_scanit") or ""),
+                        str(r.get("container_barcode") or ""),
                     ]
                 ).lower()
                 if q not in blob:
@@ -375,7 +424,7 @@ class OzonMarkDialog(QDialog):
                 self.table.setCellWidget(i, 0, build_ozon_posting_cell_widget(r))
                 badge = QLabel("КИЗ")
                 badge.setObjectName("sdKizBadge")
-                if self._row_filled(r):
+                if self._marks_filled(r):
                     badge.setProperty(
                         "kizState", "ok" if r.get("marks_synced") else "pending"
                     )
@@ -420,13 +469,18 @@ class OzonMarkDialog(QDialog):
                 status.setObjectName("kizCodeStatus")
                 if self._row_error(r):
                     status.setText(
-                        str(r.get("mark_error") or r.get("error") or "Ошибка")
+                        str(
+                            r.get("mark_error")
+                            or r.get("error")
+                            or r.get("container_sync_error")
+                            or "Ошибка"
+                        )
                     )
                     status.setProperty("state", "error")
-                elif r.get("marks_synced") and self._row_filled(r):
+                elif r.get("marks_synced") and self._marks_filled(r):
                     status.setText("Сохранено в Ozon")
                     status.setProperty("state", "ok")
-                elif self._row_filled(r):
+                elif self._marks_filled(r):
                     status.setText("Заполнено · не сохранено")
                     status.setProperty("state", "pending")
                 else:
@@ -437,6 +491,8 @@ class OzonMarkDialog(QDialog):
                 code_lay.addWidget(status)
                 code_lay.addStretch(1)
                 self.table.setCellWidget(i, 2, code_wrap)
+                if show_gm and self._gm is not None:
+                    self.table.setCellWidget(i, 3, self._gm.build_cell_widget(r))
                 self.table.setRowHeight(
                     i, max(148, self.table.sizeHintForRow(i))
                 )
@@ -466,10 +522,12 @@ class OzonMarkDialog(QDialog):
 
     def _update_counter(self) -> None:
         total = len(self.rows)
-        filled = sum(1 for r in self.rows if self._row_filled(r))
+        filled = sum(1 for r in self.rows if self._marks_filled(r))
         self.counter.setText(
             "Просканировано {} из {} КИЗ".format(filled, total)
         )
+        if self._gm is not None:
+            self._gm.update_counter(self.rows)
 
     def on_scan(self) -> None:
         if block_ru_layout_scan(self.scan_input):
@@ -477,6 +535,11 @@ class OzonMarkDialog(QDialog):
         raw = self.scan_input.text().strip()
         self.scan_input.clear()
         if not raw:
+            return
+        if self._gm is not None and self._gm.handle_scan(raw):
+            self.scan_input.setPlaceholderText(
+                "Сканируйте этикетку Ozon (QR или ii…), затем КИЗ"
+            )
             return
         if self._pending_pnum:
             pnum = self._pending_pnum
@@ -501,7 +564,12 @@ class OzonMarkDialog(QDialog):
             self.scan_prompt.hide()
             self.data_changed = True
             self._set_info("КИЗ принят для {}".format(pnum), ok=True)
+            if self._gm is not None:
+                self._gm.maybe_bind_after_success(row)
             self._render_table()
+            return
+
+        if self._gm is not None and not self._gm.guard_order_scan(self.rows):
             return
 
         from app.ozon.sticker_fields import normalize_ozon_scanit
@@ -530,7 +598,7 @@ class OzonMarkDialog(QDialog):
         if len(raw) > 20:
             last_err = ""
             for r in self.rows:
-                if self._row_filled(r):
+                if self._marks_filled(r):
                     continue
                 ok, err = self.mark.validate_mark(
                     raw, r.get("skus") or [], bool(r.get("skip_gtin_check"))
@@ -543,6 +611,8 @@ class OzonMarkDialog(QDialog):
                         "КИЗ привязан к {}".format(r.get("posting_number")),
                         ok=True,
                     )
+                    if self._gm is not None:
+                        self._gm.maybe_bind_after_success(r)
                     self._render_table()
                     return
                 last_err = str(err or "")
@@ -556,7 +626,7 @@ class OzonMarkDialog(QDialog):
         jobs = [
             {"posting_number": r.get("posting_number"), "marks": r.get("marks") or []}
             for r in self.rows
-            if self._row_filled(r)
+            if self._marks_filled(r)
         ]
         if not jobs:
             QMessageBox.information(self, "Товары с КИЗ", "Нет кодов для сохранения.")

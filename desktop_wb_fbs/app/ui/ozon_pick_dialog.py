@@ -20,6 +20,7 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
+from app.ozon.client import OzonFbsClient
 from app.services.ozon_mark_pick import OzonPickService
 from app.ui.dialog_utils import (
     apply_fullscreen_on_show,
@@ -33,6 +34,7 @@ from app.ui.format_helpers import (
     build_ozon_posting_cell_widget,
     build_product_cell_widget,
 )
+from app.ui.ozon_container_bind import OzonContainerBindController, row_container_ok
 from app.ui.table_col_widths import PersistentColumnWidths
 
 
@@ -48,11 +50,15 @@ class OzonPickDialog(QDialog):
         posting_number: str = "",
         posting_numbers: Optional[List[str]] = None,
         title_hint: str = "",
+        client: Optional[OzonFbsClient] = None,
+        warehouse_id: int = 0,
     ) -> None:
         super(OzonPickDialog, self).__init__(fullscreen_parent(parent, fullscreen))
         self.pick = pick
+        self.client = client
         self.source_id = source_id
         self.carriage_id = str(carriage_id or "")
+        self.warehouse_id = int(warehouse_id or 0)
         self.posting_number = str(posting_number or "").strip()
         self.posting_numbers = [
             str(p).strip() for p in (posting_numbers or []) if str(p).strip()
@@ -60,6 +66,7 @@ class OzonPickDialog(QDialog):
         self.rows = []  # type: List[Dict[str, Any]]
         self._pending_pnum = None  # type: Optional[str]
         self.data_changed = False
+        self._gm = None  # type: Optional[OzonContainerBindController]
 
         self.setObjectName("kizModal")
         scope = (
@@ -117,6 +124,20 @@ class OzonPickDialog(QDialog):
         self.counter = QLabel("Проверено 0 из 0")
         self.counter.setObjectName("kizScanCount")
         tb.addWidget(self.counter, 0)
+        self._gm = OzonContainerBindController(
+            db=self.pick.db,
+            client=self.client,
+            source_id=self.source_id,
+            warehouse_id=self.warehouse_id,
+            carriage_id=self.carriage_id
+            or "supply:{}".format(title_hint or "0"),
+            set_info=self._set_info,
+            on_changed=self._on_gm_changed,
+            parent=self,
+        )
+        self._gm.mount_toolbar_widgets(tb)
+        if self._gm.chk_scan_gm is not None:
+            self._gm.chk_scan_gm.toggled.connect(self._on_scan_gm_check)
         root.addWidget(toolbar)
 
         scan = QFrame()
@@ -177,11 +198,11 @@ class OzonPickDialog(QDialog):
         il.addWidget(self.info)
         root.addWidget(self.info_banner)
 
-        self.table = QTableWidget(0, 3)
+        self.table = QTableWidget(0, 4)
         self.table.setObjectName("kizTable")
         self.table.setAlternatingRowColors(False)
         self.table.setHorizontalHeaderLabels(
-            ["Отправление", "Товар", "Проверка ШК"]
+            ["Отправление", "Товар", "Проверка ШК", "ШК грузоместа"]
         )
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.SingleSelection)
@@ -191,13 +212,14 @@ class OzonPickDialog(QDialog):
         self._col_widths = PersistentColumnWidths(
             self.pick.db,
             self.table,
-            "ozon_pick_modal_table_cols_v2",
-            [220, 420, 280],
+            "ozon_pick_modal_table_cols_v3",
+            [200, 360, 240, 160],
             parent=self,
         )
         self._col_widths.apply()
         root.addWidget(self.table, 1)
 
+        self._gm.prepare()
         self.load_rows()
 
     def showEvent(self, event) -> None:  # noqa: N802
@@ -234,6 +256,22 @@ class OzonPickDialog(QDialog):
         self.info_banner.style().unpolish(self.info_banner)
         self.info_banner.style().polish(self.info_banner)
         self.info_banner.show()
+
+    def _on_scan_gm_check(self, checked: bool) -> None:
+        if checked:
+            self.scan_input.setPlaceholderText("Сканируйте QR грузоместа")
+        else:
+            self.scan_input.setPlaceholderText(
+                "Сканируйте этикетку Ozon (QR или ii…), затем ШК товара"
+            )
+
+    def _on_gm_changed(self) -> None:
+        if self._gm is None:
+            return
+        self._gm.apply_pending_cell(self.rows)
+        self._gm.apply_pending_clear(self.rows)
+        self.data_changed = True
+        self._render_table()
 
     def load_rows(self) -> None:
         if self.posting_number:
@@ -298,16 +336,30 @@ class OzonPickDialog(QDialog):
         self.data_changed = True
         self._render_table()
 
+    def _pick_ok(self, r: Dict[str, Any]) -> bool:
+        return bool(r.get("pick_verified")) and bool(
+            str(r.get("pick_barcode") or "").strip()
+        )
+
+    def _row_complete(self, r: Dict[str, Any]) -> bool:
+        if not self._pick_ok(r):
+            return False
+        if self._gm is not None and self._gm.gm_required_in_filters(self.rows):
+            return row_container_ok(r)
+        return True
+
     def _render_table(self) -> None:
         q = self.search_input.text().strip().lower()
         want_filled = self.chk_filled.isChecked()
         want_empty = self.chk_empty.isChecked()
+        show_gm = self._gm is not None and self._gm.gm_ui_visible(self.rows)
+        self.table.setColumnHidden(3, not show_gm)
         visible = []  # type: List[Dict[str, Any]]
         for r in self.rows:
-            verified = bool(r.get("pick_verified"))
-            if want_filled and not verified:
+            complete = self._row_complete(r)
+            if want_filled and not complete:
                 continue
-            if want_empty and verified:
+            if want_empty and complete:
                 continue
             if q:
                 blob = " ".join(
@@ -317,6 +369,7 @@ class OzonPickDialog(QDialog):
                         str(r.get("offer_id") or ""),
                         str(r.get("sticker_scanit") or ""),
                         str(r.get("pick_barcode") or ""),
+                        str(r.get("container_barcode") or ""),
                     ]
                 ).lower()
                 if q not in blob:
@@ -332,6 +385,8 @@ class OzonPickDialog(QDialog):
                     i, 1, build_product_cell_widget(r, photo_size=120)
                 )
                 self.table.setCellWidget(i, 2, self._build_status_widget(r))
+                if show_gm and self._gm is not None:
+                    self.table.setCellWidget(i, 3, self._gm.build_cell_widget(r))
                 self.table.setRowHeight(
                     i, max(148, self.table.sizeHintForRow(i))
                 )
@@ -341,8 +396,10 @@ class OzonPickDialog(QDialog):
 
     def _update_counter(self) -> None:
         total = len(self.rows)
-        ok = sum(1 for r in self.rows if r.get("pick_verified"))
+        ok = sum(1 for r in self.rows if self._pick_ok(r))
         self.counter.setText("Проверено {} из {}".format(ok, total))
+        if self._gm is not None:
+            self._gm.update_counter(self.rows)
 
     def on_scan(self) -> None:
         if block_ru_layout_scan(self.scan_input):
@@ -350,6 +407,12 @@ class OzonPickDialog(QDialog):
         raw = self.scan_input.text().strip()
         self.scan_input.clear()
         if not raw:
+            return
+
+        if self._gm is not None and self._gm.handle_scan(raw):
+            self.scan_input.setPlaceholderText(
+                "Сканируйте этикетку Ozon (QR или ii…), затем ШК товара"
+            )
             return
 
         from app.ozon.sticker_fields import normalize_ozon_scanit
@@ -389,7 +452,12 @@ class OzonPickDialog(QDialog):
             self.scan_prompt.hide()
             self.data_changed = True
             self._set_info("Проверено: {}".format(pnum), ok=True)
+            if self._gm is not None:
+                self._gm.maybe_bind_after_success(row)
             self._render_table()
+            return
+
+        if self._gm is not None and not self._gm.guard_order_scan(self.rows):
             return
 
         scanit = normalize_ozon_scanit(raw)

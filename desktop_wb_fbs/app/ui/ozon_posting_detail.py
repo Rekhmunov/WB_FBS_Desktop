@@ -162,6 +162,12 @@ class OzonPostingDetailDialog(QDialog):
         except Exception as exc:
             QMessageBox.warning(self, "Ship", str(exc))
 
+    def _posting_warehouse_id(self) -> int:
+        try:
+            return int(self._row.get("warehouse_id") or 0)
+        except (TypeError, ValueError):
+            return 0
+
     def open_mark(self) -> None:
         from app.ui.ozon_mark_dialog import OzonMarkDialog
 
@@ -169,10 +175,11 @@ class OzonPostingDetailDialog(QDialog):
             self.mark,
             self.client,
             self.source_id,
-            "",
+            str(self._row.get("carriage_id") or "").strip(),
             self,
             fullscreen=True,
             posting_number=self.posting_number,
+            warehouse_id=self._posting_warehouse_id(),
         )
         dlg.exec_()
         if dlg.data_changed:
@@ -187,10 +194,12 @@ class OzonPostingDetailDialog(QDialog):
         dlg = OzonPickDialog(
             self.pick,
             self.source_id,
-            "",
+            str(self._row.get("carriage_id") or "").strip(),
             self,
             fullscreen=True,
             posting_number=self.posting_number,
+            client=self.client,
+            warehouse_id=self._posting_warehouse_id(),
         )
         dlg.exec_()
         if dlg.data_changed:

@@ -262,14 +262,12 @@ class KizDialog(QDialog):
         self.chk_cancelled.toggled.connect(self._apply_filters)
         self.search_input.textChanged.connect(self._schedule_filter)
 
-        # Scan bar
+        # Scan bar — web parity: mode toggle + status + input (no «Сканирование» label)
         scan_bar = QFrame()
         scan_bar.setObjectName("kizScanBar")
         scan_lay = QHBoxLayout(scan_bar)
         scan_lay.setContentsMargins(24, 12, 24, 12)
         scan_lay.setSpacing(12)
-        scan_lab = QLabel("Сканирование")
-        scan_lab.setObjectName("kizScanLabel")
         self.sticker_input = QLineEdit()
         self.sticker_input.setObjectName("kizScanInput")
         self.sticker_input.setPlaceholderText("Сканируйте QR стикера заказа")
@@ -279,7 +277,17 @@ class KizDialog(QDialog):
         sticker_clear.setObjectName("kizScanClear")
         sticker_clear.setText("✕")
         sticker_clear.clicked.connect(self.sticker_input.clear)
-        scan_lay.addWidget(scan_lab)
+        from app.ui.scan_mode import mount_scan_mode_controls
+
+        self._scan_mode_toggle, self._scan_mode_status, self._scan_mode = (
+            mount_scan_mode_controls(
+                scan_lay,
+                insert_at=0,
+                parent=self,
+                deliver=self.deliver_com_scan,
+                db=self.kiz.db,
+            )
+        )
         scan_lay.addWidget(self.sticker_input, 1)
         scan_lay.addWidget(sticker_clear)
         root.addWidget(scan_bar)
@@ -363,8 +371,15 @@ class KizDialog(QDialog):
     def showEvent(self, event) -> None:
         super(KizDialog, self).showEvent(event)
         apply_fullscreen_on_show(self)
+        self._scan_mode.activate()
         if self._rows_ready:
             self.sticker_input.setFocus()
+
+    def _teardown_scan_mode(self) -> None:
+        try:
+            self._scan_mode.deactivate()
+        except Exception:
+            pass
 
     def _abort_deferred_load(self) -> None:
         self._closing = True
@@ -375,6 +390,7 @@ class KizDialog(QDialog):
         return self._closing or gen != self._load_gen
 
     def reject(self) -> None:
+        self._teardown_scan_mode()
         self._abort_deferred_load()
         self._hide_mark_prompt(refocus=False)
         self._flush_autosave_sync()
@@ -382,6 +398,7 @@ class KizDialog(QDialog):
         super(KizDialog, self).reject()
 
     def accept(self) -> None:
+        self._teardown_scan_mode()
         self._abort_deferred_load()
         self._hide_mark_prompt(refocus=False)
         self._flush_autosave_sync()
@@ -389,11 +406,31 @@ class KizDialog(QDialog):
         super(KizDialog, self).accept()
 
     def closeEvent(self, event) -> None:
+        self._teardown_scan_mode()
         self._abort_deferred_load()
         self._hide_mark_prompt(refocus=False)
         self._flush_autosave_sync()
         self._stop_save_worker()
         super(KizDialog, self).closeEvent(event)
+
+    def deliver_com_scan(self, value: str) -> None:
+        """COM → same paths as keyboard Enter (web deliverWbFbsComScan)."""
+        raw = str(value or "")
+        if not raw.replace(" ", ""):
+            return
+        if self.scan_prompt.isVisible():
+            self.mark_input.setText(raw)
+            self._on_mark_prompt_enter()
+            return
+        focused = QApplication.focusWidget()
+        if isinstance(focused, GsAwareLineEdit):
+            for inputs in self._code_inputs.values():
+                if focused in inputs:
+                    focused.setText(raw)
+                    focused.returnPressed.emit()
+                    return
+        self.sticker_input.setText(raw)
+        self.on_sticker()
 
     def _schedule_kiz_autosave(self, order_id: int, codes: List[str]) -> None:
         self._autosave.schedule_kiz(self.source_id, int(order_id), codes)

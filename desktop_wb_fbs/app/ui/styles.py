@@ -1249,6 +1249,67 @@ QLabel#kizScanLabel {
     font-weight: 600;
     background: transparent;
 }
+/* Keyboard / COM scan mode toggle (web wb-fbs-scan-mode-toggle) */
+QPushButton#scanModeToggle {
+    background: #ffffff;
+    color: #475569;
+    border: 1px solid #cbd5e1;
+    border-radius: 8px;
+    padding: 0;
+    min-height: 40px;
+    max-height: 40px;
+    font-weight: 600;
+}
+QPushButton#scanModeToggle:hover {
+    border-color: #94a3b8;
+    background: #f8fafc;
+}
+QPushButton#scanModeToggle[comOn="true"] {
+    border-color: #86efac;
+    background: #f0fdf4;
+    color: #166534;
+}
+QLabel#scanModeKb,
+QLabel#scanModeCom {
+    background: transparent;
+    color: #64748b;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.02em;
+    opacity: 0.55;
+}
+QLabel#scanModeKb[active="true"],
+QLabel#scanModeCom[active="true"] {
+    color: #0f1f33;
+    opacity: 1;
+}
+QPushButton#scanModeToggle[comOn="true"] QLabel#scanModeCom[active="true"] {
+    color: #166534;
+}
+QWidget#scanModeTrack {
+    background: #cbd5e1;
+    border-radius: 10px;
+}
+QWidget#scanModeTrack[comOn="true"] {
+    background: #22c55e;
+}
+QWidget#scanModeThumb {
+    background: #ffffff;
+    border-radius: 8px;
+    border: 1px solid #e2e8f0;
+}
+QLabel#scanModeStatus {
+    color: #64748b;
+    font-size: 12px;
+    max-width: 180px;
+    background: transparent;
+}
+QLabel#scanModeStatus[tone="error"] {
+    color: #b91c1c;
+}
+QLabel#scanModeStatus[tone="ok"] {
+    color: #15803d;
+}
 QLineEdit#kizScanInput {
     min-height: 40px;
     padding: 8px 12px;

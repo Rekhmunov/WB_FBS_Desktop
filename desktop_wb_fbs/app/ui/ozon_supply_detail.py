@@ -48,8 +48,17 @@ from app.ui.table_col_widths import PersistentColumnWidths
 
 
 class _LabelPrintWorker(QThread):
+    """Fetch sticker PDFs first, open them, then bind QR in background.
+
+    Pre-print sequential ``get_posting`` for the whole supply was freezing the
+    UI on «Формирование стикеров…» for many minutes — skipped (archive binds
+    after print).
+    """
+
+    progress = pyqtSignal(str)
     ready = pyqtSignal(list)
     failed = pyqtSignal(str)
+    bind_done = pyqtSignal(int)
 
     def __init__(
         self,
@@ -70,30 +79,39 @@ class _LabelPrintWorker(QThread):
         self.posting_numbers = list(posting_numbers or [])
 
     def run(self) -> None:
+        from app.services.ozon_labels import format_label_error
+
         try:
-            try:
-                self.supplies.bind_stickers_from_postings(
-                    self.client, self.source_id, self.posting_numbers
-                )
-            except Exception:
-                pass
+            self.progress.emit(
+                "Стикеры Ozon v3 · {} отпр.…".format(len(self.posting_numbers))
+            )
             # Web archive «Стикеры»: v3 create + v2 get only (no obsolete sync).
             paths = self.labels.fetch_label_paths(
-                self.client, self.source_id, self.posting_numbers
+                self.client,
+                self.source_id,
+                self.posting_numbers,
+                progress=lambda m: self.progress.emit(str(m or "")),
             )
-            # Web: overwrite sticker_* after package-label so scan matches PDF.
+            # Open PDF immediately — do not wait for QR re-bind.
+            self.ready.emit(list(paths or []))
             try:
-                self.stickers.bind_after_labels(
+                self.progress.emit("Привязка QR после печати…")
+                bound = self.stickers.bind_after_labels(
                     self.client,
                     self.source_id,
                     self.posting_numbers,
                     overwrite=True,
+                    progress=lambda m: self.progress.emit(str(m or "")),
+                    workers=3,
                 )
-            except Exception:
-                pass
-            self.ready.emit(list(paths or []))
+                self.bind_done.emit(int(bound or 0))
+            except Exception as bind_exc:
+                # PDF already opened — report bind issues without failing print.
+                self.progress.emit(
+                    "Стикеры открыты · привязка QR: {}".format(bind_exc)
+                )
         except Exception as exc:
-            self.failed.emit(str(exc))
+            self.failed.emit(format_label_error(exc))
 
 
 class _SupplyHydrateWorker(QThread):
@@ -656,7 +674,9 @@ class OzonSupplyDetailDialog(QDialog):
             return
         self.btn_labels.setEnabled(False)
         self.btn_labels_menu.setEnabled(False)
-        self.load_info.setText("Формирование стикеров Ozon (v3)…")
+        self.load_info.setText(
+            "Стикеры Ozon v3 · {} отпр.…".format(len(pnums))
+        )
         worker = _LabelPrintWorker(
             self.labels,
             self.supplies,
@@ -667,14 +687,27 @@ class OzonSupplyDetailDialog(QDialog):
             self,
         )
         self._label_worker = worker
+        worker.progress.connect(self._on_labels_progress)
         worker.ready.connect(self._on_labels_ready)
+        worker.bind_done.connect(self._on_labels_bind_done)
         worker.failed.connect(self._on_labels_failed)
         worker.finished.connect(self._on_labels_worker_finished)
         worker.start()
 
+    def _on_labels_progress(self, message: str) -> None:
+        text = str(message or "").strip()
+        if text:
+            self.load_info.setText(text)
+
     def _on_labels_worker_finished(self) -> None:
         self.btn_labels.setEnabled(True)
         self.btn_labels_menu.setEnabled(True)
+
+    def _on_labels_bind_done(self, bound: int) -> None:
+        self.load_info.setText(
+            "Стикеры готовы · QR привязано: {}".format(int(bound or 0))
+        )
+        self.reload(hydrate=False)
 
     def stickers_by_category(self) -> None:
         try:
@@ -980,15 +1013,15 @@ class OzonSupplyDetailDialog(QDialog):
             QMessageBox.warning(self, "Стикеры", "Ozon не вернул файл этикеток")
             return
         self.load_info.setText(
-            "Стикеры: {} файл(ов)".format(len(path_list))
+            "Стикеры открыты · {} файл(ов) · привязка QR…".format(len(path_list))
             if len(path_list) > 1
-            else "Стикеры: {}".format(path_list[0])
+            else "Стикеры открыты · привязка QR…"
         )
-        self.reload(hydrate=False)
         for path in path_list:
             QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
 
     def _on_labels_failed(self, message: str) -> None:
+        self.load_info.setText(str(message or "Ошибка стикеров"))
         QMessageBox.warning(self, "Стикеры", str(message or "Ошибка"))
 
     def print_picking_list(self) -> None:

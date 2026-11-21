@@ -86,6 +86,7 @@ class _CarriageLoadWorker(QThread):
 
 
 class _LabelPrintWorker(QThread):
+    progress = pyqtSignal(str)
     ready = pyqtSignal(list)
     failed = pyqtSignal(str)
 
@@ -104,13 +105,21 @@ class _LabelPrintWorker(QThread):
         self.posting_numbers = list(posting_numbers or [])
 
     def run(self) -> None:
+        from app.services.ozon_labels import format_label_error
+
         try:
+            self.progress.emit(
+                "Стикеры Ozon v3 · {} отпр.…".format(len(self.posting_numbers))
+            )
             paths = self.labels.fetch_label_paths(
-                self.client, self.source_id, self.posting_numbers
+                self.client,
+                self.source_id,
+                self.posting_numbers,
+                progress=lambda m: self.progress.emit(str(m or "")),
             )
             self.ready.emit(list(paths or []))
         except Exception as exc:
-            self.failed.emit(str(exc))
+            self.failed.emit(format_label_error(exc))
 
 
 class _ActFileWorker(QThread):
@@ -434,11 +443,16 @@ class OzonCarriageDetailDialog(QDialog):
         if self._label_worker and self._label_worker.isRunning():
             return
         self.btn_labels.setEnabled(False)
-        self.load_info.setText("Формирование этикеток Ozon…")
+        self.load_info.setText(
+            "Стикеры Ozon v3 · {} отпр.…".format(len(pnums))
+        )
         worker = _LabelPrintWorker(
             self.labels, self.client, self.source_id, pnums, self
         )
         self._label_worker = worker
+        worker.progress.connect(
+            lambda m: self.load_info.setText(str(m or "").strip() or self.load_info.text())
+        )
         worker.ready.connect(self._on_labels_ready)
         worker.failed.connect(self._on_labels_failed)
         worker.finished.connect(lambda: self.btn_labels.setEnabled(True))
@@ -458,6 +472,7 @@ class OzonCarriageDetailDialog(QDialog):
             QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
 
     def _on_labels_failed(self, message: str) -> None:
+        self.load_info.setText(str(message or "Ошибка этикеток"))
         QMessageBox.warning(self, "Этикетки", str(message or "Ошибка"))
 
     def _delivery_method_id(self) -> int:

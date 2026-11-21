@@ -17,7 +17,6 @@ from PyQt5.QtWidgets import (
     QPushButton,
     QSizePolicy,
     QTableWidget,
-    QTableWidgetItem,
     QToolButton,
     QVBoxLayout,
     QWidget,

@@ -636,8 +636,9 @@ class OzonSupplyDetailDialog(QDialog):
             self.table.setRowCount(len(rows))
             for i, r in enumerate(rows):
                 pnum = str(r.get("posting_number") or "")
-                # Keep a data item under the cell widget for selection / UserRole.
-                item = QTableWidgetItem(pnum)
+                # Empty display text — cell widget already shows posting # + ii….
+                # Non-empty item text paints under the widget (ghost duplicate).
+                item = QTableWidgetItem("")
                 item.setData(Qt.UserRole, pnum)
                 self.table.setItem(i, 0, item)
                 self.table.setCellWidget(i, 0, build_ozon_posting_cell_widget(r))
@@ -1367,21 +1368,31 @@ class OzonSupplyDetailDialog(QDialog):
         if self._is_read_only():
             return
         blockers = self._move_delivering_blockers()
+        name = str(self._detail.get("name") or self.supply_id)
         if blockers:
-            QMessageBox.warning(
-                self,
-                "Доставка",
-                "Чтобы перенести в доставку:\n• "
-                + "\n• ".join(blockers),
+            box = QMessageBox(self)
+            box.setIcon(QMessageBox.Warning)
+            box.setWindowTitle("Доставка")
+            box.setText(
+                "Не все условия выполнены:\n• {}\n\n"
+                "Перенести поставку «{}» во вкладку «Доставляются» всё равно?".format(
+                    "\n• ".join(blockers),
+                    name,
+                )
             )
-            return
-        if (
+            cancel_btn = box.addButton("Отмена", QMessageBox.RejectRole)
+            force_btn = box.addButton(
+                "Всё равно перенести", QMessageBox.AcceptRole
+            )
+            box.setDefaultButton(cancel_btn)
+            box.exec_()
+            if box.clickedButton() is not force_btn:
+                return
+        elif (
             QMessageBox.question(
                 self,
                 "Доставка",
-                "Перенести поставку «{}» во вкладку «Доставляются»?".format(
-                    self._detail.get("name") or self.supply_id
-                ),
+                "Перенести поставку «{}» во вкладку «Доставляются»?".format(name),
             )
             != QMessageBox.Yes
         ):

@@ -119,6 +119,49 @@ class LegacySchemaMigrateTests(unittest.TestCase):
             ).fetchone()
         self.assertEqual(str(row["supply_id"] or ""), "")
 
+    def test_old_executescript_style_index_does_not_crash(self) -> None:
+        """Regression: CREATE INDEX on supply_id before ALTER used to abort start."""
+        self._bootstrap_legacy(
+            """
+            CREATE TABLE app_settings (
+                key TEXT PRIMARY KEY, value TEXT NOT NULL DEFAULT ''
+            );
+            CREATE TABLE ozon_fbs_postings (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                source_id INTEGER NOT NULL,
+                posting_number TEXT NOT NULL,
+                synced_at TEXT NOT NULL,
+                UNIQUE(source_id, posting_number)
+            );
+            """
+        )
+        conn = sqlite3.connect(str(self.path))
+        try:
+            # Simulate outdated SCHEMA_SQL that still embeds the index.
+            poisoned = (
+                SCHEMA_SQL
+                + "\nCREATE INDEX IF NOT EXISTS idx_ozon_postings_supply "
+                + "ON ozon_fbs_postings(source_id, supply_id);\n"
+            )
+            import app.db as dbmod
+
+            old = dbmod.SCHEMA_SQL
+            dbmod.SCHEMA_SQL = poisoned
+            try:
+                Database._exec_schema_tables(conn)
+            finally:
+                dbmod.SCHEMA_SQL = old
+            Database._migrate_ozon_schema(conn)
+            Database._apply_schema_indexes(conn)
+            conn.commit()
+            cols = {
+                str(r[1])
+                for r in conn.execute("PRAGMA table_info(ozon_fbs_postings)")
+            }
+            self.assertIn("supply_id", cols)
+        finally:
+            conn.close()
+
     def test_legacy_wb_supplies_without_delivery_listed(self) -> None:
         self._bootstrap_legacy(
             """

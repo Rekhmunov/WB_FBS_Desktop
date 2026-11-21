@@ -32,13 +32,17 @@ If rc <> 0 Then
     stm.Close
     On Error GoTo 0
   End If
-  msg = "FeedPilot FBS failed to start (exit code " & rc & ")." & vbCrLf & vbCrLf
+  msg = "FeedPilot FBS: ошибка запуска (код " & rc & ")." & vbCrLf & vbCrLf
+  If InStr(1, LCase(crashText), "no such column", 1) > 0 Then
+    msg = msg & "База SQLite устарела относительно кода." & vbCrLf & _
+          "Обновите папку desktop_wb_fbs с GitHub main и запустите снова." & vbCrLf & vbCrLf
+  End If
   If Len(crashText) > 0 Then
     msg = msg & crashText & vbCrLf & vbCrLf
   Else
-    msg = msg & "Run FeedPilot FBS.bat in cmd for error details." & vbCrLf & vbCrLf & _
-          "Usually: python -m pip install -r requirements.txt" & vbCrLf & vbCrLf
+    msg = msg & "Запустите FeedPilot FBS.bat в cmd для текста ошибки." & vbCrLf & vbCrLf & _
+          "Обычно: python -m pip install -r requirements.txt" & vbCrLf & vbCrLf
   End If
-  msg = msg & "Log: " & crashPath
+  msg = msg & "Лог: " & crashPath
   MsgBox msg, vbExclamation, "FeedPilot FBS"
 End If

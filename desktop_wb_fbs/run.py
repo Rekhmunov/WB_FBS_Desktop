@@ -85,6 +85,14 @@ def _friendly_hint(exc: BaseException) -> str:
             "Не найдена таймзона Europe/Moscow.\n\n"
             "Выполните: python -m pip install tzdata backports.zoneinfo"
         )
+    if "no such column" in lower:
+        return (
+            "Локальная база устарела относительно кода программы "
+            "(нет колонки в SQLite).\n\n"
+            "Обновите папку desktop_wb_fbs с актуального main "
+            "(git pull / заново скачайте репозиторий) и запустите снова.\n\n"
+            "Технически: {}".format(text)
+        )
     return text
 
 

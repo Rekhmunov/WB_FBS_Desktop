@@ -348,9 +348,14 @@ class Database:
         return conn
 
     def init_schema(self) -> None:
+        """Create/upgrade local SQLite schema without crashing legacy DBs.
+
+        Never run ``executescript(SCHEMA_SQL)`` when SCHEMA may contain indexes:
+        old ``ozon_fbs_postings`` without ``supply_id`` then raises
+        ``OperationalError: no such column: supply_id`` on startup.
+        Order: tables → ALTER migrations → indexes (skip missing col/table).
+        """
         with self.connect() as conn:
-            # 1) tables  2) ALTER migrations  3) indexes (legacy-safe order)
-            # SCHEMA_SQL must never contain CREATE INDEX — old DBs lack columns.
             self._exec_schema_tables(conn)
             self._migrate_product_photos(conn)
             self._migrate_supply_sources(conn)
@@ -369,6 +374,15 @@ class Database:
         return statements
 
     @staticmethod
+    def _is_skippable_schema_error(exc: BaseException) -> bool:
+        msg = str(exc).lower()
+        return (
+            "no such column" in msg
+            or "no such table" in msg
+            or "duplicate column name" in msg
+        )
+
+    @staticmethod
     def _exec_schema_tables(conn: sqlite3.Connection) -> None:
         """Apply table DDL only — never CREATE INDEX (legacy column safety)."""
         for stmt in Database._split_sql_statements(SCHEMA_SQL):
@@ -377,7 +391,13 @@ class Database:
                 "CREATE UNIQUE INDEX"
             ):
                 continue
-            conn.execute(stmt)
+            try:
+                conn.execute(stmt)
+            except sqlite3.OperationalError as exc:
+                # Legacy DBs: skip bad leftover DDL; migrations add columns next.
+                if Database._is_skippable_schema_error(exc):
+                    continue
+                raise
 
     @staticmethod
     def _apply_schema_indexes(conn: sqlite3.Connection) -> None:
@@ -387,8 +407,7 @@ class Database:
                 conn.execute(stmt)
             except sqlite3.OperationalError as exc:
                 # Extra safety: never crash startup if a column/table is still missing.
-                msg = str(exc).lower()
-                if "no such column" in msg or "no such table" in msg:
+                if Database._is_skippable_schema_error(exc):
                     continue
                 raise
 

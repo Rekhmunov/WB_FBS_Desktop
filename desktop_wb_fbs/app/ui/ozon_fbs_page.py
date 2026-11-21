@@ -232,6 +232,7 @@ class OzonFbsPage(QWidget):
         self._split_worker = None  # type: Optional[OzonSplitWorker]
         self._ship_worker = None  # type: Optional[OzonShipAllWorker]
         self._ops_busy = ""  # "", "sync", "split", "ship"
+        self._packaging_multi_count = 0
         self._selected_postings = set()  # type: set
         self.stickers = OzonStickersService(db)
 
@@ -244,25 +245,31 @@ class OzonFbsPage(QWidget):
         tb = QHBoxLayout(toolbar)
         tb.setContentsMargins(16, 12, 16, 12)
         tb.setSpacing(10)
+        # Order: Sync → Split multis → Collect all (same height).
+        _ozon_action_h = 40
         self.sync_btn = QPushButton("Синхронизировать")
+        self.sync_btn.setFixedHeight(_ozon_action_h)
         self.sync_btn.clicked.connect(self.run_sync)
         self.stop_btn = QPushButton("Стоп")
         self.stop_btn.setObjectName("secondary")
+        self.stop_btn.setFixedHeight(_ozon_action_h)
         self.stop_btn.hide()
         self.stop_btn.clicked.connect(self.stop_sync)
+        self.split_multi_btn = QPushButton("Разделить мультизаказы")
+        self.split_multi_btn.setObjectName("secondary")
+        self.split_multi_btn.setFixedHeight(_ozon_action_h)
+        self.split_multi_btn.setToolTip(
+            "Разделить мультизаказы через /v1/posting/fbs/split"
+        )
+        self.split_multi_btn.clicked.connect(self.split_all_multi)
         self.ship_all_btn = QPushButton("Собрать все заказы")
         self.ship_all_btn.setObjectName("mgtBtn")
+        self.ship_all_btn.setFixedHeight(_ozon_action_h)
         self.ship_all_btn.setCursor(Qt.PointingHandCursor)
         self.ship_all_btn.setToolTip(
             "Собрать все отправления «Ожидают сборки» в локальные поставки"
         )
         self.ship_all_btn.clicked.connect(self.ship_all_collect)
-        self.split_multi_btn = QPushButton("Разделить мультизаказы")
-        self.split_multi_btn.setObjectName("secondary")
-        self.split_multi_btn.setToolTip(
-            "Разделить мультизаказы через /v1/posting/fbs/split"
-        )
-        self.split_multi_btn.clicked.connect(self.split_all_multi)
         # Archive main FBS: no raw carriage create/open on the page —
         # local supplies + shipments ШК live under supply detail.
         self.create_carriage_btn = QPushButton("Создать отгрузку")
@@ -276,6 +283,7 @@ class OzonFbsPage(QWidget):
         self.open_carriage_btn.hide()
         self.pvz_returns_btn = QPushButton("Возвраты ПВЗ")
         self.pvz_returns_btn.setObjectName("secondary")
+        self.pvz_returns_btn.setFixedHeight(_ozon_action_h)
         self.pvz_returns_btn.setToolTip(
             "Возвраты FBS ReceivedBySeller (локальный кэш + sync)"
         )
@@ -295,8 +303,8 @@ class OzonFbsPage(QWidget):
         }
         tb.addWidget(self.sync_btn)
         tb.addWidget(self.stop_btn)
-        tb.addWidget(self.ship_all_btn)
         tb.addWidget(self.split_multi_btn)
+        tb.addWidget(self.ship_all_btn)
         tb.addWidget(self.pvz_returns_btn)
         tb.addStretch(1)
         self.search_input = QLineEdit()
@@ -512,8 +520,6 @@ class OzonFbsPage(QWidget):
         self.btn_add_existing_supply.setVisible(packaging)
         self.btn_move_awaiting.setVisible(delivering)
         self.btn_select_page.setVisible(packaging or delivering)
-        self.ship_all_btn.setVisible(tab in ("awaiting_packaging", "awaiting_deliver"))
-        self.split_multi_btn.setVisible(tab == "awaiting_packaging")
         if packaging:
             self.sel_label.setText(
                 "Выбрано {} отправлений".format(len(self._selected_postings))
@@ -594,9 +600,59 @@ class OzonFbsPage(QWidget):
         self.tab_finished.set_count(int(counts.get("delivered") or 0))
         self.tab_cancelled.set_count(int(counts.get("cancelled") or 0))
 
+    def _count_packaging_multis(self) -> int:
+        """How many free multi-unit postings remain on «Ожидают сборки»."""
+        src = self.current_source()
+        if not src:
+            return 0
+        try:
+            from app.services.ozon_split import OzonSplitService
+
+            preview = OzonSplitService(self.db).preview_multi(int(src["id"]))
+            return max(0, int(preview.get("multi_posting_count") or 0))
+        except Exception:
+            return 0
+
+    def _refresh_packaging_actions(self) -> None:
+        """Sync → Split → Collect: hide Split when none; Collect only after split."""
+        packaging = self._tab == "awaiting_packaging"
+        busy = bool(self._ops_busy)
+        multi = self._count_packaging_multis() if packaging else 0
+        self._packaging_multi_count = multi
+
+        # Split only on packaging and only when multis remain.
+        show_split = packaging and multi > 0
+        self.split_multi_btn.setVisible(show_split)
+        # Collect is the packaging workflow button (after Sync / Split).
+        self.ship_all_btn.setVisible(packaging)
+
+        if busy:
+            return
+
+        if show_split:
+            self.split_multi_btn.setEnabled(True)
+            self.split_multi_btn.setToolTip(
+                self._action_tooltips.get(self.split_multi_btn, "")
+            )
+
+        if packaging:
+            can_collect = multi <= 0
+            self.ship_all_btn.setEnabled(can_collect)
+            if can_collect:
+                self.ship_all_btn.setToolTip(
+                    self._action_tooltips.get(self.ship_all_btn, "")
+                )
+            else:
+                self.ship_all_btn.setToolTip(
+                    "Сначала разделите все мультизаказы"
+                )
+        else:
+            self.ship_all_btn.setEnabled(False)
+
     def reload_table(self) -> None:
         src = self.current_source()
         self._update_tab_counts()
+        self._refresh_packaging_actions()
         self.table.setRowCount(0)
         if not src:
             return
@@ -1540,8 +1596,8 @@ class OzonFbsPage(QWidget):
 
     def _action_buttons(self) -> List[QPushButton]:
         return [
-            self.ship_all_btn,
             self.split_multi_btn,
+            self.ship_all_btn,
             self.create_carriage_btn,
             self.open_carriage_btn,
             self.pvz_returns_btn,
@@ -1587,12 +1643,17 @@ class OzonFbsPage(QWidget):
         self.stop_btn.setEnabled(busy)
         for btn in self._action_buttons():
             btn.setEnabled(not busy)
-            btn.setToolTip(tip if busy else self._action_tooltips.get(btn, ""))
+            if busy:
+                btn.setToolTip(tip)
+            else:
+                btn.setToolTip(self._action_tooltips.get(btn, ""))
         for btn in self._bottom_action_buttons():
             btn.setEnabled(not busy)
         if not busy:
             for btn, text in self._idle_btn_text.items():
                 btn.setText(text)
+            # Re-apply Split visibility / Collect gate after the op finishes.
+            self._refresh_packaging_actions()
 
     def _guard_ops_busy(self) -> bool:
         """Return True if an action must abort because an op is running."""

@@ -129,7 +129,7 @@ class ComScannerService(QObject):
                 self.set_status("COM подключён", "ok")
                 return True
             self._release_port()
-            port = QSerialPort()
+            port = QSerialPort(self)
             port.setPortName(name)
             port.setBaudRate(COM_BAUD)
             port.setDataBits(QSerialPort.Data8)
@@ -280,6 +280,17 @@ def set_active_com_deliver(callback: Optional[Callable[[str], None]]) -> None:
     """Register the frontmost scan dialog deliverer (or None on close)."""
     global _active_deliver
     _active_deliver = callback
+
+
+def clear_active_com_deliver(callback: Optional[Callable[[str], None]]) -> None:
+    """Clear deliverer only if it is still ``callback`` (avoid clobbering another modal)."""
+    global _active_deliver
+    if callback is None or _active_deliver is callback:
+        _active_deliver = None
+
+
+def active_com_deliver() -> Optional[Callable[[str], None]]:
+    return _active_deliver
 
 
 def _on_shared_scan(value: str) -> None:

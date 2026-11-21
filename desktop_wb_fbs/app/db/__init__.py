@@ -583,12 +583,20 @@ class Database:
             conn,
             "ozon_fbs_postings",
             {
+                "order_id": "TEXT NOT NULL DEFAULT ''",
                 "order_number": "TEXT NOT NULL DEFAULT ''",
+                "status": "TEXT NOT NULL DEFAULT ''",
                 "substatus": "TEXT NOT NULL DEFAULT ''",
+                "tab": "TEXT NOT NULL DEFAULT 'awaiting_packaging'",
                 "carriage_id": "TEXT NOT NULL DEFAULT ''",
                 "supply_id": "TEXT NOT NULL DEFAULT ''",
+                "offer_id": "TEXT NOT NULL DEFAULT ''",
+                "sku": "TEXT NOT NULL DEFAULT ''",
+                "product_name": "TEXT NOT NULL DEFAULT ''",
+                "quantity": "INTEGER NOT NULL DEFAULT 1",
                 "warehouse_name": "TEXT NOT NULL DEFAULT ''",
                 "warehouse_id": "INTEGER",
+                "barcodes_json": "TEXT NOT NULL DEFAULT '[]'",
                 "cancel_reason": "TEXT NOT NULL DEFAULT ''",
                 "shipment_date": "TEXT",
                 "in_process_at": "TEXT",
@@ -607,6 +615,7 @@ class Database:
                 "container_barcode": "TEXT NOT NULL DEFAULT ''",
                 "container_synced": "INTEGER NOT NULL DEFAULT 0",
                 "container_sync_error": "TEXT NOT NULL DEFAULT ''",
+                "raw_json": "TEXT NOT NULL DEFAULT '{}'",
             },
         )
         Database._ensure_columns(
@@ -630,16 +639,20 @@ class Database:
             },
         )
         # Migrate legacy Ozon tab keys → web portal names.
-        for old, new in (
-            ("new", "awaiting_packaging"),
-            ("assembly", "awaiting_deliver"),
-            ("delivery", "delivering"),
-            ("finished", "delivered"),
-        ):
-            conn.execute(
-                "UPDATE ozon_fbs_postings SET tab = ? WHERE tab = ?",
-                (new, old),
-            )
+        try:
+            for old, new in (
+                ("new", "awaiting_packaging"),
+                ("assembly", "awaiting_deliver"),
+                ("delivery", "delivering"),
+                ("finished", "delivered"),
+            ):
+                conn.execute(
+                    "UPDATE ozon_fbs_postings SET tab = ? WHERE tab = ?",
+                    (new, old),
+                )
+        except sqlite3.OperationalError as exc:
+            if not Database._is_skippable_schema_error(exc):
+                raise
 
     @contextmanager
     def cursor(self) -> Iterator[sqlite3.Cursor]:

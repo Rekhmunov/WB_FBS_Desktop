@@ -212,9 +212,10 @@ class ScanModeController(object):
         self._active = True
         com.set_active_com_deliver(self._deliver)
         try:
-            self._svc.statusChanged.connect(self._on_status)
-        except Exception:
+            self._svc.statusChanged.disconnect(self._on_status)
+        except (TypeError, RuntimeError):
             pass
+        self._svc.statusChanged.connect(self._on_status)
         want = com.preferred_com_enabled(self._db)
         self.toggle.set_com_enabled(want)
         if want:
@@ -225,7 +226,7 @@ class ScanModeController(object):
     def deactivate(self) -> None:
         """Call when the host dialog closes."""
         self._active = False
-        com.set_active_com_deliver(None)
+        com.clear_active_com_deliver(self._deliver)
         try:
             self._svc.statusChanged.disconnect(self._on_status)
         except (TypeError, RuntimeError):
@@ -250,6 +251,14 @@ class ScanModeController(object):
             self._svc.disconnect_port()
             self.status.set_status("", "")
             return
+        # Ensure deliver is armed even if showEvent activate was skipped.
+        self._active = True
+        com.set_active_com_deliver(self._deliver)
+        try:
+            self._svc.statusChanged.disconnect(self._on_status)
+        except (TypeError, RuntimeError):
+            pass
+        self._svc.statusChanged.connect(self._on_status)
         ok = self._connect_preferred(interactive=True)
         if not ok:
             # Stay preferred ON so operator can retry (web parity).

@@ -74,6 +74,58 @@ class ComScannerFrameTests(unittest.TestCase):
         self.assertEqual(got, ["XYZ"])
 
 
+class ShowEventChainTests(unittest.TestCase):
+    """fullscreen bind must not shadow dialog showEvent (COM activate)."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.app = _app()
+
+    def test_bind_maximized_chains_existing_show_event(self) -> None:
+        from PyQt5.QtGui import QShowEvent
+        from PyQt5.QtWidgets import QDialog
+
+        from app.ui.dialog_utils import (
+            apply_maximized_on_show,
+            bind_maximized_on_show,
+            init_maximized_window,
+        )
+
+        seen = []
+
+        class _Dlg(QDialog):
+            def showEvent(self, event) -> None:  # noqa: N802
+                super(_Dlg, self).showEvent(event)
+                seen.append("class")
+
+        dlg = _Dlg()
+        init_maximized_window(dlg, maximized=True, default_size=(400, 300))
+        bind_maximized_on_show(dlg)
+        dlg.showEvent(QShowEvent())
+        self.assertIn("class", seen)
+        self.assertTrue(getattr(dlg, "_maximized_applied", False))
+
+    def test_kiz_fullscreen_show_activates_com_deliver(self) -> None:
+        from PyQt5.QtGui import QShowEvent
+
+        from app.services.kiz_pick import KizService
+        from app.ui.kiz_dialog import KizDialog
+
+        tmp = tempfile.TemporaryDirectory()
+        db = Database(Path(tmp.name) / "kiz.db")
+        db.init_schema()
+        dlg = KizDialog(KizService(db), 1, "key", "SUP", fullscreen=True)
+        self.assertIsNone(com.active_com_deliver())
+        dlg.showEvent(QShowEvent())
+        cb = com.active_com_deliver()
+        self.assertIsNotNone(cb)
+        self.assertIs(cb.__self__, dlg)  # type: ignore[union-attr]
+        self.assertEqual(cb.__name__, "deliver_com_scan")  # type: ignore[union-attr]
+        dlg._teardown_scan_mode()
+        self.assertIsNone(com.active_com_deliver())
+        tmp.cleanup()
+
+
 class ScanModeToggleUiTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:

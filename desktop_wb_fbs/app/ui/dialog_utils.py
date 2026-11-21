@@ -79,10 +79,16 @@ def apply_maximized_on_show(window: QWidget) -> None:
 
 
 def bind_maximized_on_show(window: QWidget) -> None:
-    """Attach showEvent hook so the window maximizes on first display."""
+    """Attach showEvent hook so the window maximizes on first display.
+
+    Chains the existing ``showEvent`` (class override or prior bind) so
+    dialogs that implement their own showEvent keep working — e.g. COM
+    scan activate on KIZ/Pick must not be shadowed.
+    """
+    previous = window.showEvent
 
     def showEvent(event) -> None:  # noqa: N802 — Qt override
-        QWidget.showEvent(window, event)
+        previous(event)
         apply_maximized_on_show(window)
 
     window.showEvent = showEvent  # type: ignore[method-assign]

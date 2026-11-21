@@ -348,7 +348,7 @@ class OzonPickDialog(QDialog):
         status.style().polish(status)
         status.setWordWrap(True)
         lay.addWidget(status)
-        if verified:
+        if verified and not row_is_cancelled(r):
             clear = QToolButton()
             clear.setObjectName("kizCodeRemove")
             clear.setText("×")
@@ -638,6 +638,15 @@ class OzonPickDialog(QDialog):
                 self._pending_pnum = None
                 self.scan_prompt.hide()
                 return
+            if row_is_cancelled(row):
+                self._pending_pnum = None
+                self.scan_prompt.hide()
+                self._set_info(
+                    "Отправление {} отменено — проверку ШК менять нельзя".format(
+                        pnum
+                    )
+                )
+                return
             barcodes = row.get("barcodes") if isinstance(row.get("barcodes"), list) else []
             codes = [str(b or "").strip() for b in barcodes if str(b or "").strip()]
             skus = row.get("skus") if isinstance(row.get("skus"), list) else []
@@ -681,6 +690,13 @@ class OzonPickDialog(QDialog):
                 normalize_ozon_scanit(r.get("sticker_scanit")),
             ]
             if raw == pn or (scanit and scanit in stickers) or raw in stickers:
+                if row_is_cancelled(r):
+                    self._set_info(
+                        "Отправление {} отменено — проверку ШК менять нельзя".format(
+                            pn
+                        )
+                    )
+                    return
                 self._pending_pnum = pn
                 self.prompt_meta.setText(
                     "Отправление {} — отсканируйте ШК товара на упаковке".format(pn)

@@ -1448,7 +1448,12 @@ class OzonSuppliesService:
             cancel = str(row["cancel_reason"] or "").strip()
             if not (
                 tab == "cancelled"
-                or status in ("cancelled", "not_accepted")
+                or status
+                in (
+                    "cancelled",
+                    "cancelled_from_split_pending",
+                    "not_accepted",
+                )
                 or cancel
             ):
                 raise ValueError(

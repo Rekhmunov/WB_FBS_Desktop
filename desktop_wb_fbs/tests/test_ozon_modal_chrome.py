@@ -147,6 +147,39 @@ class RemoveCancelledFromSupplyTests(unittest.TestCase):
             ).fetchone()
             self.assertEqual(str(row["supply_id"] or ""), "")
 
+    def test_remove_split_pending_cancelled(self) -> None:
+        now = utc_now()
+        with self.db.connect() as conn:
+            conn.execute(
+                """
+                UPDATE ozon_fbs_supplies
+                SET posting_numbers_json = '["C-1","C-2"]'
+                WHERE supply_id = 'OZ-1'
+                """
+            )
+            conn.execute(
+                """
+                INSERT INTO ozon_fbs_postings(
+                    source_id, posting_number, status, tab, supply_id,
+                    cancel_reason, synced_at
+                ) VALUES (?, 'C-2', 'cancelled_from_split_pending',
+                          'cancelled', 'OZ-1', '', ?)
+                """,
+                (self.source_id, now),
+            )
+            conn.commit()
+        out = self.svc.remove_cancelled_posting_from_supply(
+            self.source_id, "OZ-1", "C-2"
+        )
+        self.assertTrue(out["ok"])
+
+
+class CancelledScanGuardsTests(unittest.TestCase):
+    def test_row_is_cancelled_split_pending(self) -> None:
+        self.assertTrue(
+            row_is_cancelled({"status": "cancelled_from_split_pending"})
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

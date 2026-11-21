@@ -742,6 +742,13 @@ class OzonMarkDialog(QDialog):
                 self._pending_pnum = None
                 self.scan_prompt.hide()
                 return
+            if row_is_cancelled(row):
+                self._pending_pnum = None
+                self.scan_prompt.hide()
+                self._set_info(
+                    "Отправление {} отменено — КИЗ менять нельзя".format(pnum)
+                )
+                return
             ok, err = self.mark.validate_mark(
                 raw, row.get("skus") or [], bool(row.get("skip_gtin_check"))
             )
@@ -776,6 +783,11 @@ class OzonMarkDialog(QDialog):
                 row_scanit,
             ]
             if raw == pn or (scanit and scanit in stickers) or raw in stickers:
+                if row_is_cancelled(r):
+                    self._set_info(
+                        "Отправление {} отменено — КИЗ менять нельзя".format(pn)
+                    )
+                    return
                 self._pending_pnum = pn
                 self.prompt_meta.setText(
                     "Отправление {} — отсканируйте код маркировки с того же изделия".format(
@@ -790,7 +802,7 @@ class OzonMarkDialog(QDialog):
         if len(raw) > 20:
             last_err = ""
             for r in self.rows:
-                if self._marks_filled(r):
+                if row_is_cancelled(r) or self._marks_filled(r):
                     continue
                 ok, err = self.mark.validate_mark(
                     raw, r.get("skus") or [], bool(r.get("skip_gtin_check"))
@@ -818,7 +830,7 @@ class OzonMarkDialog(QDialog):
         jobs = [
             {"posting_number": r.get("posting_number"), "marks": r.get("marks") or []}
             for r in self.rows
-            if self._marks_filled(r)
+            if self._marks_filled(r) and not row_is_cancelled(r)
         ]
         if not jobs:
             QMessageBox.information(self, "Товары с КИЗ", "Нет кодов для сохранения.")

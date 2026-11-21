@@ -7,7 +7,16 @@ import logging
 from typing import Any, Callable, Dict, List, Optional
 
 from app.db import Database
-from app.ozon import compute_tab, carriage_is_done, iso_z, lookback_window, utc_now
+from app.ozon import (
+    SYNC_STATUSES,
+    TAB_AWAITING_DELIVER,
+    TAB_AWAITING_PACKAGING,
+    carriage_is_done,
+    iso_z,
+    lookback_window,
+    resolve_upsert_status,
+    utc_now,
+)
 from app.ozon.client import OzonFbsClient
 from app.ozon.sticker_fields import sticker_fields_from_posting
 
@@ -62,9 +71,8 @@ def upsert_posting(
     prod = _first_product(posting)
     all_products = _products(posting)
     analytics = posting.get("analytics_data") if isinstance(posting.get("analytics_data"), dict) else {}
-    status = str(posting.get("status") or "")
+    remote_status = str(posting.get("status") or "")
     cid = str(carriage_id or posting.get("carriage_id") or "").strip()
-    tab = compute_tab(status=status, carriage_id=cid)
     offer_id = str(prod.get("offer_id") or "")
     sku = str(prod.get("sku") or "")
     name = str(prod.get("name") or "")
@@ -80,6 +88,25 @@ def upsert_posting(
     cancel_reason = str(cancel.get("cancel_reason") or "")
     now = utc_now()
     with db.connect() as conn:
+        local = conn.execute(
+            """
+            SELECT status, tab, supply_id FROM ozon_fbs_postings
+            WHERE source_id = ? AND posting_number = ?
+            """,
+            (source_id, pnum),
+        ).fetchone()
+        local_status = str(local["status"] or "") if local else ""
+        local_tab = str(local["tab"] or "") if local else ""
+        status, tab = resolve_upsert_status(
+            local_status=local_status,
+            local_tab=local_tab,
+            remote_status=remote_status,
+        )
+        # Local supply membership means the row was collected — never show it
+        # again under «Ожидают сборки» even if Ozon still lags on packaging.
+        local_supply = str(local["supply_id"] or "").strip() if local else ""
+        if local_supply and tab == TAB_AWAITING_PACKAGING:
+            status, tab = TAB_AWAITING_DELIVER, TAB_AWAITING_DELIVER
         conn.execute(
             """
             INSERT INTO ozon_fbs_postings(
@@ -163,6 +190,39 @@ def upsert_posting(
             ),
         )
         conn.commit()
+
+
+def reconcile_packaging_in_local_supplies(db: Database, source_id: int) -> int:
+    """Move packaging rows that already have a local supply off «Ожидают сборки».
+
+    Sync races / missing anti-downgrade used to bounce collected postings back
+    to packaging while keeping ``supply_id`` — inflating the tab badge vs split.
+    """
+    now = utc_now()
+    with db.connect() as conn:
+        cur = conn.execute(
+            """
+            UPDATE ozon_fbs_postings
+            SET tab = ?,
+                status = CASE
+                    WHEN LOWER(COALESCE(status, '')) IN (
+                        'awaiting_registration',
+                        'acceptance_in_progress',
+                        'awaiting_approve',
+                        'awaiting_packaging',
+                        ''
+                    ) THEN ?
+                    ELSE status
+                END,
+                synced_at = ?
+            WHERE source_id = ?
+              AND tab IN ('new', 'awaiting_packaging')
+              AND COALESCE(supply_id, '') != ''
+            """,
+            (TAB_AWAITING_DELIVER, TAB_AWAITING_DELIVER, now, source_id),
+        )
+        conn.commit()
+        return int(cur.rowcount or 0)
 
 
 def upsert_carriage(
@@ -253,8 +313,27 @@ def sync_source(
             "stopped": False,
         }
 
+    def _finish(carriages_n: int = 0, *, was_stopped: bool = False) -> Dict[str, Any]:
+        # Fix already-bounced packaging rows that still carry a local supply_id.
+        try:
+            fixed = reconcile_packaging_in_local_supplies(db, source_id)
+            if fixed:
+                _log.info(
+                    "ozon sync source=%s reconciled %s packaging rows in local supplies",
+                    source_id,
+                    fixed,
+                )
+        except Exception as exc:
+            errors.append("reconcile packaging: {}".format(exc))
+        return {
+            "postings": count,
+            "carriages": carriages_n,
+            "errors": errors,
+            "stopped": was_stopped or stopped(),
+        }
+
     if stopped():
-        return {"postings": count, "carriages": 0, "errors": errors, "stopped": True}
+        return _finish(was_stopped=True)
 
     since, to = lookback_window(lookback_days)
     _prog(progress, "Необработанные отправления…", count)
@@ -262,7 +341,7 @@ def sync_source(
         cursor = ""
         while True:
             if stopped():
-                return {"postings": count, "carriages": 0, "errors": errors, "stopped": True}
+                return _finish(was_stopped=True)
             batch, _total, cursor, has_next = client.list_unfulfilled(
                 limit=100,
                 cursor=cursor,
@@ -286,30 +365,40 @@ def sync_source(
     except Exception as exc:
         errors.append("unfulfilled: {}".format(exc))
 
+    # Per-status list (web parity) — updates rows that left packaging so the
+    # «Ожидают сборки» tab does not keep stale portal leftovers.
     _prog(progress, "Список отправлений…", count)
-    try:
-        for page in client.iter_postings_window(lookback_days):
-            if stopped():
-                return {"postings": count, "carriages": 0, "errors": errors, "stopped": True}
-            for posting in page:
-                if not isinstance(posting, dict):
-                    continue
-                pnum = str(posting.get("posting_number") or "")
-                if not pnum:
-                    continue
-                seen.add(pnum)
-                upsert_posting(db, source_id, posting)
-                count += 1
-            _prog(progress, "Отправления… {}".format(count), count)
-    except Exception as exc:
-        errors.append("list: {}".format(exc))
+    for status in SYNC_STATUSES:
+        if stopped():
+            return _finish(was_stopped=True)
+        label = status
+        try:
+            for page in client.iter_postings_window(lookback_days, status=status):
+                if stopped():
+                    return _finish(was_stopped=True)
+                for posting in page:
+                    if not isinstance(posting, dict):
+                        continue
+                    pnum = str(posting.get("posting_number") or "")
+                    if not pnum:
+                        continue
+                    seen.add(pnum)
+                    upsert_posting(db, source_id, posting)
+                    count += 1
+                _prog(
+                    progress,
+                    "{}… {}".format(label, count),
+                    count,
+                )
+        except Exception as exc:
+            errors.append("list {}: {}".format(label, exc))
 
     carriages_n = 0
     _prog(progress, "Отгрузки…", count)
     try:
         for page in client.iter_carriage_delivery_methods(limit=100):
             if stopped():
-                return {"postings": count, "carriages": 0, "errors": errors, "stopped": True}
+                return _finish(carriages_n, was_stopped=True)
             for block in page:
                 if not isinstance(block, dict):
                     continue
@@ -328,9 +417,4 @@ def sync_source(
     except Exception as exc:
         errors.append("carriage: {}".format(exc))
 
-    return {
-        "postings": count,
-        "carriages": carriages_n,
-        "errors": errors,
-        "stopped": stopped(),
-    }
+    return _finish(carriages_n)

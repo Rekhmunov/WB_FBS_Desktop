@@ -7,11 +7,13 @@ import unittest
 from app.ozon import (
     TAB_ARBITRATION,
     TAB_ASSEMBLY,
+    TAB_AWAITING_DELIVER,
     TAB_CANCELLED,
     TAB_FINISHED,
     TAB_NEW,
     carriage_is_done,
     compute_tab,
+    resolve_upsert_status,
 )
 
 
@@ -44,6 +46,32 @@ class OzonFbsHelpersTest(unittest.TestCase):
         self.assertFalse(carriage_is_done("new"))
         self.assertFalse(carriage_is_done("formed"))
         self.assertFalse(carriage_is_done("confirmed"))
+
+    def test_resolve_upsert_blocks_packaging_after_deliver(self) -> None:
+        status, tab = resolve_upsert_status(
+            local_status="awaiting_deliver",
+            local_tab="awaiting_deliver",
+            remote_status="awaiting_packaging",
+        )
+        self.assertEqual(status, "awaiting_deliver")
+        self.assertEqual(tab, TAB_AWAITING_DELIVER)
+
+    def test_resolve_upsert_allows_deliver_after_packaging(self) -> None:
+        status, tab = resolve_upsert_status(
+            local_status="awaiting_packaging",
+            local_tab="awaiting_packaging",
+            remote_status="awaiting_deliver",
+        )
+        self.assertEqual(status, "awaiting_deliver")
+        self.assertEqual(tab, TAB_AWAITING_DELIVER)
+
+    def test_resolve_upsert_cancelled_wins(self) -> None:
+        status, tab = resolve_upsert_status(
+            local_status="awaiting_deliver",
+            local_tab="awaiting_deliver",
+            remote_status="cancelled",
+        )
+        self.assertEqual(tab, TAB_CANCELLED)
 
 
 class OzonCarriageClientParseTest(unittest.TestCase):
@@ -1631,6 +1659,164 @@ class OzonSelectionPreviewTest(unittest.TestCase):
             good = svc.preview_selection_supply(sid, ["OK-1"])
             self.assertTrue(good.get("ok"))
             self.assertEqual(good.get("order_count"), 1)
+        finally:
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+
+
+class OzonPackagingStaleSyncTest(unittest.TestCase):
+    def test_reconcile_moves_packaging_with_supply_off_tab(self) -> None:
+        import os
+        import tempfile
+
+        from app.db import Database
+        from app.ozon.sync import reconcile_packaging_in_local_supplies
+        from app.services.ozon_orders import OzonOrdersService
+
+        fd, path = tempfile.mkstemp(suffix=".sqlite")
+        os.close(fd)
+        try:
+            db = Database(path)
+            db.init_schema()
+            with db.connect() as conn:
+                conn.execute(
+                    """
+                    INSERT INTO supply_sources(
+                        name, marketplace, client_id, api_key, is_enabled,
+                        lookback_days, created_at
+                    ) VALUES ('Озон', 'ozon', '1', 'k', 1, 2, '2026-01-01')
+                    """
+                )
+                sid = int(conn.execute("SELECT last_insert_rowid()").fetchone()[0])
+                conn.execute(
+                    """
+                    INSERT INTO ozon_fbs_postings(
+                        source_id, posting_number, status, tab, quantity,
+                        supply_id, synced_at
+                    ) VALUES
+                    (?, 'FREE-1', 'awaiting_packaging', 'awaiting_packaging', 1, '', 't'),
+                    (?, 'IN-SUP', 'awaiting_packaging', 'awaiting_packaging', 1, 'OZ-1', 't'),
+                    (?, 'MULTI', 'awaiting_packaging', 'awaiting_packaging', 1166, '', 't')
+                    """,
+                    (sid, sid, sid),
+                )
+                conn.commit()
+            fixed = reconcile_packaging_in_local_supplies(db, sid)
+            self.assertEqual(fixed, 1)
+            counts = OzonOrdersService(db).tab_counts(sid)
+            self.assertEqual(counts.get("awaiting_packaging"), 2)
+            with db.connect() as conn:
+                row = conn.execute(
+                    "SELECT tab, status FROM ozon_fbs_postings WHERE posting_number='IN-SUP'"
+                ).fetchone()
+            self.assertEqual(row["tab"], "awaiting_deliver")
+            self.assertEqual(row["status"], "awaiting_deliver")
+        finally:
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+
+    def test_upsert_keeps_local_deliver_when_remote_packaging(self) -> None:
+        import os
+        import tempfile
+
+        from app.db import Database
+        from app.ozon.sync import upsert_posting
+
+        fd, path = tempfile.mkstemp(suffix=".sqlite")
+        os.close(fd)
+        try:
+            db = Database(path)
+            db.init_schema()
+            with db.connect() as conn:
+                conn.execute(
+                    """
+                    INSERT INTO supply_sources(
+                        name, marketplace, client_id, api_key, is_enabled,
+                        lookback_days, created_at
+                    ) VALUES ('Озон', 'ozon', '1', 'k', 1, 2, '2026-01-01')
+                    """
+                )
+                sid = int(conn.execute("SELECT last_insert_rowid()").fetchone()[0])
+                conn.execute(
+                    """
+                    INSERT INTO ozon_fbs_postings(
+                        source_id, posting_number, status, tab, supply_id,
+                        quantity, synced_at
+                    ) VALUES (?, 'PN-1', 'awaiting_deliver', 'awaiting_deliver',
+                              'OZ-1', 1, 't')
+                    """,
+                    (sid,),
+                )
+                conn.commit()
+            upsert_posting(
+                db,
+                sid,
+                {
+                    "posting_number": "PN-1",
+                    "status": "awaiting_packaging",
+                    "products": [
+                        {"offer_id": "o", "sku": "1", "name": "n", "quantity": 1}
+                    ],
+                },
+            )
+            with db.connect() as conn:
+                row = conn.execute(
+                    "SELECT tab, status, supply_id FROM ozon_fbs_postings "
+                    "WHERE posting_number='PN-1'"
+                ).fetchone()
+            self.assertEqual(row["tab"], "awaiting_deliver")
+            self.assertEqual(row["status"], "awaiting_deliver")
+            self.assertEqual(row["supply_id"], "OZ-1")
+        finally:
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+
+    def test_preview_multi_counts_only_multi_units(self) -> None:
+        import os
+        import tempfile
+
+        from app.db import Database
+        from app.services.ozon_split import OzonSplitService
+
+        fd, path = tempfile.mkstemp(suffix=".sqlite")
+        os.close(fd)
+        try:
+            db = Database(path)
+            db.init_schema()
+            with db.connect() as conn:
+                conn.execute(
+                    """
+                    INSERT INTO supply_sources(
+                        name, marketplace, client_id, api_key, is_enabled,
+                        lookback_days, created_at
+                    ) VALUES ('Озон', 'ozon', '1', 'k', 1, 2, '2026-01-01')
+                    """
+                )
+                sid = int(conn.execute("SELECT last_insert_rowid()").fetchone()[0])
+                conn.execute(
+                    """
+                    INSERT INTO ozon_fbs_postings(
+                        source_id, posting_number, status, tab, quantity,
+                        products_json, synced_at
+                    ) VALUES
+                    (?, 'S1', 'awaiting_packaging', 'awaiting_packaging', 1,
+                     '[{"quantity":1}]', 't'),
+                    (?, 'M1', 'awaiting_packaging', 'awaiting_packaging', 5,
+                     '[{"quantity":5}]', 't')
+                    """,
+                    (sid, sid),
+                )
+                conn.commit()
+            preview = OzonSplitService(db).preview_multi(sid)
+            self.assertEqual(preview.get("multi_posting_count"), 1)
+            self.assertEqual(preview.get("result_posting_count"), 5)
+            self.assertEqual(preview.get("free_posting_count"), 2)
         finally:
             try:
                 os.unlink(path)

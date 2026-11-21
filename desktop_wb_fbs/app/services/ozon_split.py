@@ -324,13 +324,15 @@ class OzonSplitService:
             ).fetchall()
         items = [Database.row_to_dict(r) for r in rows]
         multi_rows = [r for r in items if posting_unit_count(r) > 1]
-        units_total = sum(posting_unit_count(r) for r in items)
+        # Web preview_split_multi: estimate only from multi rows, not all free.
+        units_multi = sum(posting_unit_count(r) for r in multi_rows)
         return {
             "ok": True,
-            "posting_count": len(items),
+            "posting_count": len(multi_rows),
             "multi_posting_count": len(multi_rows),
-            "result_posting_count": units_total,
-            "extra_postings": max(units_total - len(items), 0),
+            "result_posting_count": units_multi,
+            "extra_postings": max(units_multi - len(multi_rows), 0),
+            "free_posting_count": len(items),
             "posting_numbers": [
                 str(r.get("posting_number") or "")
                 for r in multi_rows

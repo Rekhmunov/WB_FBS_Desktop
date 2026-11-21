@@ -9,7 +9,8 @@ from app.db import Database
 from app.ozon import carriage_is_done, carriage_status_label, status_label, utc_now
 from app.ozon.client import OzonFbsClient
 from app.ozon.sync import upsert_carriage, upsert_posting
-from app.services.catalog import ProductService
+from app.paths import resolve_product_photo_path
+from app.services.catalog import ProductService, add_catalog_listener
 from app.services.ozon_act import OzonActService
 
 
@@ -34,6 +35,11 @@ class OzonOrdersService:
         self.db = db
         self._photo_by_offer = None  # type: Optional[Dict[str, str]]
         self._catalog_by_offer = None  # type: Optional[Dict[str, Dict[str, Any]]]
+        add_catalog_listener(self.invalidate_catalog_cache)
+
+    def invalidate_catalog_cache(self) -> None:
+        self._photo_by_offer = None
+        self._catalog_by_offer = None
 
     def _catalog_maps(self) -> Dict[str, Dict[str, Any]]:
         if self._catalog_by_offer is not None:
@@ -54,7 +60,7 @@ class OzonOrdersService:
             return self._photo_by_offer
         out = {}  # type: Dict[str, str]
         for p in ProductService(self.db).list_all():
-            photo = str(p.get("photo_path") or "").strip()
+            photo = resolve_product_photo_path(p.get("photo_path"))
             if not photo:
                 continue
             oz = str(p.get("ozon_sku") or "").strip().lower()

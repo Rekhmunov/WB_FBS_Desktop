@@ -93,6 +93,63 @@ def _copy_photos(src_root: Path, dst_root: Path) -> None:
         shutil.copy2(str(path), str(target))
 
 
+def _rewrite_photo_paths_in_db(db_file: Path, photos_root: Path) -> int:
+    """Point product_photos.photo_path at files under portable photos_root.
+
+    After migrate, SQLite still has absolute AppData paths; rewrite to the
+    copied files so photos keep working if legacy AppData is later removed.
+    """
+    if not db_file.is_file() or not photos_root.is_dir():
+        return 0
+    try:
+        # Avoid opening non-SQLite stubs (unit tests) or empty files.
+        with open(str(db_file), "rb") as fh:
+            header = fh.read(16)
+        if not header.startswith(b"SQLite format 3"):
+            return 0
+    except OSError:
+        return 0
+    try:
+        import sqlite3
+    except ImportError:
+        return 0
+    updated = 0
+    try:
+        conn = sqlite3.connect(str(db_file), timeout=30)
+        try:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                "SELECT id, photo_path FROM product_photos "
+                "WHERE photo_path IS NOT NULL AND trim(photo_path) != ''"
+            ).fetchall()
+            for row in rows:
+                old = str(row["photo_path"] or "").strip()
+                if not old:
+                    continue
+                name = Path(old).name
+                if not name:
+                    continue
+                candidate = photos_root / name
+                if not candidate.is_file():
+                    continue
+                new_path = str(candidate)
+                if new_path == old:
+                    continue
+                conn.execute(
+                    "UPDATE product_photos SET photo_path = ? WHERE id = ?",
+                    (new_path, int(row["id"])),
+                )
+                updated += 1
+            if updated:
+                conn.commit()
+        finally:
+            conn.close()
+    except Exception as exc:
+        _log.warning("photo_path rewrite skipped: %s", exc)
+        return 0
+    return updated
+
+
 def migrate_legacy_to_portable(
     *,
     portable: Optional[Path] = None,
@@ -124,7 +181,25 @@ def migrate_legacy_to_portable(
     for side in _sqlite_sidecar_paths(src_db):
         _copy_file_if_present(side, portable_root / side.name)
     _copy_photos(legacy_root, portable_root)
+    _rewrite_photo_paths_in_db(dest_db, portable_root / PHOTOS_DIRNAME)
     return True
+
+
+def resolve_product_photo_path(path: object) -> str:
+    """Return a readable photo path; fall back to ``data/product_photos/<name>``."""
+    raw = str(path or "").strip()
+    if not raw:
+        return ""
+    p = Path(raw)
+    if p.is_file():
+        return str(p)
+    # Legacy AppData path after portable migrate / moved folder.
+    name = p.name
+    if name:
+        alt = photos_dir() / name
+        if alt.is_file():
+            return str(alt)
+    return raw if p.exists() else ""
 
 
 def ensure_portable_data() -> Path:
@@ -134,7 +209,13 @@ def ensure_portable_data() -> Path:
     with _migrate_lock:
         if not _migrated:
             try:
-                migrate_legacy_to_portable(portable=root)
+                did = migrate_legacy_to_portable(portable=root)
+                # Even if portable DB already existed (did=False), fix stale
+                # AppData photo paths when copies are present under data/.
+                if not did:
+                    _rewrite_photo_paths_in_db(
+                        _db_file(root), root / PHOTOS_DIRNAME
+                    )
             except OSError as exc:
                 _log.warning("Portable migrate skipped: %s", exc)
             _migrated = True

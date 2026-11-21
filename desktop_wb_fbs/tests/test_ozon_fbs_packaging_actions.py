@@ -87,9 +87,9 @@ class PackagingMultiCountFromDbTests(unittest.TestCase):
                         products_json, synced_at
                     ) VALUES
                     (?, 'S1', 'awaiting_packaging', 'awaiting_packaging', 1,
-                     '[{"quantity":1}]', 't'),
+                     '[{"sku":1,"quantity":1}]', 't'),
                     (?, 'M1', 'awaiting_packaging', 'awaiting_packaging', 4,
-                     '[{"quantity":4}]', 't')
+                     '[{"sku":2,"quantity":4}]', 't')
                     """,
                     (sid, sid),
                 )

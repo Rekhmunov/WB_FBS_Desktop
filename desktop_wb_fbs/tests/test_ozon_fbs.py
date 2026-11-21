@@ -176,6 +176,34 @@ class OzonPostingV4ClientTest(unittest.TestCase):
         self.assertFalse(has_next2)
         self.assertEqual(cursor2, "c2")
 
+    def test_list_postings_uses_statuses_array_not_status(self) -> None:
+        """v4 ignores filter.status — must send filter.statuses (web parity)."""
+        from unittest.mock import patch
+
+        from app.ozon.client import OzonFbsClient
+
+        client = OzonFbsClient("1", "k")
+        captured = {}
+
+        def _fake(method, path, body=None):
+            captured["path"] = path
+            captured["body"] = dict(body or {})
+            return {"postings": [], "has_next": False, "cursor": ""}
+
+        with patch.object(client, "_request", side_effect=_fake):
+            client.list_postings(
+                since="2026-01-01T00:00:00Z",
+                to="2026-01-02T00:00:00Z",
+                limit=1000,
+                status="awaiting_packaging",
+            )
+
+        self.assertEqual(captured["path"], "/v4/posting/fbs/list")
+        filt = captured["body"].get("filter") or {}
+        self.assertEqual(filt.get("statuses"), ["awaiting_packaging"])
+        self.assertNotIn("status", filt)
+        self.assertEqual(captured["body"].get("limit"), 100)
+
     def test_list_unfulfilled_uses_v4_and_cursor(self) -> None:
         from unittest.mock import patch
 
@@ -557,6 +585,18 @@ class OzonSplitHelpersTest(unittest.TestCase):
         units = build_split_postings(row)
         self.assertEqual(len(units), 3)
         self.assertEqual(units[0]["products"][0]["quantity"], 1)
+
+    def test_posting_unit_count_skips_products_without_sku(self) -> None:
+        from app.services.ozon_split import posting_unit_count
+
+        row = {
+            "quantity": 9,
+            "products": [
+                {"sku": 111, "quantity": 2},
+                {"name": "no-id", "quantity": 7},
+            ],
+        }
+        self.assertEqual(posting_unit_count(row), 2)
 
     def test_parse_split_response_list(self) -> None:
         from app.services.ozon_split import parse_split_response
@@ -1703,6 +1743,9 @@ class OzonPackagingStaleSyncTest(unittest.TestCase):
                     (sid, sid, sid),
                 )
                 conn.commit()
+            # Even before reconcile, badge/list ignore packaging rows with supply_id.
+            before = OzonOrdersService(db).tab_counts(sid)
+            self.assertEqual(before.get("awaiting_packaging"), 2)
             fixed = reconcile_packaging_in_local_supplies(db, sid)
             self.assertEqual(fixed, 1)
             counts = OzonOrdersService(db).tab_counts(sid)
@@ -1806,9 +1849,9 @@ class OzonPackagingStaleSyncTest(unittest.TestCase):
                         products_json, synced_at
                     ) VALUES
                     (?, 'S1', 'awaiting_packaging', 'awaiting_packaging', 1,
-                     '[{"quantity":1}]', 't'),
+                     '[{"sku":11,"quantity":1}]', 't'),
                     (?, 'M1', 'awaiting_packaging', 'awaiting_packaging', 5,
-                     '[{"quantity":5}]', 't')
+                     '[{"sku":22,"quantity":5}]', 't')
                     """,
                     (sid, sid),
                 )

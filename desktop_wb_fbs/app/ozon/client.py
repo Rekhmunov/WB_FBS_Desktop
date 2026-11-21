@@ -144,14 +144,19 @@ class OzonFbsClient:
         """POST /v4/posting/fbs/list — cursor pagination (offset is ignored by API).
 
         Returns ``(postings, has_next, next_cursor)``.
+
+        v4 reads ``filter.statuses`` (array). The v3 field ``filter.status`` is
+        ignored — a string there returns every posting in the window (web parity).
+        Page size is capped at 100 (Ozon v4 max).
         """
         filt = {"since": since, "to": to}  # type: Dict[str, Any]
-        if status:
-            filt["status"] = str(status)
+        st = str(status or "").strip()
+        if st:
+            filt["statuses"] = [st]
         body = {
             "dir": "DESC",
             "filter": filt,
-            "limit": max(1, min(int(limit), 1000)),
+            "limit": max(1, min(int(limit), 100)),
             "with": {
                 "analytics_data": True,
                 "barcodes": True,

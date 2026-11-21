@@ -16,17 +16,28 @@ _log = logging.getLogger(__name__)
 
 
 def posting_unit_count(row: Dict[str, Any]) -> int:
+    """Physical units that ship/split can handle (web ``posting_ship_unit_count``).
+
+    Only products with a valid int ``sku`` / ``product_id`` count — the split API
+    rejects rows without product ids.
+    """
     products = parse_products(
         row.get("products_json") if "products_json" in row else row.get("products")
     )
-    if products:
-        total = 0
-        for p in products:
-            try:
-                total += max(1, int(p.get("quantity") or 1))
-            except (TypeError, ValueError):
-                total += 1
-        return max(1, total)
+    total = 0
+    for p in products:
+        product_id = p.get("sku") if p.get("sku") is not None else p.get("product_id")
+        try:
+            int(product_id)
+        except (TypeError, ValueError):
+            continue
+        try:
+            qty = int(p.get("quantity") or 1)
+        except (TypeError, ValueError):
+            qty = 1
+        total += max(1, qty)
+    if total > 0:
+        return total
     try:
         return max(1, int(row.get("quantity") or 1))
     except (TypeError, ValueError):

@@ -76,7 +76,17 @@ def upsert_posting(
     offer_id = str(prod.get("offer_id") or "")
     sku = str(prod.get("sku") or "")
     name = str(prod.get("name") or "")
-    qty = int(prod.get("quantity") or 1)
+    # Sum all product quantities (web upsert parity) — first-product-only
+    # under-counts multis when products_json is later missing.
+    qty = 0
+    for p in all_products:
+        try:
+            qty += int(p.get("quantity") or 0)
+        except (TypeError, ValueError):
+            qty += 1
+    if qty <= 0:
+        qty = 1
+
     wh = str(analytics.get("warehouse") or "")
     wh_id = analytics.get("warehouse_id")
     barcodes = _product_barcodes(posting)
@@ -276,10 +286,27 @@ def upsert_carriage(
             conn.execute(
                 """
                 UPDATE ozon_fbs_postings
-                SET carriage_id = ?, tab = 'assembly', synced_at = ?
+                SET carriage_id = ?, tab = ?, status = CASE
+                    WHEN LOWER(COALESCE(status, '')) IN (
+                        'awaiting_registration',
+                        'acceptance_in_progress',
+                        'awaiting_approve',
+                        'awaiting_packaging',
+                        '',
+                        'new'
+                    ) THEN ?
+                    ELSE status
+                END, synced_at = ?
                 WHERE source_id = ? AND posting_number = ?
                 """,
-                (cid, now, source_id, pnum),
+                (
+                    cid,
+                    TAB_AWAITING_DELIVER,
+                    TAB_AWAITING_DELIVER,
+                    now,
+                    source_id,
+                    pnum,
+                ),
             )
         conn.commit()
 

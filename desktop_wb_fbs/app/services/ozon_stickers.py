@@ -205,8 +205,21 @@ class OzonStickersService:
                 if progress:
                     try:
                         progress(
-                            "Привязка QR после печати… {}/{}".format(done, total)
+                            done,
+                            total,
+                            "Привязка QR после печати… {}/{}".format(
+                                done, total
+                            ),
                         )
+                    except TypeError:
+                        try:
+                            progress(
+                                "Привязка QR после печати… {}/{}".format(
+                                    done, total
+                                )
+                            )
+                        except Exception:
+                            pass
                     except Exception:
                         pass
                 if not fresh:

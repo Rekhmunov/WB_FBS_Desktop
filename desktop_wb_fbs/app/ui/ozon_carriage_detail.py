@@ -41,6 +41,7 @@ from app.ui.dialog_utils import (
     make_modal_search_box,
 )
 from app.ui.format_helpers import build_product_cell_widget
+from app.ui.sticker_print_flow import StickerLoadDialog
 from app.ui.table_col_widths import PersistentColumnWidths
 
 
@@ -86,6 +87,7 @@ class _CarriageLoadWorker(QThread):
 
 
 class _LabelPrintWorker(QThread):
+    progress = pyqtSignal(int, int, str)
     ready = pyqtSignal(list)
     failed = pyqtSignal(str)
 
@@ -104,13 +106,41 @@ class _LabelPrintWorker(QThread):
         self.posting_numbers = list(posting_numbers or [])
 
     def run(self) -> None:
+        from app.services.ozon_labels import format_label_error
+
+        n = len(self.posting_numbers)
         try:
-            paths = self.labels.fetch_label_paths(
-                self.client, self.source_id, self.posting_numbers
+            self.progress.emit(
+                0, max(n, 1), "Стикеры Ozon v3 · {} отпр.…".format(n)
             )
+            if self.isInterruptionRequested():
+                return
+
+            def _prog(*args) -> None:
+                if self.isInterruptionRequested():
+                    return
+                if len(args) >= 3:
+                    self.progress.emit(int(args[0]), int(args[1]), str(args[2]))
+                elif args:
+                    self.progress.emit(0, max(n, 1), str(args[0]))
+
+            paths = self.labels.fetch_label_paths(
+                self.client,
+                self.source_id,
+                self.posting_numbers,
+                progress=_prog,
+                stop_requested=self.isInterruptionRequested,
+            )
+            if self.isInterruptionRequested():
+                return
             self.ready.emit(list(paths or []))
         except Exception as exc:
-            self.failed.emit(str(exc))
+            if self.isInterruptionRequested():
+                return
+            msg = format_label_error(exc)
+            if "отменено" in msg.casefold():
+                return
+            self.failed.emit(msg)
 
 
 class _ActFileWorker(QThread):
@@ -194,6 +224,7 @@ class OzonCarriageDetailDialog(QDialog):
         self._carriage = None  # type: Optional[Dict[str, Any]]
         self._load_worker = None  # type: Optional[_CarriageLoadWorker]
         self._label_worker = None  # type: Optional[_LabelPrintWorker]
+        self._label_progress = None  # type: Optional[StickerLoadDialog]
         self._act_worker = None  # type: Optional[_ActFileWorker]
         self.carriage_mutated = False
 
@@ -434,19 +465,68 @@ class OzonCarriageDetailDialog(QDialog):
         if self._label_worker and self._label_worker.isRunning():
             return
         self.btn_labels.setEnabled(False)
-        self.load_info.setText("Формирование этикеток Ozon…")
+        self.load_info.setText(
+            "Стикеры Ozon v3 · {} отпр.…".format(len(pnums))
+        )
+        progress = StickerLoadDialog(
+            self, title="Стикеры Ozon · {}".format(self.carriage_id)
+        )
+        progress.title_lab.setText("Формирование стикеров Ozon")
+        progress.detail.setText(
+            "Создание задания этикеток · {} отпр.…".format(len(pnums))
+        )
+        progress.set_progress(0, max(len(pnums), 1), "")
+        self._label_progress = progress
         worker = _LabelPrintWorker(
             self.labels, self.client, self.source_id, pnums, self
         )
         self._label_worker = worker
+        worker.progress.connect(self._on_labels_progress)
         worker.ready.connect(self._on_labels_ready)
         worker.failed.connect(self._on_labels_failed)
-        worker.finished.connect(lambda: self.btn_labels.setEnabled(True))
+        worker.finished.connect(self._on_labels_worker_finished)
+        progress.finished.connect(self._on_labels_progress_closed)
         worker.start()
+        progress.show()
+
+    def _on_labels_progress(self, done: int, total: int, message: str) -> None:
+        text = str(message or "").strip()
+        if text:
+            self.load_info.setText(text)
+        dlg = getattr(self, "_label_progress", None)
+        if dlg is not None and dlg.isVisible():
+            dlg.set_progress(int(done or 0), int(total or 0), text)
+
+    def _close_label_progress(self) -> None:
+        dlg = getattr(self, "_label_progress", None)
+        self._label_progress = None
+        if dlg is None:
+            return
+        try:
+            dlg.finished.disconnect(self._on_labels_progress_closed)
+        except Exception:
+            pass
+        if dlg.isVisible():
+            dlg.accept()
+        dlg.deleteLater()
+
+    def _on_labels_progress_closed(self, _result: int = 0) -> None:
+        dlg = getattr(self, "_label_progress", None)
+        if dlg is not None and getattr(dlg, "cancelled", False):
+            worker = self._label_worker
+            if worker is not None and worker.isRunning():
+                worker.requestInterruption()
+            self.load_info.setText("Формирование стикеров отменено")
+        self._label_progress = None
+
+    def _on_labels_worker_finished(self) -> None:
+        self.btn_labels.setEnabled(True)
+        self._close_label_progress()
 
     def _on_labels_ready(self, paths: object) -> None:
         path_list = [str(p) for p in (paths or []) if str(p).strip()]
         if not path_list:
+            self._close_label_progress()
             QMessageBox.warning(self, "Этикетки", "Ozon не вернул файл этикеток")
             return
         self.load_info.setText(
@@ -458,6 +538,8 @@ class OzonCarriageDetailDialog(QDialog):
             QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
 
     def _on_labels_failed(self, message: str) -> None:
+        self._close_label_progress()
+        self.load_info.setText(str(message or "Ошибка этикеток"))
         QMessageBox.warning(self, "Этикетки", str(message or "Ошибка"))
 
     def _delivery_method_id(self) -> int:

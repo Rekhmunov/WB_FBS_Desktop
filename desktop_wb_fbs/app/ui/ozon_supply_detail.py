@@ -43,13 +43,26 @@ from app.ui.dialog_utils import (
     init_fullscreen_dialog,
     make_modal_search_box,
 )
-from app.ui.format_helpers import build_product_cell_widget
+from app.ui.format_helpers import (
+    build_ozon_posting_cell_widget,
+    build_product_cell_widget,
+)
+from app.ui.sticker_print_flow import StickerLoadDialog
 from app.ui.table_col_widths import PersistentColumnWidths
 
 
 class _LabelPrintWorker(QThread):
+    """Fetch sticker PDFs first, open them, then bind QR in background.
+
+    Pre-print sequential ``get_posting`` for the whole supply was freezing the
+    UI on «Формирование стикеров…» for many minutes — skipped (archive binds
+    after print).
+    """
+
+    progress = pyqtSignal(int, int, str)  # done, total, detail
     ready = pyqtSignal(list)
     failed = pyqtSignal(str)
+    bind_done = pyqtSignal(int)
 
     def __init__(
         self,
@@ -69,31 +82,81 @@ class _LabelPrintWorker(QThread):
         self.source_id = source_id
         self.posting_numbers = list(posting_numbers or [])
 
+    def _emit_progress(self, done: int, total: int, message: str) -> None:
+        if self.isInterruptionRequested():
+            return
+        self.progress.emit(int(done or 0), int(total or 0), str(message or ""))
+
     def run(self) -> None:
+        from app.services.ozon_labels import format_label_error
+
+        nums = list(self.posting_numbers)
+        n = len(nums)
         try:
-            try:
-                self.supplies.bind_stickers_from_postings(
-                    self.client, self.source_id, self.posting_numbers
-                )
-            except Exception:
-                pass
+            self._emit_progress(
+                0, max(n, 1), "Стикеры Ozon v3 · {} отпр.…".format(n)
+            )
+            if self.isInterruptionRequested():
+                return
+
+            def _label_prog(*args) -> None:
+                if self.isInterruptionRequested():
+                    return
+                if len(args) >= 3:
+                    self._emit_progress(int(args[0]), int(args[1]), str(args[2]))
+                elif args:
+                    self._emit_progress(0, max(n, 1), str(args[0]))
+
             # Web archive «Стикеры»: v3 create + v2 get only (no obsolete sync).
             paths = self.labels.fetch_label_paths(
-                self.client, self.source_id, self.posting_numbers
+                self.client,
+                self.source_id,
+                nums,
+                progress=_label_prog,
+                stop_requested=self.isInterruptionRequested,
             )
-            # Web: overwrite sticker_* after package-label so scan matches PDF.
+            if self.isInterruptionRequested():
+                return
+            # Open PDF immediately — do not wait for QR re-bind.
+            self.ready.emit(list(paths or []))
             try:
-                self.stickers.bind_after_labels(
+                self._emit_progress(0, max(n, 1), "Привязка QR после печати…")
+
+                def _bind_prog(*args) -> None:
+                    if self.isInterruptionRequested():
+                        return
+                    if len(args) >= 3:
+                        self._emit_progress(
+                            int(args[0]), int(args[1]), str(args[2])
+                        )
+                    elif args:
+                        self._emit_progress(0, max(n, 1), str(args[0]))
+
+                bound = self.stickers.bind_after_labels(
                     self.client,
                     self.source_id,
-                    self.posting_numbers,
+                    nums,
                     overwrite=True,
+                    progress=_bind_prog,
+                    workers=3,
                 )
-            except Exception:
-                pass
-            self.ready.emit(list(paths or []))
+                if self.isInterruptionRequested():
+                    return
+                self.bind_done.emit(int(bound or 0))
+            except Exception as bind_exc:
+                # PDF already opened — report bind issues without failing print.
+                self._emit_progress(
+                    n,
+                    max(n, 1),
+                    "Стикеры открыты · привязка QR: {}".format(bind_exc),
+                )
         except Exception as exc:
-            self.failed.emit(str(exc))
+            if self.isInterruptionRequested():
+                return
+            msg = format_label_error(exc)
+            if "отменено" in msg.casefold():
+                return
+            self.failed.emit(msg)
 
 
 class _SupplyHydrateWorker(QThread):
@@ -168,6 +231,7 @@ class OzonSupplyDetailDialog(QDialog):
         self._detail = {}  # type: Dict[str, Any]
         self._rows = []  # type: List[Dict[str, Any]]
         self._label_worker = None  # type: Optional[_LabelPrintWorker]
+        self._label_progress = None  # type: Optional[StickerLoadDialog]
         self._hydrate_worker = None  # type: Optional[_SupplyHydrateWorker]
         self.supply_mutated = False
         self._force_read_only = bool(read_only)
@@ -294,19 +358,20 @@ class OzonSupplyDetailDialog(QDialog):
         self.load_info.setContentsMargins(24, 8, 24, 8)
         root.addWidget(self.load_info)
 
-        self.table = QTableWidget(0, 5)
-        self.table.setHorizontalHeaderLabels(
-            ["Отправление", "Товар", "Маркировка", "ШК", "Стикер"]
-        )
+        # Archive #ozonFbsSupplyDetailTable: Отправление | Товар (ii… under posting).
+        self.table = QTableWidget(0, 2)
+        self.table.setObjectName("sdTable")
+        self.table.setHorizontalHeaderLabels(["Отправление", "Товар"])
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.table.setShowGrid(False)
         self.table.verticalHeader().setVisible(False)
         self._col_widths = PersistentColumnWidths(
             self.db,
             self.table,
-            "ozon_supply_detail_table_cols",
-            [180, 360, 100, 80, 140],
+            "ozon_supply_detail_table_cols_v2",
+            [320, 640],
             parent=self,
         )
         self._col_widths.apply()
@@ -507,7 +572,11 @@ class OzonSupplyDetailDialog(QDialog):
                 for code in r.get("barcodes") or []:
                     if q in str(code or "").lower():
                         return True
-                for key in ("sticker_barcode", "sticker_lower_barcode"):
+                for key in (
+                    "sticker_barcode",
+                    "sticker_lower_barcode",
+                    "sticker_scanit",
+                ):
                     if q in str(r.get(key) or "").lower():
                         return True
                 return False
@@ -516,43 +585,13 @@ class OzonSupplyDetailDialog(QDialog):
         self.table.setRowCount(len(rows))
         for i, r in enumerate(rows):
             pnum = str(r.get("posting_number") or "")
+            # Keep a data item under the cell widget for selection / UserRole.
             item = QTableWidgetItem(pnum)
             item.setData(Qt.UserRole, pnum)
             self.table.setItem(i, 0, item)
+            self.table.setCellWidget(i, 0, build_ozon_posting_cell_widget(r))
             self.table.setCellWidget(i, 1, build_product_cell_widget(r, photo_size=72))
-            marks = []
-            try:
-                marks = json.loads(str(r.get("marks_json") or "[]"))
-            except Exception:
-                marks = []
-            if not isinstance(marks, list):
-                marks = []
-            mark_text = (
-                "✓"
-                if marks and int(r.get("marks_synced") or 0)
-                else ("…" if marks else "—")
-            )
-            if str(r.get("tab") or "") == "cancelled" or str(
-                r.get("status") or ""
-            ).lower() in ("cancelled", "not_accepted"):
-                mark_text = "отм."
-            self.table.setItem(i, 2, QTableWidgetItem(mark_text))
-            pick_ok = bool(int(r.get("pick_verified") or 0))
-            self.table.setItem(i, 3, QTableWidgetItem("✓" if pick_ok else "—"))
-            sticker = str(
-                r.get("sticker_barcode") or r.get("sticker_lower_barcode") or ""
-            ).strip()
-            if not sticker:
-                try:
-                    bcs = r.get("barcodes") or []
-                    if isinstance(bcs, list) and bcs:
-                        sticker = str(bcs[0] or "")
-                except Exception:
-                    sticker = ""
-            self.table.setItem(
-                i, 4, QTableWidgetItem(sticker[:18] + ("…" if len(sticker) > 18 else ""))
-            )
-            self.table.setRowHeight(i, 96)
+            self.table.setRowHeight(i, 110)
 
     def _posting_numbers(self) -> List[str]:
         return [
@@ -656,7 +695,18 @@ class OzonSupplyDetailDialog(QDialog):
             return
         self.btn_labels.setEnabled(False)
         self.btn_labels_menu.setEnabled(False)
-        self.load_info.setText("Формирование стикеров Ozon (v3)…")
+        self.load_info.setText(
+            "Стикеры Ozon v3 · {} отпр.…".format(len(pnums))
+        )
+        progress = StickerLoadDialog(
+            self, title="Стикеры Ozon · {}".format(self.supply_id)
+        )
+        progress.title_lab.setText("Формирование стикеров Ozon")
+        progress.detail.setText(
+            "Создание задания этикеток · {} отпр.…".format(len(pnums))
+        )
+        progress.set_progress(0, max(len(pnums), 1), "")
+        self._label_progress = progress
         worker = _LabelPrintWorker(
             self.labels,
             self.supplies,
@@ -667,14 +717,58 @@ class OzonSupplyDetailDialog(QDialog):
             self,
         )
         self._label_worker = worker
+        worker.progress.connect(self._on_labels_progress)
         worker.ready.connect(self._on_labels_ready)
+        worker.bind_done.connect(self._on_labels_bind_done)
         worker.failed.connect(self._on_labels_failed)
         worker.finished.connect(self._on_labels_worker_finished)
+        progress.finished.connect(self._on_labels_progress_closed)
         worker.start()
+        progress.show()
+
+    def _on_labels_progress(self, done: int, total: int, message: str) -> None:
+        text = str(message or "").strip()
+        if text:
+            self.load_info.setText(text)
+        dlg = self._label_progress
+        if dlg is not None and dlg.isVisible():
+            dlg.set_progress(int(done or 0), int(total or 0), text)
+
+    def _close_label_progress(self) -> None:
+        dlg = self._label_progress
+        self._label_progress = None
+        if dlg is None:
+            return
+        try:
+            dlg.finished.disconnect(self._on_labels_progress_closed)
+        except Exception:
+            pass
+        if dlg.isVisible():
+            dlg.accept()
+        dlg.deleteLater()
+
+    def _on_labels_progress_closed(self, _result: int = 0) -> None:
+        dlg = self._label_progress
+        if dlg is not None and getattr(dlg, "cancelled", False):
+            worker = self._label_worker
+            if worker is not None and worker.isRunning():
+                worker.requestInterruption()
+            self.load_info.setText("Формирование стикеров отменено")
+        self._label_progress = None
 
     def _on_labels_worker_finished(self) -> None:
         self.btn_labels.setEnabled(True)
         self.btn_labels_menu.setEnabled(True)
+        self._close_label_progress()
+
+    def _on_labels_bind_done(self, bound: int) -> None:
+        text = "Стикеры готовы · QR привязано: {}".format(int(bound or 0))
+        self.load_info.setText(text)
+        dlg = self._label_progress
+        if dlg is not None and dlg.isVisible():
+            n = max(int(bound or 0), 1)
+            dlg.set_progress(n, n, text)
+        self.reload(hydrate=False)
 
     def stickers_by_category(self) -> None:
         try:
@@ -977,18 +1071,24 @@ class OzonSupplyDetailDialog(QDialog):
     def _on_labels_ready(self, paths: object) -> None:
         path_list = [str(p) for p in (paths or []) if str(p).strip()]
         if not path_list:
+            self._close_label_progress()
             QMessageBox.warning(self, "Стикеры", "Ozon не вернул файл этикеток")
             return
-        self.load_info.setText(
-            "Стикеры: {} файл(ов)".format(len(path_list))
+        text = (
+            "Стикеры открыты · {} файл(ов) · привязка QR…".format(len(path_list))
             if len(path_list) > 1
-            else "Стикеры: {}".format(path_list[0])
+            else "Стикеры открыты · привязка QR…"
         )
-        self.reload(hydrate=False)
+        self.load_info.setText(text)
+        dlg = self._label_progress
+        if dlg is not None and dlg.isVisible():
+            dlg.set_progress(0, max(len(self._posting_numbers()), 1), text)
         for path in path_list:
             QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
 
     def _on_labels_failed(self, message: str) -> None:
+        self._close_label_progress()
+        self.load_info.setText(str(message or "Ошибка стикеров"))
         QMessageBox.warning(self, "Стикеры", str(message or "Ошибка"))
 
     def print_picking_list(self) -> None:

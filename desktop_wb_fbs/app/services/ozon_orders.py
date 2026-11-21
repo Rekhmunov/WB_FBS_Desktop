@@ -753,14 +753,10 @@ class OzonOrdersService:
             row["barcodes"] = json.loads(str(row.get("barcodes_json") or "[]"))
         except Exception:
             row["barcodes"] = []
-        # Package sticker barcodes from dedicated columns (scan / print).
-        sticker_codes = []  # type: List[str]
-        for key in ("sticker_barcode", "sticker_lower_barcode"):
-            val = str(row.get(key) or "").strip()
-            if val and val not in sticker_codes:
-                sticker_codes.append(val)
-        if sticker_codes and not row["barcodes"]:
-            row["barcodes"] = list(sticker_codes)
+        if not isinstance(row["barcodes"], list):
+            row["barcodes"] = []
+        # Product ШК under product name; package QR / scanit stay on sticker_* cols.
+        row["sticker_scanit"] = str(row.get("sticker_scanit") or "").strip()
         if row.get("products") and len(row["products"]) > 1:
             row["product_count_label"] = "{} тов.".format(len(row["products"]))
         else:

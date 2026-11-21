@@ -253,7 +253,9 @@ def _clear_package_stickers(
         conn.execute(
             """
             UPDATE ozon_fbs_postings
-            SET sticker_barcode = '', sticker_lower_barcode = ''
+            SET sticker_barcode = '',
+                sticker_lower_barcode = '',
+                sticker_scanit = ''
             WHERE source_id = ? AND posting_number IN ({})
             """.format(placeholders),
             [source_id] + nums,
@@ -267,11 +269,13 @@ def _refresh_stickers_from_ozon(
     source_id: int,
     posting_numbers: List[str],
 ) -> None:
-    """Overwrite sticker_* from get_posting barcodes only (web parity).
+    """Overwrite sticker_* from get_posting barcodes/scanit only (web parity).
 
     Must not upsert the full posting — a lagging get can restore pre-split
     multi-qty products and block «Собрать все».
     """
+    from app.ozon.sticker_fields import sticker_fields_from_posting
+
     for pn in posting_numbers:
         pn = str(pn or "").strip()
         if not pn:
@@ -283,19 +287,22 @@ def _refresh_stickers_from_ozon(
             continue
         if not isinstance(fresh, dict):
             continue
-        bc = fresh.get("barcodes") if isinstance(fresh.get("barcodes"), dict) else {}
-        upper = str((bc or {}).get("upper_barcode") or "").strip()
-        lower = str((bc or {}).get("lower_barcode") or "").strip()
-        if not upper and not lower:
+        fields = sticker_fields_from_posting(fresh)
+        upper = fields.get("sticker_barcode") or ""
+        lower = fields.get("sticker_lower_barcode") or ""
+        scanit = fields.get("sticker_scanit") or ""
+        if not upper and not lower and not scanit:
             continue
         with db.connect() as conn:
             conn.execute(
                 """
                 UPDATE ozon_fbs_postings
-                SET sticker_barcode = ?, sticker_lower_barcode = ?
+                SET sticker_barcode = ?,
+                    sticker_lower_barcode = ?,
+                    sticker_scanit = ?
                 WHERE source_id = ? AND posting_number = ?
                 """,
-                (upper, lower, source_id, pn),
+                (upper, lower, scanit, source_id, pn),
             )
             conn.commit()
 

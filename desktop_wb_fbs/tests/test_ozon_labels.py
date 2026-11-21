@@ -9,6 +9,7 @@ from unittest.mock import MagicMock
 from app.db import Database
 from app.services.ozon_labels import (
     OzonLabelService,
+    format_label_error,
     package_label_task_is_ready,
     parse_package_label_create_tasks,
     parse_package_label_get_result,
@@ -70,7 +71,7 @@ class FetchLabelsTest(unittest.TestCase):
         client.package_label_fetch.assert_not_called()
         client.package_label_create.assert_not_called()
 
-    def test_batches_over_1000(self) -> None:
+    def test_batches_of_200(self) -> None:
         client = MagicMock()
         client.package_label_create_v3.return_value = [
             {"task_id": 1, "task_type": "small_label"}
@@ -80,12 +81,20 @@ class FetchLabelsTest(unittest.TestCase):
             "status": {"code": "completed"},
         }
         client.fetch_url_bytes.return_value = b"%PDF-1.4 mock"
-        nums = ["P-{}".format(i) for i in range(1005)]
-        paths = self.svc.fetch_label_paths(client, 1, nums, use_cache=False)
-        self.assertEqual(len(paths), 2)
-        self.assertEqual(client.package_label_create_v3.call_count, 2)
+        nums = ["P-{}".format(i) for i in range(450)]
+        messages = []  # type: list
+        paths = self.svc.fetch_label_paths(
+            client,
+            1,
+            nums,
+            use_cache=False,
+            progress=messages.append,
+        )
+        self.assertEqual(len(paths), 3)
+        self.assertEqual(client.package_label_create_v3.call_count, 3)
         for call in client.package_label_create_v3.call_args_list:
-            self.assertLessEqual(len(call[0][0]), 1000)
+            self.assertLessEqual(len(call[0][0]), 200)
+        self.assertTrue(any("партия" in str(m) for m in messages))
 
     def test_cache_returns_all_batch_parts(self) -> None:
         client = MagicMock()
@@ -97,9 +106,9 @@ class FetchLabelsTest(unittest.TestCase):
             "status": {"code": "completed"},
         }
         client.fetch_url_bytes.return_value = b"%PDF-1.4 mock"
-        nums = ["P-{}".format(i) for i in range(1005)]
+        nums = ["P-{}".format(i) for i in range(450)]
         first = self.svc.fetch_label_paths(client, 1, nums, use_cache=True)
-        self.assertEqual(len(first), 2)
+        self.assertEqual(len(first), 3)
         client.reset_mock()
         client.package_label_create_v3.return_value = [
             {"task_id": 1, "task_type": "small_label"}
@@ -110,9 +119,18 @@ class FetchLabelsTest(unittest.TestCase):
         }
         client.fetch_url_bytes.return_value = b"%PDF-1.4 mock"
         cached = self.svc.fetch_label_paths(client, 1, nums, use_cache=True)
-        self.assertEqual(len(cached), 2)
+        self.assertEqual(len(cached), 3)
         self.assertEqual(cached, first)
         client.package_label_create_v3.assert_not_called()
+
+    def test_format_label_error_obsolete(self) -> None:
+        msg = format_label_error(RuntimeError("API method is obsolete"))
+        self.assertIn("устарел", msg)
+        self.assertIn("v3", msg)
+
+    def test_format_label_error_invalid_argument(self) -> None:
+        msg = format_label_error(RuntimeError("INVALID_ARGUMENT: bad status"))
+        self.assertIn("статус", msg.casefold())
 
 
 if __name__ == "__main__":

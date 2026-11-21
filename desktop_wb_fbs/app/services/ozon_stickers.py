@@ -66,6 +66,18 @@ class OzonStickersService:
                 ).fetchall()
                 matches = [Database.row_to_dict(r) for r in rows]
             if not matches:
+                # New instance label ``ii…`` (web archive step after lower).
+                rows = conn.execute(
+                    """
+                    SELECT * FROM ozon_fbs_postings
+                    WHERE source_id = ? AND sticker_scanit != ''
+                      AND LOWER(sticker_scanit) = ?
+                    LIMIT ?
+                    """,
+                    (source_id, raw_key, _MATCH_LIMIT),
+                ).fetchall()
+                matches = [Database.row_to_dict(r) for r in rows]
+            if not matches:
                 # posting_number exact
                 rows = conn.execute(
                     """
@@ -101,7 +113,7 @@ class OzonStickersService:
     def _row_matches(
         self, row: Dict[str, Any], raw: str, raw_key: str
     ) -> bool:
-        for key in ("sticker_barcode", "sticker_lower_barcode"):
+        for key in ("sticker_barcode", "sticker_lower_barcode", "sticker_scanit"):
             val = str(row.get(key) or "").strip()
             if val and _scan_key(val) == raw_key:
                 return True
@@ -133,20 +145,23 @@ class OzonStickersService:
         posting_numbers: List[str],
         *,
         overwrite: bool = True,
+        progress: Optional[Any] = None,
+        workers: int = 3,
     ) -> int:
-        """Re-fetch get_posting barcodes after label print (web post-print bind)."""
+        """Re-fetch get_posting barcodes after label print (web post-print bind).
+
+        Runs a small thread pool (archive parity) so mass print does not freeze
+        the UI for minutes on sequential get_posting calls.
+        """
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
         nums = [str(p).strip() for p in posting_numbers if str(p).strip()]
-        updated = 0
-        for pn in nums:
-            try:
-                fresh = client.get_posting(pn)
-            except Exception as exc:
-                _log.warning("ozon sticker bind get %s: %s", pn, exc)
-                continue
-            if not isinstance(fresh, dict):
-                continue
-            if not overwrite:
-                with self.db.connect() as conn:
+        if not nums:
+            return 0
+        if not overwrite:
+            filtered = []  # type: List[str]
+            with self.db.connect() as conn:
+                for pn in nums:
                     row = conn.execute(
                         """
                         SELECT sticker_barcode FROM ozon_fbs_postings
@@ -154,10 +169,66 @@ class OzonStickersService:
                         """,
                         (source_id, pn),
                     ).fetchone()
-                if row and str(row["sticker_barcode"] or "").strip():
+                    if row and str(row["sticker_barcode"] or "").strip():
+                        continue
+                    filtered.append(pn)
+            nums = filtered
+        if not nums:
+            return 0
+
+        def _pull(pn: str):
+            remote = None
+            for attempt in range(3):
+                try:
+                    remote = client.get_posting(pn)
+                    break
+                except Exception as exc:
+                    err = str(exc or "")
+                    if "429" in err and attempt < 2:
+                        import time as _time
+
+                        _time.sleep(0.6 * (attempt + 1))
+                        continue
+                    _log.warning("ozon sticker bind get %s: %s", pn, exc)
+                    return pn, None
+            return pn, remote if isinstance(remote, dict) else None
+
+        updated = 0
+        done = 0
+        total = len(nums)
+        pool_n = max(1, min(int(workers or 1), 4, total))
+        with ThreadPoolExecutor(max_workers=pool_n) as pool:
+            futs = {pool.submit(_pull, pn): pn for pn in nums}
+            for fut in as_completed(futs):
+                done += 1
+                pn, fresh = fut.result()
+                if progress:
+                    try:
+                        progress(
+                            done,
+                            total,
+                            "Привязка QR после печати… {}/{}".format(
+                                done, total
+                            ),
+                        )
+                    except TypeError:
+                        try:
+                            progress(
+                                "Привязка QR после печати… {}/{}".format(
+                                    done, total
+                                )
+                            )
+                        except Exception:
+                            pass
+                    except Exception:
+                        pass
+                if not fresh:
                     continue
-            upsert_posting(self.db, source_id, fresh)
-            updated += 1
+                try:
+                    upsert_posting(self.db, source_id, fresh)
+                    updated += 1
+                except Exception as exc:
+                    _log.warning("ozon sticker bind upsert %s: %s", pn, exc)
         return updated
 
     def print_stickers(

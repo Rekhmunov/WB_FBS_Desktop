@@ -4,6 +4,7 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import MagicMock
 
 from app.db import Database
 from app.services.ozon_stickers import (
@@ -97,6 +98,42 @@ class FindByScanTest(unittest.TestCase):
         found = self.svc.find_by_scan(1, "no-such-code")
         self.assertIsNone(found["row"])
         self.assertFalse(found["ambiguous"])
+
+
+class BindAfterLabelsTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.db = Database(Path(self.tmp.name) / "t.db")
+        self.db.init_schema()
+        self.svc = OzonStickersService(self.db)
+
+    def tearDown(self) -> None:
+        self.tmp.cleanup()
+
+    def test_parallel_bind_progress(self) -> None:
+        client = MagicMock()
+
+        def _get(pn: str):
+            return {
+                "posting_number": pn,
+                "status": "awaiting_deliver",
+                "barcodes": ["BC-{}".format(pn)],
+                "products": [],
+            }
+
+        client.get_posting.side_effect = _get
+        messages = []  # type: list
+        bound = self.svc.bind_after_labels(
+            client,
+            1,
+            ["A-1", "A-2", "A-3"],
+            overwrite=True,
+            progress=messages.append,
+            workers=3,
+        )
+        self.assertEqual(bound, 3)
+        self.assertEqual(client.get_posting.call_count, 3)
+        self.assertTrue(any("Привязка QR" in str(m) for m in messages))
 
 
 if __name__ == "__main__":

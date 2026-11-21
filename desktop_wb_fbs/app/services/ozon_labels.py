@@ -9,17 +9,66 @@ import hashlib
 import os
 import tempfile
 import time
-from typing import Any, Dict, List, Mapping, Optional, Sequence
+from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence
 
 from app.db import Database
 from app.ozon import utc_now
 from app.ozon.client import OzonFbsClient
 
-# Ozon create accepts ≤1000; archive new-label raster uses 200 — keep ≤1000.
-_LABEL_BATCH = 1000
+# Archive new-label raster uses 200; Ozon create max is 1000.
+_LABEL_BATCH = 200
 _PACKAGE_LABEL_TASK_FAIL = frozenset(
     {"error", "failed", "fail", "cancelled", "canceled"}
 )
+
+ProgressCb = Optional[Callable[..., None]]
+
+
+def emit_label_progress(
+    progress: ProgressCb,
+    message: str,
+    *,
+    done: int = 0,
+    total: int = 0,
+) -> None:
+    """Notify UI: prefer ``(done, total, message)``, fall back to ``(message,)``."""
+    if not progress:
+        return
+    text = str(message or "")
+    try:
+        progress(int(done), int(total), text)
+        return
+    except TypeError:
+        pass
+    try:
+        progress(text)
+    except Exception:
+        pass
+
+
+def format_label_error(exc: BaseException) -> str:
+    """Operator-facing Russian text for package-label failures."""
+    text = str(exc).strip() or "ошибка Ozon"
+    low = text.casefold()
+    if "obsolete" in low:
+        return (
+            "Метод печати этикеток устарел на стороне Ozon. "
+            "Нужны /v3/package-label/create и /v2/package-label/get."
+        )
+    if "invalid_argument" in low or "invalid argument" in low:
+        return (
+            "Ozon отклонил часть отправлений (неверный статус). "
+            "Этикетки доступны после сборки («Ожидает отгрузки»). "
+            "Обновите поставку и повторите."
+        )
+    if "timeout" in low or "таймаут" in low:
+        return (
+            "Таймаут ожидания этикеток Ozon. "
+            "Повторите печать через минуту (задание ещё формируется)."
+        )
+    if "не больше 1000" in low or "1000" in low and "отправлен" in low:
+        return text
+    return text
 
 
 def parse_package_label_create_tasks(
@@ -204,17 +253,16 @@ class OzonLabelService:
         *,
         use_cache: bool = True,
         timeout_s: float = 180.0,
+        progress: ProgressCb = None,
     ) -> str:
-        """Download label PDF(s); returns path to the first (or only) file.
-
-        Prefer ``fetch_label_paths`` when the caller must open every batch PDF.
-        """
+        """Download label PDF(s); returns path to the first (or only) file."""
         paths = self.fetch_label_paths(
             client,
             source_id,
             posting_numbers,
             use_cache=use_cache,
             timeout_s=timeout_s,
+            progress=progress,
         )
         return paths[0]
 
@@ -226,6 +274,8 @@ class OzonLabelService:
         *,
         use_cache: bool = True,
         timeout_s: float = 180.0,
+        progress: ProgressCb = None,
+        stop_requested: Optional[Callable[[], bool]] = None,
     ) -> List[str]:
         nums = [str(p).strip() for p in posting_numbers if str(p).strip()]
         if not nums:
@@ -235,16 +285,60 @@ class OzonLabelService:
         if use_cache:
             cached = self._cache_get_parts(source_id, key)
             if cached and len(cached) >= expected_parts:
+                emit_label_progress(
+                    progress,
+                    "Этикетки из кэша · {} файл(ов)".format(len(cached)),
+                    done=expected_parts,
+                    total=expected_parts,
+                )
                 return cached[:expected_parts]
         paths = []  # type: List[str]
-        for i in range(0, len(nums), _LABEL_BATCH):
-            batch = nums[i : i + _LABEL_BATCH]
-            pdf = self._fetch_async_pdf(client, batch, timeout_s=timeout_s)
+        batches = [
+            nums[i : i + _LABEL_BATCH]
+            for i in range(0, len(nums), _LABEL_BATCH)
+        ]
+        batch_total = max(1, len(batches))
+        for bi, batch in enumerate(batches, start=1):
+            if stop_requested and stop_requested():
+                raise RuntimeError("Формирование стикеров отменено")
+            emit_label_progress(
+                progress,
+                "Стикеры v3 · партия {}/{} ({} отпр.)…".format(
+                    bi, batch_total, len(batch)
+                ),
+                done=bi - 1,
+                total=batch_total,
+            )
+            try:
+                pdf = self._fetch_async_pdf(
+                    client,
+                    batch,
+                    timeout_s=timeout_s,
+                    progress=progress,
+                    batch_label="{}/{}".format(bi, batch_total),
+                    batch_done=bi - 1,
+                    batch_total=batch_total,
+                    stop_requested=stop_requested,
+                )
+            except Exception as exc:
+                raise RuntimeError(format_label_error(exc)) from exc
             paths.append(self._write_bytes(pdf))
+            emit_label_progress(
+                progress,
+                "Стикеры v3 · партия {}/{} готова".format(bi, batch_total),
+                done=bi,
+                total=batch_total,
+            )
         if use_cache and paths:
             self._cache_put(source_id, key, paths[0])
             for idx, part in enumerate(paths[1:], start=2):
                 self._cache_put(source_id, "{}#{}".format(key, idx), part)
+        emit_label_progress(
+            progress,
+            "Стикеры готовы · {} файл(ов)".format(len(paths)),
+            done=batch_total,
+            total=batch_total,
+        )
         return paths
 
     def _fetch_async_pdf(
@@ -253,17 +347,24 @@ class OzonLabelService:
         posting_numbers: List[str],
         *,
         timeout_s: float,
+        progress: ProgressCb = None,
+        batch_label: str = "",
+        batch_done: int = 0,
+        batch_total: int = 0,
+        stop_requested: Optional[Callable[[], bool]] = None,
     ) -> bytes:
         """v3 create → prefer small_label → poll v2 get → download PDF."""
+        emit_label_progress(
+            progress,
+            "Создание задания этикеток{}…".format(
+                " · {}".format(batch_label) if batch_label else ""
+            ),
+            done=batch_done,
+            total=batch_total,
+        )
         tasks = client.package_label_create_v3(posting_numbers)
         normalized = parse_package_label_create_tasks({"tasks": tasks})
-        if not normalized:
-            # Client may already return normalized dicts.
-            normalized = parse_package_label_create_tasks(
-                {"tasks": list(tasks or [])}
-            )
         if not normalized and tasks:
-            # Last resort: map raw task dicts.
             for item in tasks:
                 if isinstance(item, dict) and item.get("task_id") is not None:
                     try:
@@ -272,14 +373,23 @@ class OzonLabelService:
                                 "task_id": int(item["task_id"]),
                                 "task_type": str(
                                     item.get("task_type") or ""
-                                ).strip().lower(),
+                                )
+                                .strip()
+                                .lower(),
                             }
                         )
                     except (TypeError, ValueError):
                         continue
         task = select_small_label_task(normalized)
         return self._poll_task_pdf(
-            client, int(task["task_id"]), timeout_s=timeout_s
+            client,
+            int(task["task_id"]),
+            timeout_s=timeout_s,
+            progress=progress,
+            batch_label=batch_label,
+            batch_done=batch_done,
+            batch_total=batch_total,
+            stop_requested=stop_requested,
         )
 
     def _poll_task_pdf(
@@ -288,13 +398,21 @@ class OzonLabelService:
         task_id: int,
         *,
         timeout_s: float,
+        progress: ProgressCb = None,
+        batch_label: str = "",
+        batch_done: int = 0,
+        batch_total: int = 0,
+        stop_requested: Optional[Callable[[], bool]] = None,
     ) -> bytes:
         deadline = time.monotonic() + max(5.0, float(timeout_s))
         last_code = ""
+        started = time.monotonic()
         while time.monotonic() < deadline:
+            if stop_requested and stop_requested():
+                raise RuntimeError("Формирование стикеров отменено")
             raw = client.package_label_get_v2(int(task_id))
             parsed = parse_package_label_get_result(raw)
-            last_code = str(parsed.get("status_code") or "")
+            last_code = str(parsed.get("status_code") or "") or last_code
             if package_label_task_is_failed(parsed):
                 err = str(
                     parsed.get("error_message")
@@ -307,10 +425,35 @@ class OzonLabelService:
                 )
             if package_label_task_is_ready(parsed):
                 url = str(parsed.get("file_url") or "").strip()
+                emit_label_progress(
+                    progress,
+                    "Скачивание PDF{}…".format(
+                        " · {}".format(batch_label) if batch_label else ""
+                    ),
+                    done=batch_done,
+                    total=batch_total,
+                )
                 data = client.fetch_url_bytes(url)
                 if not data:
                     raise RuntimeError("Ozon вернул пустой файл этикеток")
+                if data[:4] != b"%PDF":
+                    raise RuntimeError(
+                        "Ozon вернул не PDF (начало ответа: {!r})".format(
+                            data[:32]
+                        )
+                    )
                 return data
+            elapsed = int(time.monotonic() - started)
+            emit_label_progress(
+                progress,
+                "Ожидание этикеток Ozon{} · {} с · статус: {}".format(
+                    " · {}".format(batch_label) if batch_label else "",
+                    elapsed,
+                    last_code or "pending",
+                ),
+                done=batch_done,
+                total=batch_total,
+            )
             time.sleep(1.5)
         raise RuntimeError(
             "Таймаут ожидания этикеток (статус: {})".format(last_code or "—")

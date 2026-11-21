@@ -154,6 +154,7 @@ CREATE TABLE IF NOT EXISTS ozon_fbs_postings (
     pick_verified_at TEXT,
     sticker_barcode TEXT NOT NULL DEFAULT '',
     sticker_lower_barcode TEXT NOT NULL DEFAULT '',
+    sticker_scanit TEXT NOT NULL DEFAULT '',
     container_id INTEGER,
     container_barcode TEXT NOT NULL DEFAULT '',
     container_synced INTEGER NOT NULL DEFAULT 0,
@@ -315,6 +316,9 @@ CREATE INDEX IF NOT EXISTS idx_ozon_postings_sticker_bc
 
 CREATE INDEX IF NOT EXISTS idx_ozon_postings_sticker_low
     ON ozon_fbs_postings(source_id, sticker_lower_barcode);
+
+CREATE INDEX IF NOT EXISTS idx_ozon_postings_sticker_scanit
+    ON ozon_fbs_postings(source_id, sticker_scanit);
 
 CREATE INDEX IF NOT EXISTS idx_ozon_carriages_src
     ON ozon_fbs_carriages(source_id, done, synced_at DESC);
@@ -579,6 +583,7 @@ class Database:
                 "pick_verified_at": "TEXT",
                 "sticker_barcode": "TEXT NOT NULL DEFAULT ''",
                 "sticker_lower_barcode": "TEXT NOT NULL DEFAULT ''",
+                "sticker_scanit": "TEXT NOT NULL DEFAULT ''",
                 "container_id": "INTEGER",
                 "container_barcode": "TEXT NOT NULL DEFAULT ''",
                 "container_synced": "INTEGER NOT NULL DEFAULT 0",

@@ -15,8 +15,11 @@ from PyQt5.QtGui import QColor, QPainter, QPixmap  # noqa: E402
 from PyQt5.QtWidgets import QApplication, QMessageBox  # noqa: E402
 
 from app.ui.dialogs_extra import (  # noqa: E402
+    STICKER_PAGE_MM,
+    _configure_printer_page_size,
     _default_pdf_path,
     _download_pixmaps_pdf,
+    _page_size_pdf_points,
     _safe_pdf_filename,
     _write_pixmaps_pdf,
 )
@@ -143,6 +146,36 @@ class PixmapPdfDownloadTests(unittest.TestCase):
             self.assertFalse(out.exists())
         self.assertTrue(seen)
         self.assertEqual(seen[0][1], 5)
+
+    def test_sticker_pdf_page_is_58x40_mm(self) -> None:
+        page_w, page_h = _page_size_pdf_points(STICKER_PAGE_MM)
+        self.assertAlmostEqual(page_w, 58 * 72 / 25.4, places=2)
+        self.assertAlmostEqual(page_h, 40 * 72 / 25.4, places=2)
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "sticker.pdf"
+            self.assertTrue(
+                _write_pixmaps_pdf(
+                    str(out),
+                    [self._pixmap(348, 240)],
+                    page_size_mm=STICKER_PAGE_MM,
+                )
+            )
+            data = out.read_bytes()
+            self.assertIn(
+                "/MediaBox [0 0 {:.2f} {:.2f}]".format(page_w, page_h).encode(
+                    "ascii"
+                ),
+                data,
+            )
+
+    def test_configure_printer_page_size_58x40(self) -> None:
+        from PyQt5.QtPrintSupport import QPrinter
+
+        printer = QPrinter(QPrinter.HighResolution)
+        _configure_printer_page_size(printer, STICKER_PAGE_MM)
+        rect = printer.pageRect(QPrinter.Millimeter)
+        self.assertAlmostEqual(float(rect.width()), 58.0, places=1)
+        self.assertAlmostEqual(float(rect.height()), 40.0, places=1)
 
 
 if __name__ == "__main__":

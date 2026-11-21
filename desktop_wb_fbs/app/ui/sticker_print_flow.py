@@ -180,7 +180,11 @@ def run_supply_sticker_print(
     Download stickers with progress, then open the same PNG scroll preview used
     for supply QR / box stickers (print paints images directly — no WebEngine).
     """
-    from app.ui.dialogs_extra import build_sticker_print_pixmaps, show_pixmap_print_preview
+    from app.ui.dialogs_extra import (
+        STICKER_PAGE_MM,
+        build_sticker_print_pixmaps,
+        show_pixmap_print_preview,
+    )
 
     progress = StickerLoadDialog(parent, title="Стикеры · {}".format(supply_id))
     worker = _StickerPrepareWorker(
@@ -224,6 +228,7 @@ def run_supply_sticker_print(
                 pixmaps,
                 "Стикеры поставки · {}".format(supply_id),
                 parent,
+                page_size_mm=STICKER_PAGE_MM,
             )
             result["opened"] = True
 

@@ -15,6 +15,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence
 
 from app.ozon.client import OzonFbsClient
+from app.runtime_deps import _can_import, pip_install
 from app.services.ozon_labels import OzonLabelService, emit_label_progress
 
 _log = logging.getLogger(__name__)
@@ -23,20 +24,53 @@ _LABEL_BATCH = 200
 _FETCH_WORKERS = 2
 ProgressCb = Optional[Callable[..., None]]
 StopCb = Optional[Callable[[], bool]]
+_pymupdf_ready = False
 
 
 def _esc(value: object) -> str:
     return html.escape(str(value or ""), quote=True)
 
 
-def _pdf_pages_to_png_b64(pdf_bytes: bytes) -> List[str]:
+def _try_import_pymupdf() -> bool:
+    return _can_import("pymupdf")
+
+
+def ensure_pymupdf(progress: ProgressCb = None) -> None:
+    """Import pymupdf, installing it once via pip if missing (desktop UX)."""
+    global _pymupdf_ready
+    if _pymupdf_ready:
+        return
+    if _try_import_pymupdf():
+        _pymupdf_ready = True
+        return
+    emit_label_progress(
+        progress,
+        "Установка pymupdf (нужен для листа стикеров)…",
+        done=0,
+        total=1,
+    )
     try:
-        import pymupdf
-    except ImportError as exc:
+        pip_install("pymupdf>=1.24.0")
+    except Exception as exc:
         raise RuntimeError(
-            "Для печати стикеров Ozon нужен пакет pymupdf "
-            "(pip install pymupdf)."
+            "Для печати стикеров Ozon нужен пакет pymupdf.\n\n"
+            "Откройте cmd в папке программы и выполните:\n"
+            "python -m pip install pymupdf\n\n"
+            "или: python -m pip install -r requirements.txt\n\n"
+            "Ошибка установки: {}".format(exc)
         ) from exc
+    if not _try_import_pymupdf():
+        raise RuntimeError(
+            "pymupdf установился, но не импортируется. "
+            "Перезапустите FeedPilot FBS и повторите печать."
+        )
+    _pymupdf_ready = True
+
+
+def _pdf_pages_to_png_b64(pdf_bytes: bytes) -> List[str]:
+    ensure_pymupdf()
+    import pymupdf
+
     doc = pymupdf.open(stream=pdf_bytes, filetype="pdf")
     out = []  # type: List[str]
     try:
@@ -399,21 +433,69 @@ def render_stickers_print_html(
     )
 
 
+def _fallback_raw_pdf_path(
+    labels: OzonLabelService,
+    client: OzonFbsClient,
+    source_id: int,
+    posting_numbers: Sequence[str],
+    *,
+    progress: ProgressCb = None,
+    stop_requested: StopCb = None,
+) -> str:
+    """Open Ozon PDF(s) without pymupdf (no cover/separators)."""
+    emit_label_progress(
+        progress,
+        "pymupdf недоступен · открываю PDF этикеток Ozon…",
+        done=0,
+        total=max(1, len(posting_numbers)),
+    )
+    paths = labels.fetch_label_paths(
+        client,
+        int(source_id),
+        list(posting_numbers),
+        use_cache=True,
+        progress=progress,
+        stop_requested=stop_requested,
+    )
+    if not paths:
+        raise RuntimeError("Ozon не вернул файл этикеток")
+    return paths[0]
+
+
 def build_stickers_print_file(
     labels: OzonLabelService,
     client: OzonFbsClient,
     detail: Mapping[str, Any],
     posting_numbers: Sequence[str],
     *,
+    source_id: Optional[int] = None,
     source_name: str = "",
     include_cover_and_separators: bool = True,
     progress: ProgressCb = None,
     stop_requested: StopCb = None,
 ) -> str:
-    """Fetch labels, render one HTML sheet, return local file path."""
+    """Fetch labels, render one HTML sheet, return local file path.
+
+    If pymupdf cannot be imported/installed and ``source_id`` is set, falls
+    back to the raw Ozon PDF (without cover/article separators).
+    """
     nums = [str(p).strip() for p in posting_numbers if str(p).strip()]
     if not nums:
         raise ValueError("Нет отправлений для этикеток")
+    try:
+        ensure_pymupdf(progress=progress)
+    except RuntimeError as exc:
+        if source_id is None:
+            raise
+        _log.warning("ozon stickers: pymupdf missing, PDF fallback: %s", exc)
+        return _fallback_raw_pdf_path(
+            labels,
+            client,
+            int(source_id),
+            nums,
+            progress=progress,
+            stop_requested=stop_requested,
+        )
     emit_label_progress(
         progress,
         "Загрузка этикеток Ozon…",

@@ -2,11 +2,77 @@
 from __future__ import annotations
 
 import unittest
+from unittest.mock import MagicMock, patch
 
+from app.services import ozon_stickers_print as osp
 from app.services.ozon_stickers_print import (
+    ensure_pymupdf,
     group_orders_by_article,
     render_stickers_print_html,
 )
+
+
+class EnsurePymupdfTest(unittest.TestCase):
+    def tearDown(self) -> None:
+        osp._pymupdf_ready = False
+
+    def test_already_installed(self) -> None:
+        osp._pymupdf_ready = False
+        ensure_pymupdf()
+        self.assertTrue(osp._pymupdf_ready)
+
+    def test_skips_when_flag_set(self) -> None:
+        osp._pymupdf_ready = True
+        with patch.object(osp, "_try_import_pymupdf") as try_imp:
+            ensure_pymupdf()
+            try_imp.assert_not_called()
+
+    def test_installs_when_missing(self) -> None:
+        osp._pymupdf_ready = False
+        calls = {"n": 0}
+
+        def _try() -> bool:
+            calls["n"] += 1
+            return calls["n"] >= 2
+
+        with patch.object(osp, "_try_import_pymupdf", side_effect=_try):
+            with patch.object(osp, "pip_install") as install:
+                ensure_pymupdf()
+        self.assertTrue(osp._pymupdf_ready)
+        self.assertEqual(calls["n"], 2)
+        install.assert_called_once_with("pymupdf>=1.24.0")
+
+    def test_raises_when_pip_fails(self) -> None:
+        osp._pymupdf_ready = False
+        with patch.object(osp, "_try_import_pymupdf", return_value=False):
+            with patch.object(
+                osp, "pip_install", side_effect=RuntimeError("no network")
+            ):
+                with self.assertRaises(RuntimeError) as ctx:
+                    ensure_pymupdf()
+        self.assertIn("pymupdf", str(ctx.exception).casefold())
+        self.assertFalse(osp._pymupdf_ready)
+
+
+class BuildFileFallbackTest(unittest.TestCase):
+    def test_pdf_fallback_when_pymupdf_missing(self) -> None:
+        labels = MagicMock()
+        labels.fetch_label_paths.return_value = ["/tmp/ozon-labels.pdf"]
+        client = MagicMock()
+        detail = {"name": "S", "orders": []}
+        with patch.object(
+            osp, "ensure_pymupdf", side_effect=RuntimeError("no pymupdf")
+        ):
+            path = osp.build_stickers_print_file(
+                labels,
+                client,
+                detail,
+                ["PN-1"],
+                source_id=7,
+            )
+        self.assertEqual(path, "/tmp/ozon-labels.pdf")
+        labels.fetch_label_paths.assert_called_once()
+        self.assertEqual(labels.fetch_label_paths.call_args[0][1], 7)
 
 
 class GroupByArticleTest(unittest.TestCase):

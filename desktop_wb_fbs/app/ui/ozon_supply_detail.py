@@ -121,6 +121,7 @@ class _LabelPrintWorker(QThread):
                 self.client,
                 detail,
                 nums,
+                source_id=self.source_id,
                 source_name=self.source_name,
                 include_cover_and_separators=self.include_cover_and_separators,
                 progress=_label_prog,

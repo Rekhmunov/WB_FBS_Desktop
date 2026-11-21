@@ -204,6 +204,36 @@ def run() -> int:
     app.setFont(body_font(14))
     install_text_copy_support(app)
 
+    # Soft deps (pymupdf, …): install once at open if missing; skip if present.
+    try:
+        from app.runtime_deps import ensure_runtime_deps, missing_soft_deps
+
+        if missing_soft_deps():
+            from PyQt5.QtWidgets import QProgressDialog
+
+            dlg = QProgressDialog(
+                "Проверка зависимостей…", None, 0, 0, None
+            )
+            dlg.setWindowTitle(APP_NAME)
+            dlg.setWindowModality(Qt.ApplicationModal)
+            dlg.setMinimumDuration(0)
+            dlg.setCancelButton(None)
+            dlg.show()
+            app.processEvents()
+
+            def _dep_status(msg: str) -> None:
+                dlg.setLabelText(msg)
+                app.processEvents()
+
+            installed = ensure_runtime_deps(status=_dep_status)
+            dlg.close()
+            if installed:
+                diag_write("app.deps.installed", packages=installed)
+        else:
+            diag_write("app.deps.ok", packages=[])
+    except Exception as dep_exc:
+        diag_write("app.deps.error", error=str(dep_exc))
+
     db = Database()
     db.init_schema()
 

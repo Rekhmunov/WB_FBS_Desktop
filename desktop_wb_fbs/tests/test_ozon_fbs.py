@@ -64,6 +64,203 @@ class OzonCarriageClientParseTest(unittest.TestCase):
         self.assertEqual(str(carriage.get("id")), "99")
         self.assertEqual(carriage.get("postings_count"), 3)
 
+
+class OzonPostingV4ClientTest(unittest.TestCase):
+    """v3 list endpoints are gone — client must use v4 + cursor pages."""
+
+    def test_postings_page_parses_flat_v4(self) -> None:
+        from app.ozon.client import OzonFbsClient
+
+        postings, has_next, cursor, count = OzonFbsClient._postings_page(
+            {
+                "postings": [{"posting_number": "PN-1"}],
+                "has_next": True,
+                "cursor": "cur-1",
+                "count": 42,
+            }
+        )
+        self.assertEqual(len(postings), 1)
+        self.assertTrue(has_next)
+        self.assertEqual(cursor, "cur-1")
+        self.assertEqual(count, 42)
+
+    def test_postings_page_legacy_result_wrap(self) -> None:
+        from app.ozon.client import OzonFbsClient
+
+        postings, has_next, cursor, count = OzonFbsClient._postings_page(
+            {
+                "result": {
+                    "postings": [{"posting_number": "PN-2"}],
+                    "has_next": False,
+                    "cursor": "",
+                    "count": 1,
+                }
+            }
+        )
+        self.assertEqual(postings[0]["posting_number"], "PN-2")
+        self.assertFalse(has_next)
+        self.assertEqual(cursor, "")
+        self.assertEqual(count, 1)
+
+    def test_list_postings_uses_v4_and_cursor(self) -> None:
+        from unittest.mock import patch
+
+        from app.ozon.client import OzonFbsClient
+
+        client = OzonFbsClient("1", "k")
+        calls = []
+
+        def _fake(method, path, body=None):
+            calls.append((method, path, dict(body or {})))
+            if len(calls) == 1:
+                return {
+                    "postings": [{"posting_number": "A"}],
+                    "has_next": True,
+                    "cursor": "c1",
+                }
+            return {
+                "postings": [{"posting_number": "B"}],
+                "has_next": False,
+                "cursor": "c2",
+            }
+
+        with patch.object(client, "_request", side_effect=_fake):
+            page1, has_next, cursor = client.list_postings(
+                since="2026-01-01T00:00:00Z",
+                to="2026-01-02T00:00:00Z",
+                limit=100,
+            )
+            page2, has_next2, cursor2 = client.list_postings(
+                since="2026-01-01T00:00:00Z",
+                to="2026-01-02T00:00:00Z",
+                limit=100,
+                cursor=cursor,
+            )
+
+        self.assertEqual(calls[0][1], "/v4/posting/fbs/list")
+        self.assertNotIn("offset", calls[0][2])
+        self.assertEqual([p["posting_number"] for p in page1], ["A"])
+        self.assertTrue(has_next)
+        self.assertEqual(cursor, "c1")
+        self.assertEqual(calls[1][2].get("cursor"), "c1")
+        self.assertEqual([p["posting_number"] for p in page2], ["B"])
+        self.assertFalse(has_next2)
+        self.assertEqual(cursor2, "c2")
+
+    def test_list_unfulfilled_uses_v4_and_cursor(self) -> None:
+        from unittest.mock import patch
+
+        from app.ozon.client import OzonFbsClient
+
+        client = OzonFbsClient("1", "k")
+        calls = []
+
+        def _fake(method, path, body=None):
+            calls.append((path, dict(body or {})))
+            return {
+                "postings": [{"posting_number": "U1"}],
+                "has_next": False,
+                "cursor": "done",
+                "count": 1,
+            }
+
+        with patch.object(client, "_request", side_effect=_fake):
+            posts, count, cursor, has_next = client.list_unfulfilled(
+                cutoff_from="2026-01-01T00:00:00Z",
+                cutoff_to="2026-01-08T00:00:00Z",
+                cursor="prev",
+            )
+
+        self.assertEqual(calls[0][0], "/v4/posting/fbs/unfulfilled/list")
+        self.assertEqual(calls[0][1].get("cursor"), "prev")
+        self.assertNotIn("offset", calls[0][1])
+        self.assertEqual(posts[0]["posting_number"], "U1")
+        self.assertEqual(count, 1)
+        self.assertEqual(cursor, "done")
+        self.assertFalse(has_next)
+
+    def test_ping_uses_v4_list(self) -> None:
+        from unittest.mock import patch
+
+        from app.ozon.client import OzonFbsClient
+
+        client = OzonFbsClient("1", "k")
+        seen = []
+
+        def _fake(method, path, body=None):
+            seen.append(path)
+            return {"postings": [], "has_next": False, "cursor": ""}
+
+        with patch.object(client, "_request", side_effect=_fake):
+            client.ping()
+        self.assertEqual(seen, ["/v4/posting/fbs/list"])
+
+    def test_sync_unfulfilled_walks_cursor(self) -> None:
+        import os
+        import tempfile
+        from unittest.mock import MagicMock
+
+        from app.db import Database
+        from app.ozon.sync import sync_source
+
+        fd, path = tempfile.mkstemp(suffix=".sqlite")
+        os.close(fd)
+        try:
+            db = Database(path)
+            db.init_schema()
+            with db.connect() as conn:
+                conn.execute(
+                    """
+                    INSERT INTO supply_sources(
+                        name, marketplace, client_id, api_key, is_enabled,
+                        lookback_days, created_at
+                    ) VALUES ('Озон', 'ozon', '1', 'k', 1, 2, '2026-01-01')
+                    """
+                )
+                sid = int(conn.execute("SELECT last_insert_rowid()").fetchone()[0])
+                conn.commit()
+
+            client = MagicMock()
+            client.ping.return_value = {}
+            client.list_unfulfilled.side_effect = [
+                ([{"posting_number": "P1", "status": "awaiting_packaging",
+                   "products": [{"offer_id": "o", "sku": "1", "name": "n", "quantity": 1}]}],
+                 2, "c1", True),
+                ([{"posting_number": "P2", "status": "awaiting_packaging",
+                   "products": [{"offer_id": "o", "sku": "2", "name": "n", "quantity": 1}]}],
+                 2, "c2", False),
+            ]
+            client.iter_postings_window.return_value = iter([])
+            client.iter_carriage_delivery_methods.return_value = iter([])
+
+            import app.ozon.sync as sync_mod
+
+            original = sync_mod.OzonFbsClient
+            sync_mod.OzonFbsClient = MagicMock(return_value=client)
+            try:
+                result = sync_source(db, sid, "1", "k", 2)
+            finally:
+                sync_mod.OzonFbsClient = original
+
+            self.assertEqual(result.get("postings"), 2)
+            self.assertEqual(result.get("errors"), [])
+            self.assertEqual(client.list_unfulfilled.call_count, 2)
+            first_kw = client.list_unfulfilled.call_args_list[0].kwargs
+            second_kw = client.list_unfulfilled.call_args_list[1].kwargs
+            self.assertEqual(first_kw.get("cursor"), "")
+            self.assertEqual(second_kw.get("cursor"), "c1")
+            with db.connect() as conn:
+                n = conn.execute(
+                    "SELECT COUNT(*) AS c FROM ozon_fbs_postings WHERE source_id = ?",
+                    (sid,),
+                ).fetchone()["c"]
+            self.assertEqual(int(n), 2)
+        finally:
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+
 class OzonShipPackagesTest(unittest.TestCase):
     def test_build_ship_packages_multi(self) -> None:
         from app.services.ozon_ship import build_ship_packages

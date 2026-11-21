@@ -55,17 +55,44 @@ class OzonFbsClient:
                 "Ozon FBS HTTP {}: {}".format(exc.code, err_body or exc.reason)
             ) from exc
 
+    @staticmethod
+    def _postings_page(
+        data: Any,
+    ) -> Tuple[List[Dict[str, Any]], bool, str, int]:
+        """Parse v4 posting list payloads (flat) with legacy ``result`` fallback.
+
+        Returns ``(postings, has_next, cursor, count)``. ``count`` is 0 when
+        the endpoint does not provide a total (``/v4/posting/fbs/list``).
+        """
+        if not isinstance(data, dict):
+            return [], False, "", 0
+        payload = data
+        nested = data.get("result")
+        if isinstance(nested, dict) and (
+            "postings" in nested or "has_next" in nested or "cursor" in nested
+        ):
+            payload = nested
+        postings = payload.get("postings") if isinstance(payload, dict) else None
+        if not isinstance(postings, list):
+            postings = []
+        has_next = bool(payload.get("has_next")) if isinstance(payload, dict) else False
+        cursor = str(payload.get("cursor") or "") if isinstance(payload, dict) else ""
+        try:
+            count = int(payload.get("count") or 0) if isinstance(payload, dict) else 0
+        except (TypeError, ValueError):
+            count = 0
+        return list(postings), has_next, cursor, count
+
     def ping(self) -> Dict[str, Any]:
-        """Lightweight check — list postings for last day."""
+        """Lightweight check — list postings for last day (v4)."""
         since, to = lookback_window(1)
         data = self._request(
             "POST",
-            "/v3/posting/fbs/list",
+            "/v4/posting/fbs/list",
             {
                 "dir": "DESC",
                 "filter": {"since": iso_z(since), "to": iso_z(to)},
                 "limit": 1,
-                "offset": 0,
                 "with": {
                     "analytics_data": False,
                     "barcodes": False,
@@ -77,28 +104,33 @@ class OzonFbsClient:
         return data if isinstance(data, dict) else {}
 
     def list_unfulfilled(
-        self, *, limit: int = 100, offset: int = 0, cutoff_from: str, cutoff_to: str
-    ) -> Tuple[List[Dict[str, Any]], int]:
-        data = self._request(
-            "POST",
-            "/v3/posting/fbs/unfulfilled/list",
-            {
-                "dir": "ASC",
-                "filter": {"cutoff_from": cutoff_from, "cutoff_to": cutoff_to},
-                "limit": max(1, min(int(limit), 1000)),
-                "offset": max(0, int(offset)),
-                "with": {
-                    "analytics_data": True,
-                    "barcodes": True,
-                    "financial_data": False,
-                    "translit": False,
-                },
+        self,
+        *,
+        limit: int = 100,
+        cursor: str = "",
+        cutoff_from: str,
+        cutoff_to: str,
+    ) -> Tuple[List[Dict[str, Any]], int, str, bool]:
+        """POST /v4/posting/fbs/unfulfilled/list — cursor pagination.
+
+        Returns ``(postings, count, next_cursor, has_next)``.
+        """
+        body = {
+            "dir": "ASC",
+            "filter": {"cutoff_from": cutoff_from, "cutoff_to": cutoff_to},
+            "limit": max(1, min(int(limit), 1000)),
+            "with": {
+                "analytics_data": True,
+                "barcodes": True,
+                "financial_data": False,
+                "translit": False,
             },
-        )
-        result = data.get("result") if isinstance(data, dict) else {}
-        postings = result.get("postings") if isinstance(result, dict) else []
-        count = int(result.get("count") or 0) if isinstance(result, dict) else 0
-        return list(postings or []), count
+        }
+        if cursor:
+            body["cursor"] = str(cursor)
+        data = self._request("POST", "/v4/posting/fbs/unfulfilled/list", body)
+        postings, has_next, next_cursor, count = self._postings_page(data)
+        return postings, count, next_cursor, has_next
 
     def list_postings(
         self,
@@ -106,32 +138,32 @@ class OzonFbsClient:
         since: str,
         to: str,
         limit: int = 100,
-        offset: int = 0,
+        cursor: str = "",
         status: Optional[str] = None,
-    ) -> Tuple[List[Dict[str, Any]], bool]:
-        filt = {"since": since, "to": to}
+    ) -> Tuple[List[Dict[str, Any]], bool, str]:
+        """POST /v4/posting/fbs/list — cursor pagination (offset is ignored by API).
+
+        Returns ``(postings, has_next, next_cursor)``.
+        """
+        filt = {"since": since, "to": to}  # type: Dict[str, Any]
         if status:
             filt["status"] = str(status)
-        data = self._request(
-            "POST",
-            "/v3/posting/fbs/list",
-            {
-                "dir": "DESC",
-                "filter": filt,
-                "limit": max(1, min(int(limit), 1000)),
-                "offset": max(0, int(offset)),
-                "with": {
-                    "analytics_data": True,
-                    "barcodes": True,
-                    "financial_data": False,
-                    "translit": False,
-                },
+        body = {
+            "dir": "DESC",
+            "filter": filt,
+            "limit": max(1, min(int(limit), 1000)),
+            "with": {
+                "analytics_data": True,
+                "barcodes": True,
+                "financial_data": False,
+                "translit": False,
             },
-        )
-        result = data.get("result") if isinstance(data, dict) else {}
-        postings = result.get("postings") if isinstance(result, dict) else []
-        has_next = bool(result.get("has_next")) if isinstance(result, dict) else False
-        return list(postings or []), has_next
+        }
+        if cursor:
+            body["cursor"] = str(cursor)
+        data = self._request("POST", "/v4/posting/fbs/list", body)
+        postings, has_next, next_cursor, _count = self._postings_page(data)
+        return postings, has_next, next_cursor
 
     def get_posting(self, posting_number: str) -> Dict[str, Any]:
         data = self._request(
@@ -195,16 +227,15 @@ class OzonFbsClient:
             span = min(remaining, 90)
             start = end - timedelta(days=span)
             since, to = iso_z(start), iso_z(end)
-            offset = 0
+            cursor = ""
             while True:
-                postings, has_next = self.list_postings(
-                    since=since, to=to, limit=100, offset=offset, status=status
+                postings, has_next, cursor = self.list_postings(
+                    since=since, to=to, limit=100, cursor=cursor, status=status
                 )
                 if postings:
                     yield postings
-                if not has_next:
+                if not has_next or not cursor:
                     break
-                offset += len(postings)
                 time.sleep(sleep_s)
             end = start
             remaining -= span

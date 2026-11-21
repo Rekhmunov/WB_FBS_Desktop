@@ -244,13 +244,13 @@ def sync_source(
     since, to = lookback_window(lookback_days)
     _prog(progress, "Необработанные отправления…", count)
     try:
-        offset = 0
+        cursor = ""
         while True:
             if stopped():
                 return {"postings": count, "carriages": 0, "errors": errors, "stopped": True}
-            batch, total = client.list_unfulfilled(
+            batch, _total, cursor, has_next = client.list_unfulfilled(
                 limit=100,
-                offset=offset,
+                cursor=cursor,
                 cutoff_from=iso_z(since),
                 cutoff_to=iso_z(to),
             )
@@ -266,8 +266,7 @@ def sync_source(
                 upsert_posting(db, source_id, posting)
                 count += 1
             _prog(progress, "Необработанные… {}".format(count), count)
-            offset += len(batch)
-            if offset >= total or len(batch) < 100:
+            if not has_next or not cursor:
                 break
     except Exception as exc:
         errors.append("unfulfilled: {}".format(exc))

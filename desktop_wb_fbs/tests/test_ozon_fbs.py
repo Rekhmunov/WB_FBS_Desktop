@@ -1820,10 +1820,9 @@ class OzonPackagingStaleSyncTest(unittest.TestCase):
             except OSError:
                 pass
 
-    def test_reconcile_stale_portal_packaging_refreshes_via_get(self) -> None:
+    def test_reconcile_stale_portal_packaging_bulk_clears_without_get(self) -> None:
         import os
         import tempfile
-        from unittest.mock import MagicMock
 
         from app.db import Database
         from app.ozon.sync import reconcile_packaging_to_portal_set
@@ -1853,37 +1852,60 @@ class OzonPackagingStaleSyncTest(unittest.TestCase):
                     (?, 'ON-PORTAL', 'awaiting_packaging', 'awaiting_packaging',
                      1, '', '[{"sku":1,"quantity":1}]', 't'),
                     (?, 'STALE', 'awaiting_packaging', 'awaiting_packaging',
-                     1, '', '[{"sku":2,"quantity":1}]', 't')
+                     1, '', '[{"sku":2,"quantity":1}]', 't'),
+                    (?, 'IN-SUPPLY', 'awaiting_packaging', 'awaiting_packaging',
+                     1, 'OZ-9', '[{"sku":3,"quantity":1}]', 't')
                     """,
-                    (sid, sid),
+                    (sid, sid, sid),
                 )
                 conn.commit()
 
-            client = MagicMock()
-            client.get_posting.return_value = {
-                "posting_number": "STALE",
-                "status": "awaiting_deliver",
-                "products": [{"sku": 2, "offer_id": "o", "name": "n", "quantity": 1}],
-            }
             fixed = reconcile_packaging_to_portal_set(
-                db, sid, client, seen_packaging={"ON-PORTAL"}
+                db, sid, seen_packaging={"ON-PORTAL"}
             )
             self.assertEqual(fixed, 1)
-            client.get_posting.assert_called_once_with("STALE")
             counts = OzonOrdersService(db).tab_counts(sid)
             self.assertEqual(counts.get("awaiting_packaging"), 1)
+            # Free stale row archived; in-supply packaging untouched; no deliver orphans.
+            self.assertEqual(counts.get("awaiting_deliver"), 0)
             with db.connect() as conn:
                 stale = conn.execute(
-                    "SELECT tab, status FROM ozon_fbs_postings "
+                    "SELECT tab, status, cancel_reason FROM ozon_fbs_postings "
                     "WHERE posting_number='STALE'"
                 ).fetchone()
-            self.assertEqual(stale["tab"], "awaiting_deliver")
-            self.assertEqual(stale["status"], "awaiting_deliver")
+                kept = conn.execute(
+                    "SELECT tab, status, supply_id FROM ozon_fbs_postings "
+                    "WHERE posting_number='IN-SUPPLY'"
+                ).fetchone()
+            self.assertEqual(stale["tab"], "cancelled")
+            self.assertEqual(stale["status"], "cancelled")
+            self.assertIn("портале", stale["cancel_reason"])
+            self.assertEqual(kept["tab"], "awaiting_packaging")
+            self.assertEqual(kept["supply_id"], "OZ-9")
         finally:
             try:
                 os.unlink(path)
             except OSError:
                 pass
+
+    def test_iter_postings_window_clamps_lookback_to_30(self) -> None:
+        from datetime import datetime
+        from unittest.mock import MagicMock, patch
+
+        from app.ozon.client import OzonFbsClient
+
+        client = OzonFbsClient("1", "k")
+        client.list_postings = MagicMock(return_value=([], False, ""))
+        with patch("app.ozon.client.time.sleep"):
+            list(client.iter_postings_window(90, status="awaiting_packaging"))
+        # Settings/UI cap is 30d — do not walk a hidden 90d window.
+        self.assertEqual(client.list_postings.call_count, 1)
+        kwargs = client.list_postings.call_args.kwargs
+        since_dt = datetime.fromisoformat(
+            str(kwargs["since"]).replace("Z", "+00:00")
+        )
+        to_dt = datetime.fromisoformat(str(kwargs["to"]).replace("Z", "+00:00"))
+        self.assertLessEqual((to_dt - since_dt).total_seconds(), 30 * 86400 + 1)
 
     def test_preview_multi_counts_only_multi_units(self) -> None:
         import os

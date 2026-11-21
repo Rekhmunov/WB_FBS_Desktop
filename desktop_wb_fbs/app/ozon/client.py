@@ -328,17 +328,11 @@ class OzonFbsClient:
         return result if isinstance(result, dict) else {}
 
     def package_label_create(self, posting_numbers: List[str]) -> List[Dict[str, Any]]:
-        nums = [str(p).strip() for p in posting_numbers if str(p).strip()]
-        if not nums:
-            return []
-        data = self._request(
-            "POST",
-            "/v2/posting/fbs/package-label/create",
-            {"posting_number": nums},
+        """Obsolete v2 create — kept for diagnostics; do not use for printing."""
+        raise RuntimeError(
+            "Метод /v2/posting/fbs/package-label/create устарел. "
+            "Используйте /v3/posting/fbs/package-label/create."
         )
-        result = data.get("result") if isinstance(data, dict) else {}
-        tasks = result.get("tasks") if isinstance(result, dict) else []
-        return list(tasks or []) if isinstance(tasks, list) else []
 
     def package_label_create_v3(
         self, posting_numbers: List[str]
@@ -346,7 +340,7 @@ class OzonFbsClient:
         """POST /v3/posting/fbs/package-label/create — async labels (web parity)."""
         nums = [str(p).strip() for p in posting_numbers if str(p).strip()]
         if not nums:
-            return []
+            raise RuntimeError("Не указаны отправления для печати")
         if len(nums) > 1000:
             raise RuntimeError(
                 "Ozon принимает не больше 1000 отправлений за одно задание"
@@ -363,12 +357,42 @@ class OzonFbsClient:
                 result = data.get("result")
                 if isinstance(result, dict):
                     raw = result.get("tasks")
+                    if raw is None and (
+                        result.get("task_id") is not None
+                        or result.get("taskId") is not None
+                    ):
+                        raw = [result]
                 elif isinstance(result, list):
                     raw = result
+            if raw is None and (
+                data.get("task_id") is not None or data.get("taskId") is not None
+            ):
+                raw = [data]
             if isinstance(raw, list):
                 for item in raw:
-                    if isinstance(item, dict):
-                        tasks.append(item)
+                    if not isinstance(item, dict):
+                        continue
+                    tid = item.get("task_id")
+                    if tid is None:
+                        tid = item.get("taskId")
+                    if tid is None:
+                        continue
+                    try:
+                        task_id = int(str(tid).strip())
+                    except (TypeError, ValueError):
+                        continue
+                    tasks.append(
+                        {
+                            "task_id": task_id,
+                            "task_type": str(
+                                item.get("task_type") or item.get("taskType") or ""
+                            )
+                            .strip()
+                            .lower(),
+                        }
+                    )
+        if not tasks:
+            raise RuntimeError("Ozon не вернул задание на формирование этикеток")
         return tasks
 
     def package_label_get_v2(self, task_id: int) -> Dict[str, Any]:
@@ -378,10 +402,7 @@ class OzonFbsClient:
             "/v2/posting/fbs/package-label/get",
             {"task_id": int(task_id)},
         )
-        if not isinstance(data, dict):
-            return {}
-        result = data.get("result")
-        return result if isinstance(result, dict) else data
+        return data if isinstance(data, dict) else {}
 
     def split_posting(
         self, posting_number: str, postings: List[Dict[str, Any]]
@@ -398,47 +419,12 @@ class OzonFbsClient:
         return data if isinstance(data, dict) else {}
 
     def package_label_fetch(self, posting_numbers: List[str]) -> bytes:
-        """Fetch label PDF/ZIP for postings (v2)."""
-        nums = [str(p).strip() for p in posting_numbers if str(p).strip()]
-        if not nums:
-            return b""
-        url = "{}{}".format(OZON_API, "/v2/posting/fbs/package-label")
-        data = json.dumps({"posting_number": nums}).encode("utf-8")
-        headers = {
-            "Client-Id": self.client_id,
-            "Api-Key": self.api_key,
-            "Accept": "application/pdf,application/json",
-            "Content-Type": "application/json",
-            "User-Agent": "FeedPilot-Desktop-OzonFBS/0.1",
-        }
-        req = Request(url, method="POST", headers=headers, data=data)
-        try:
-            with urlopen_https(req, timeout=60) as resp:
-                payload = resp.read()
-                ctype = str(resp.headers.get("Content-Type") or "").lower()
-                if "json" in ctype:
-                    parsed = json.loads(payload.decode("utf-8"))
-                    file_b64 = ""
-                    if isinstance(parsed, dict):
-                        file_b64 = str(
-                            parsed.get("file_content")
-                            or (parsed.get("result") or {}).get("file_content")
-                            or ""
-                        )
-                    if file_b64:
-                        import base64
-
-                        return base64.b64decode(file_b64)
-                return payload
-        except HTTPError as exc:
-            err_body = ""
-            try:
-                err_body = exc.read().decode("utf-8", errors="replace")[:500]
-            except Exception:
-                pass
-            raise RuntimeError(
-                "Ozon label HTTP {}: {}".format(exc.code, err_body or exc.reason)
-            ) from exc
+        """Obsolete sync /v2/posting/fbs/package-label — removed (HTTP 400)."""
+        del posting_numbers
+        raise RuntimeError(
+            "Синхронный метод /v2/posting/fbs/package-label устарел (obsolete). "
+            "Печатайте стикеры через /v3/.../create и /v2/.../get."
+        )
 
     def ship_posting(
         self,

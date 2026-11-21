@@ -220,7 +220,7 @@ class OzonStickersService:
         # Embed PDF open hint into sheet
         sheet_html = sheet_html.replace(
             "PDF этикеток Ozon печатайте отдельно кнопкой «Этикетки»",
-            "PDF этикеток Ozon открыт рядом · привязано QR: {}".format(bound),
+            "PDF этикеток Ozon (v3) открыт рядом · привязано QR: {}".format(bound),
         )
         return {
             "ok": True,

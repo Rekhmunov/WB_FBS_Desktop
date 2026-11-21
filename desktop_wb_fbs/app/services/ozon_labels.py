@@ -1,17 +1,144 @@
 # -*- coding: utf-8 -*-
-"""Ozon FBS package labels with task polling and disk cache."""
+"""Ozon FBS package labels via async v3 create + v2 get (web archive parity).
+
+Never calls obsolete sync POST /v2/posting/fbs/package-label.
+"""
 from __future__ import annotations
 
 import hashlib
-import json
 import os
 import tempfile
 import time
-from typing import List, Optional, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Sequence
 
 from app.db import Database
 from app.ozon import utc_now
 from app.ozon.client import OzonFbsClient
+
+# Ozon create accepts ≤1000; archive new-label raster uses 200 — keep ≤1000.
+_LABEL_BATCH = 1000
+_PACKAGE_LABEL_TASK_FAIL = frozenset(
+    {"error", "failed", "fail", "cancelled", "canceled"}
+)
+
+
+def parse_package_label_create_tasks(
+    data: Optional[Mapping[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Normalize v3 create response (tolerate wrapped/old shapes)."""
+    if not isinstance(data, Mapping):
+        return []
+    raw_tasks = data.get("tasks")
+    if not isinstance(raw_tasks, list):
+        nested = data.get("result")
+        if isinstance(nested, Mapping):
+            raw_tasks = nested.get("tasks")
+            if not isinstance(raw_tasks, list):
+                tid = nested.get("task_id") or nested.get("taskId")
+                if tid is not None:
+                    raw_tasks = [nested]
+        elif isinstance(nested, list):
+            raw_tasks = nested
+    if not isinstance(raw_tasks, list):
+        tid = data.get("task_id") or data.get("taskId")
+        if tid is not None:
+            raw_tasks = [data]
+        else:
+            return []
+    out = []  # type: List[Dict[str, Any]]
+    for item in raw_tasks:
+        if not isinstance(item, Mapping):
+            continue
+        tid = item.get("task_id")
+        if tid is None:
+            tid = item.get("taskId")
+        if tid is None:
+            continue
+        try:
+            task_id = int(str(tid).strip())
+        except (TypeError, ValueError):
+            continue
+        task_type = str(
+            item.get("task_type") or item.get("taskType") or ""
+        ).strip().lower()
+        out.append({"task_id": task_id, "task_type": task_type})
+    return out
+
+
+def select_small_label_task(tasks: Sequence[Mapping[str, Any]]) -> Dict[str, Any]:
+    """Prefer 58×40 ``small_label`` when Ozon returns both sizes."""
+    clean = [
+        dict(t)
+        for t in tasks
+        if isinstance(t, Mapping) and t.get("task_id") is not None
+    ]
+    if not clean:
+        raise RuntimeError("Ozon не вернул задание на формирование этикеток")
+    for t in clean:
+        tt = str(t.get("task_type") or "").strip().lower()
+        if tt in ("small_label", "small"):
+            return {"task_id": int(t["task_id"]), "task_type": tt}
+    first = clean[0]
+    return {
+        "task_id": int(first["task_id"]),
+        "task_type": str(first.get("task_type") or "").strip().lower(),
+    }
+
+
+def parse_package_label_get_result(
+    data: Optional[Mapping[str, Any]],
+) -> Dict[str, Any]:
+    """Normalize v2 get response; ``status`` may be a nested object with ``code``."""
+    if not isinstance(data, Mapping):
+        return {}
+    src = data  # type: Mapping[str, Any]
+    nested = data.get("result")
+    if isinstance(nested, Mapping) and not (
+        data.get("file_url") or data.get("fileUrl") or data.get("status")
+    ):
+        src = nested
+    file_url = str(
+        src.get("file_url") or src.get("fileUrl") or src.get("file") or ""
+    ).strip()
+    status_obj = src.get("status") if isinstance(src.get("status"), Mapping) else {}
+    error_obj = src.get("error") if isinstance(src.get("error"), Mapping) else {}
+    status_code = str(
+        (status_obj.get("code") if isinstance(status_obj, Mapping) else "")
+        or src.get("status_code")
+        or (src.get("status") if isinstance(src.get("status"), str) else "")
+        or ""
+    ).strip().lower()
+    return {
+        "file_url": file_url,
+        "status_code": status_code,
+        "error_code": str(
+            (error_obj.get("code") if isinstance(error_obj, Mapping) else "")
+            or ""
+        ).strip(),
+        "error_message": str(
+            (error_obj.get("message") if isinstance(error_obj, Mapping) else "")
+            or src.get("error_message")
+            or ""
+        ).strip(),
+        "raw": dict(data),
+    }
+
+
+def package_label_task_is_failed(parsed: Mapping[str, Any]) -> bool:
+    if str(parsed.get("file_url") or "").strip():
+        return False
+    err = str(
+        parsed.get("error_message") or parsed.get("error_code") or ""
+    ).strip()
+    if err:
+        return True
+    return str(parsed.get("status_code") or "").strip().lower() in _PACKAGE_LABEL_TASK_FAIL
+
+
+def package_label_task_is_ready(parsed: Mapping[str, Any]) -> bool:
+    return bool(str(parsed.get("file_url") or "").strip()) and not package_label_task_is_failed(
+        parsed
+    )
 
 
 class OzonLabelService:
@@ -60,8 +187,27 @@ class OzonLabelService:
         posting_numbers: List[str],
         *,
         use_cache: bool = True,
-        timeout_s: float = 90.0,
+        timeout_s: float = 180.0,
     ) -> str:
+        """Download label PDF(s); returns path to the first (or only) file."""
+        paths = self.fetch_label_paths(
+            client,
+            source_id,
+            posting_numbers,
+            use_cache=use_cache,
+            timeout_s=timeout_s,
+        )
+        return paths[0]
+
+    def fetch_label_paths(
+        self,
+        client: OzonFbsClient,
+        source_id: int,
+        posting_numbers: List[str],
+        *,
+        use_cache: bool = True,
+        timeout_s: float = 180.0,
+    ) -> List[str]:
         nums = [str(p).strip() for p in posting_numbers if str(p).strip()]
         if not nums:
             raise ValueError("Нет отправлений для этикеток")
@@ -69,70 +215,91 @@ class OzonLabelService:
         if use_cache:
             cached = self._cache_get(source_id, key)
             if cached:
-                return cached
-        # Prefer v3 create (web parity), fall back to v2 create / sync fetch.
-        tasks = []  # type: List
-        try:
-            tasks = client.package_label_create_v3(nums)
-        except Exception:
-            tasks = []
-        if not tasks:
-            tasks = client.package_label_create(nums)
-        task_ids = []
-        for task in tasks:
-            if isinstance(task, dict) and task.get("task_id") is not None:
-                task_ids.append(int(task["task_id"]))
-        file_path = ""
-        if task_ids:
-            file_path = self._poll_tasks(client, task_ids, timeout_s=timeout_s)
-        if not file_path:
-            data = client.package_label_fetch(nums)
-            if not data:
-                raise RuntimeError("Ozon не вернул файл этикеток")
-            file_path = self._write_bytes(data)
-        if use_cache and file_path:
-            self._cache_put(source_id, key, file_path)
-        return file_path
+                return [cached]
+        paths = []  # type: List[str]
+        for i in range(0, len(nums), _LABEL_BATCH):
+            batch = nums[i : i + _LABEL_BATCH]
+            pdf = self._fetch_async_pdf(client, batch, timeout_s=timeout_s)
+            paths.append(self._write_bytes(pdf))
+        if use_cache and paths:
+            # Cache the first path for the full set (parts stay on disk beside it).
+            self._cache_put(source_id, key, paths[0])
+            if len(paths) > 1:
+                for idx, part in enumerate(paths[1:], start=2):
+                    self._cache_put(
+                        source_id,
+                        "{}#{}".format(key, idx),
+                        part,
+                    )
+        return paths
 
-    def _poll_tasks(
+    def _fetch_async_pdf(
         self,
         client: OzonFbsClient,
-        task_ids: List[int],
+        posting_numbers: List[str],
         *,
         timeout_s: float,
-    ) -> str:
+    ) -> bytes:
+        """v3 create → prefer small_label → poll v2 get → download PDF."""
+        tasks = client.package_label_create_v3(posting_numbers)
+        normalized = parse_package_label_create_tasks({"tasks": tasks})
+        if not normalized:
+            # Client may already return normalized dicts.
+            normalized = parse_package_label_create_tasks(
+                {"tasks": list(tasks or [])}
+            )
+        if not normalized and tasks:
+            # Last resort: map raw task dicts.
+            for item in tasks:
+                if isinstance(item, dict) and item.get("task_id") is not None:
+                    try:
+                        normalized.append(
+                            {
+                                "task_id": int(item["task_id"]),
+                                "task_type": str(
+                                    item.get("task_type") or ""
+                                ).strip().lower(),
+                            }
+                        )
+                    except (TypeError, ValueError):
+                        continue
+        task = select_small_label_task(normalized)
+        return self._poll_task_pdf(
+            client, int(task["task_id"]), timeout_s=timeout_s
+        )
+
+    def _poll_task_pdf(
+        self,
+        client: OzonFbsClient,
+        task_id: int,
+        *,
+        timeout_s: float,
+    ) -> bytes:
         deadline = time.monotonic() + max(5.0, float(timeout_s))
-        last_status = ""
+        last_code = ""
         while time.monotonic() < deadline:
-            for tid in task_ids:
-                status = {}
-                try:
-                    status = client.package_label_get_v2(int(tid))
-                except Exception:
-                    status = client.package_label_task_status(int(tid))
-                st = str(status.get("status") or "").strip().lower()
-                last_status = st or last_status
-                url = str(status.get("file_url") or "").strip()
-                if url and st not in ("error", "failed"):
-                    data = client.fetch_url_bytes(url)
-                    if data:
-                        return self._write_bytes(data)
-                if st in ("completed", "done", "ready") and url:
-                    data = client.fetch_url_bytes(url)
-                    if data:
-                        return self._write_bytes(data)
-                if st in ("error", "failed"):
-                    err = str(
-                        status.get("error")
-                        or status.get("error_message")
-                        or "error"
-                    )
-                    raise RuntimeError(
-                        "Ошибка формирования этикеток: {}".format(err)
-                    )
+            raw = client.package_label_get_v2(int(task_id))
+            parsed = parse_package_label_get_result(raw)
+            last_code = str(parsed.get("status_code") or "")
+            if package_label_task_is_failed(parsed):
+                err = str(
+                    parsed.get("error_message")
+                    or parsed.get("error_code")
+                    or last_code
+                    or "error"
+                )
+                raise RuntimeError(
+                    "Ошибка формирования этикеток: {}".format(err)
+                )
+            if package_label_task_is_ready(parsed):
+                url = str(parsed.get("file_url") or "").strip()
+                data = client.fetch_url_bytes(url)
+                if not data:
+                    raise RuntimeError("Ozon вернул пустой файл этикеток")
+                return data
             time.sleep(1.5)
         raise RuntimeError(
-            "Таймаут ожидания этикеток (статус: {})".format(last_status or "—")
+            "Таймаут ожидания этикеток (статус: {})".format(last_code or "—")
         )
 
     @staticmethod

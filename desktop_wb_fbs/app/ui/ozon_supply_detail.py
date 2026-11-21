@@ -41,7 +41,7 @@ from app.ui.format_helpers import build_product_cell_widget
 
 
 class _LabelPrintWorker(QThread):
-    ready = pyqtSignal(str)
+    ready = pyqtSignal(list)
     failed = pyqtSignal(str)
 
     def __init__(
@@ -70,7 +70,8 @@ class _LabelPrintWorker(QThread):
                 )
             except Exception:
                 pass
-            path = self.labels.fetch_labels(
+            # Web archive «Стикеры»: v3 create + v2 get only (no obsolete sync).
+            paths = self.labels.fetch_label_paths(
                 self.client, self.source_id, self.posting_numbers
             )
             # Web: overwrite sticker_* after package-label so scan matches PDF.
@@ -83,7 +84,7 @@ class _LabelPrintWorker(QThread):
                 )
             except Exception:
                 pass
-            self.ready.emit(path)
+            self.ready.emit(list(paths or []))
         except Exception as exc:
             self.failed.emit(str(exc))
 
@@ -131,39 +132,6 @@ class _SupplyHydrateWorker(QThread):
             self.failed.emit(str(exc))
 
 
-class _StickersPrintWorker(QThread):
-    ready = pyqtSignal(dict)
-    failed = pyqtSignal(str)
-
-    def __init__(
-        self,
-        stickers: Any,
-        client: OzonFbsClient,
-        source_id: int,
-        supply_id: str,
-        posting_numbers: List[str],
-        parent: Optional[QWidget] = None,
-    ) -> None:
-        super(_StickersPrintWorker, self).__init__(parent)
-        self.stickers = stickers
-        self.client = client
-        self.source_id = source_id
-        self.supply_id = supply_id
-        self.posting_numbers = list(posting_numbers or [])
-
-    def run(self) -> None:
-        try:
-            result = self.stickers.print_stickers(
-                self.client,
-                self.source_id,
-                self.supply_id,
-                self.posting_numbers,
-            )
-            self.ready.emit(result if isinstance(result, dict) else {})
-        except Exception as exc:
-            self.failed.emit(str(exc))
-
-
 class OzonSupplyDetailDialog(QDialog):
     def __init__(
         self,
@@ -193,7 +161,6 @@ class OzonSupplyDetailDialog(QDialog):
         self._detail = {}  # type: Dict[str, Any]
         self._rows = []  # type: List[Dict[str, Any]]
         self._label_worker = None  # type: Optional[_LabelPrintWorker]
-        self._stickers_worker = None  # type: Optional[_StickersPrintWorker]
         self._hydrate_worker = None  # type: Optional[_SupplyHydrateWorker]
         self.supply_mutated = False
         self._force_read_only = bool(read_only)
@@ -240,13 +207,13 @@ class OzonSupplyDetailDialog(QDialog):
         self.btn_picking = QPushButton("Лист подбора")
         self.btn_picking.setObjectName("secondary")
         self.btn_picking.clicked.connect(self.print_picking_list)
-        self.btn_stickers = QPushButton("Старые стикеры")
-        self.btn_stickers.setObjectName("secondary")
-        self.btn_stickers.setToolTip("Лист стикеров / QR (локальная печать)")
-        self.btn_stickers.clicked.connect(self.print_stickers_sheet)
+        # Archive: «Старые стикеры» (sync v2) hidden/removed — only «Стикеры»
+        # via /v3/posting/fbs/package-label/create + /v2/.../get.
         self.btn_labels = QPushButton("Стикеры")
         self.btn_labels.setObjectName("secondary")
-        self.btn_labels.setToolTip("Этикетка отправления Ozon (package-label)")
+        self.btn_labels.setToolTip(
+            "Этикетка отправления Ozon (v3 create + v2 get)"
+        )
         self.btn_labels.clicked.connect(self.print_labels)
         self.btn_containers = QPushButton("Грузоместа")
         self.btn_containers.setObjectName("secondary")
@@ -278,7 +245,6 @@ class OzonSupplyDetailDialog(QDialog):
         for b in (
             self.btn_cancelled,
             self.btn_picking,
-            self.btn_stickers,
             self.btn_labels,
             self.btn_containers,
             self.btn_mark,
@@ -328,7 +294,6 @@ class OzonSupplyDetailDialog(QDialog):
         return [
             self.btn_cancelled,
             self.btn_picking,
-            self.btn_stickers,
             self.btn_labels,
             self.btn_containers,
             self.btn_mark,
@@ -624,7 +589,7 @@ class OzonSupplyDetailDialog(QDialog):
         if self._label_worker and self._label_worker.isRunning():
             return
         self.btn_labels.setEnabled(False)
-        self.load_info.setText("Формирование этикеток Ozon…")
+        self.load_info.setText("Формирование стикеров Ozon (v3)…")
         worker = _LabelPrintWorker(
             self.labels,
             self.supplies,
@@ -640,13 +605,22 @@ class OzonSupplyDetailDialog(QDialog):
         worker.finished.connect(lambda: self.btn_labels.setEnabled(True))
         worker.start()
 
-    def _on_labels_ready(self, path: str) -> None:
-        self.load_info.setText("Этикетки: {}".format(path))
+    def _on_labels_ready(self, paths: object) -> None:
+        path_list = [str(p) for p in (paths or []) if str(p).strip()]
+        if not path_list:
+            QMessageBox.warning(self, "Стикеры", "Ozon не вернул файл этикеток")
+            return
+        self.load_info.setText(
+            "Стикеры: {} файл(ов)".format(len(path_list))
+            if len(path_list) > 1
+            else "Стикеры: {}".format(path_list[0])
+        )
         self.reload(hydrate=False)
-        QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
+        for path in path_list:
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
 
     def _on_labels_failed(self, message: str) -> None:
-        QMessageBox.warning(self, "Этикетки", str(message or "Ошибка"))
+        QMessageBox.warning(self, "Стикеры", str(message or "Ошибка"))
 
     def print_picking_list(self) -> None:
         html = self.supplies.render_picking_list_html(self._detail)
@@ -691,53 +665,6 @@ class OzonSupplyDetailDialog(QDialog):
             parent=self,
         )
         dlg.exec_()
-
-    def print_stickers_sheet(self) -> None:
-        pnums = self._posting_numbers()
-        if not pnums:
-            QMessageBox.information(self, "Стикеры", "Нет отправлений.")
-            return
-        if self._stickers_worker and self._stickers_worker.isRunning():
-            return
-        self.btn_stickers.setEnabled(False)
-        self.load_info.setText("PDF этикеток + привязка QR…")
-        worker = _StickersPrintWorker(
-            self.stickers,
-            self.client,
-            self.source_id,
-            self.supply_id,
-            pnums,
-            self,
-        )
-        self._stickers_worker = worker
-        worker.ready.connect(self._on_stickers_ready)
-        worker.failed.connect(self._on_stickers_failed)
-        worker.finished.connect(lambda: self.btn_stickers.setEnabled(True))
-        worker.start()
-
-    def _on_stickers_ready(self, result: object) -> None:
-        res = result if isinstance(result, dict) else {}
-        pdf_path = str(res.get("pdf_path") or "")
-        html = str(res.get("sheet_html") or "")
-        self.reload(hydrate=False)
-        if html:
-            fd, path = tempfile.mkstemp(suffix=".html", prefix="ozon-stickers-")
-            os.close(fd)
-            with open(path, "w", encoding="utf-8") as fh:
-                fh.write(html)
-            self.load_info.setText(
-                str(res.get("message") or "Стикеры: {}".format(path))
-            )
-            QDesktopServices.openUrl(QUrl.fromLocalFile(path))
-        if pdf_path:
-            QDesktopServices.openUrl(QUrl.fromLocalFile(pdf_path))
-        if not html and not pdf_path:
-            QMessageBox.information(
-                self, "Стикеры", str(res.get("message") or "Готово")
-            )
-
-    def _on_stickers_failed(self, message: str) -> None:
-        QMessageBox.warning(self, "Стикеры", str(message or "Ошибка"))
 
     def assign_driver(self) -> None:
         from app.services.supply_drivers import SupplyDriversService

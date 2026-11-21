@@ -1774,6 +1774,88 @@ class OzonPackagingStaleSyncTest(unittest.TestCase):
             except OSError:
                 pass
 
+    def test_upsert_carriage_does_not_demote_delivering(self) -> None:
+        """Carriage sync must not bounce «Доставляются» back to awaiting_deliver."""
+        import os
+        import tempfile
+
+        from app.db import Database
+        from app.ozon.sync import upsert_carriage
+        from app.services.ozon_orders import OzonOrdersService
+        from app.services.ozon_supplies import OzonSuppliesService
+
+        fd, path = tempfile.mkstemp(suffix=".sqlite")
+        os.close(fd)
+        try:
+            db = Database(path)
+            db.init_schema()
+            with db.connect() as conn:
+                conn.execute(
+                    """
+                    INSERT INTO supply_sources(
+                        name, marketplace, client_id, api_key, is_enabled,
+                        lookback_days, created_at
+                    ) VALUES ('Озон', 'ozon', '1', 'k', 1, 2, '2026-01-01')
+                    """
+                )
+                sid = int(conn.execute("SELECT last_insert_rowid()").fetchone()[0])
+                conn.execute(
+                    """
+                    INSERT INTO ozon_fbs_postings(
+                        source_id, posting_number, status, tab, quantity,
+                        supply_id, products_json, synced_at
+                    ) VALUES (?, 'PN-D', 'awaiting_deliver', 'awaiting_deliver',
+                              1, 'OZ-1', '[{"sku":1,"quantity":1}]', 't')
+                    """,
+                    (sid,),
+                )
+                conn.execute(
+                    """
+                    INSERT INTO ozon_fbs_supplies(
+                        source_id, supply_id, name, warehouse_id, warehouse_name,
+                        created_at, updated_at, posting_numbers_json
+                    ) VALUES (?, 'OZ-1', 'S1', 1, 'WH', 't', 't', '["PN-D"]')
+                    """,
+                    (sid,),
+                )
+                conn.commit()
+
+            OzonSuppliesService(db).mark_delivering(sid, "OZ-1")
+            with db.connect() as conn:
+                row = conn.execute(
+                    "SELECT tab, status FROM ozon_fbs_postings "
+                    "WHERE posting_number='PN-D'"
+                ).fetchone()
+            self.assertEqual(row["tab"], "delivering")
+            self.assertEqual(row["status"], "delivering")
+
+            upsert_carriage(
+                db,
+                sid,
+                {
+                    "id": 99,
+                    "status": "formed",
+                    "posting_numbers": ["PN-D"],
+                },
+            )
+            with db.connect() as conn:
+                row = conn.execute(
+                    "SELECT tab, status, carriage_id FROM ozon_fbs_postings "
+                    "WHERE posting_number='PN-D'"
+                ).fetchone()
+            self.assertEqual(row["tab"], "delivering")
+            self.assertEqual(row["status"], "delivering")
+            self.assertEqual(str(row["carriage_id"]), "99")
+
+            counts = OzonOrdersService(db).tab_counts(sid)
+            self.assertEqual(counts.get("delivering"), 1)
+            self.assertEqual(counts.get("awaiting_deliver"), 0)
+        finally:
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+
     def test_upsert_keeps_local_deliver_when_remote_packaging(self) -> None:
         import os
         import tempfile

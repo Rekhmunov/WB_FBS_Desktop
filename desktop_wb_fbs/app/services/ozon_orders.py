@@ -169,8 +169,17 @@ class OzonOrdersService:
                 (source_id,),
             ).fetchone()
         supplies = OzonSuppliesService(self.db).tab_supply_counts(source_id)
-        # Fallback to API carriages when no local supplies yet.
+        # Carriage fallback only before any local supply exists. Once the
+        # operator has supplies (incl. only on «Доставляются»), empty awaiting
+        # must stay 0 — not jump to open Ozon carriages and "reset" the tab.
         with self.db.connect() as conn:
+            local_sup = conn.execute(
+                """
+                SELECT COUNT(*) AS c FROM ozon_fbs_supplies
+                WHERE source_id = ?
+                """,
+                (source_id,),
+            ).fetchone()
             open_c = conn.execute(
                 """
                 SELECT COUNT(*) AS c FROM ozon_fbs_carriages
@@ -189,11 +198,12 @@ class OzonOrdersService:
         asm = int(supplies.get("awaiting_deliver") or 0) + int(
             orphan["c"] if orphan else 0
         )
-        if asm == 0:
-            asm = int(open_c["c"] if open_c else 0)
         deliv = int(supplies.get("delivering") or 0)
-        if deliv == 0:
-            deliv = int(done_c["c"] if done_c else 0)
+        if int(local_sup["c"] if local_sup else 0) == 0:
+            if asm == 0:
+                asm = int(open_c["c"] if open_c else 0)
+            if deliv == 0:
+                deliv = int(done_c["c"] if done_c else 0)
         done = int(f["c"] if f else 0)
         out["awaiting_packaging"] = out["new"] = pack
         out["awaiting_deliver"] = out["assembly"] = asm

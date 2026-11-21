@@ -141,6 +141,7 @@ QPushButton#mgtBtn {
     background: #9810fa;
     border-radius: 10px;
     min-height: 40px;
+    max-height: 40px;
     padding: 0 16px;
     font-size: 14px;
     font-weight: 600;

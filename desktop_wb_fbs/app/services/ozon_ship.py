@@ -8,7 +8,14 @@ import time
 from typing import Any, Dict, List, Optional
 
 from app.db import Database
-from app.ozon import TAB_AWAITING_DELIVER, TAB_AWAITING_PACKAGING, TAB_DELIVERED, TAB_DELIVERING, compute_tab
+from app.ozon import (
+    TAB_AWAITING_DELIVER,
+    TAB_AWAITING_PACKAGING,
+    TAB_DELIVERED,
+    TAB_DELIVERING,
+    compute_tab,
+    utc_now,
+)
 from app.ozon.client import OzonFbsClient
 from app.ozon.sync import upsert_posting
 
@@ -97,14 +104,15 @@ def _force_local_awaiting_deliver(
         pass
     # Hard-set tab/status — upsert uses compute_tab(status) which matches, but
     # protect against empty/partial payloads leaving stale packaging.
+    now = utc_now()
     with db.connect() as conn:
         conn.execute(
             """
             UPDATE ozon_fbs_postings
-            SET status = ?, tab = ?, synced_at = COALESCE(synced_at, '')
+            SET status = ?, tab = ?, synced_at = ?
             WHERE source_id = ? AND posting_number = ?
             """,
-            (TAB_AWAITING_DELIVER, TAB_AWAITING_DELIVER, source_id, pn),
+            (TAB_AWAITING_DELIVER, TAB_AWAITING_DELIVER, now, source_id, pn),
         )
         conn.commit()
 

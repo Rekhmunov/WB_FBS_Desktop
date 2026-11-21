@@ -1169,12 +1169,14 @@ class OzonSuppliesService:
         return item
 
     def _load_awaiting_packaging(self, source_id: int) -> List[Dict[str, Any]]:
+        """Rows for «Собрать все» — packaging tab and not yet in a local supply (web)."""
         with self.db.connect() as conn:
             rows = conn.execute(
                 """
                 SELECT * FROM ozon_fbs_postings
                 WHERE source_id = ?
                   AND tab IN ('new', 'awaiting_packaging')
+                  AND COALESCE(supply_id, '') = ''
                 ORDER BY datetime(created_at_wb) DESC, posting_number DESC
                 """,
                 (source_id,),

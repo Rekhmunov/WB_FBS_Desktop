@@ -2,6 +2,7 @@
 """Ozon FBS split multi-unit postings (/v1/posting/fbs/split) — web parity."""
 from __future__ import annotations
 
+import json
 import logging
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -266,7 +267,11 @@ def _refresh_stickers_from_ozon(
     source_id: int,
     posting_numbers: List[str],
 ) -> None:
-    """Overwrite sticker_* from get_posting barcodes after split."""
+    """Overwrite sticker_* from get_posting barcodes only (web parity).
+
+    Must not upsert the full posting — a lagging get can restore pre-split
+    multi-qty products and block «Собрать все».
+    """
     for pn in posting_numbers:
         pn = str(pn or "").strip()
         if not pn:
@@ -278,11 +283,6 @@ def _refresh_stickers_from_ozon(
             continue
         if not isinstance(fresh, dict):
             continue
-        # Force awaiting_packaging — split must not assemble.
-        fresh = dict(fresh)
-        fresh["status"] = TAB_AWAITING_PACKAGING
-        upsert_posting(db, source_id, fresh)
-        # Ensure stickers overwrite even if upsert kept empty (already cleared).
         bc = fresh.get("barcodes") if isinstance(fresh.get("barcodes"), dict) else {}
         upper = str((bc or {}).get("upper_barcode") or "").strip()
         lower = str((bc or {}).get("lower_barcode") or "").strip()
@@ -311,6 +311,7 @@ class OzonSplitService:
                 SELECT * FROM ozon_fbs_postings
                 WHERE source_id = ?
                   AND tab IN ('new', 'awaiting_packaging')
+                  AND COALESCE(supply_id, '') = ''
                 """,
                 (source_id,),
             ).fetchall()
@@ -373,13 +374,18 @@ class OzonSplitService:
 
         # Persist each part as awaiting_packaging with correct qty=1 products.
         for pn, package in parts:
-            products = _products_for_persist(package, base if isinstance(base, dict) else {})
+            products = _products_for_persist(
+                package, base if isinstance(base, dict) else {}
+            )
             payload = dict(base) if isinstance(base, dict) else {}
             payload["posting_number"] = pn
             payload["status"] = TAB_AWAITING_PACKAGING
             if products:
                 payload["products"] = products
-            # Drop pre-split barcodes — refresh will rebind.
+                payload["quantity"] = sum(
+                    max(1, int(p.get("quantity") or 1)) for p in products
+                )
+            # Drop pre-split barcodes — sticker refresh rebinds without full upsert.
             if isinstance(payload.get("barcodes"), dict):
                 payload["barcodes"] = {}
             upsert_posting(self.db, source_id, payload)
@@ -387,18 +393,32 @@ class OzonSplitService:
         _clear_package_stickers(self.db, source_id, posting_numbers)
         _refresh_stickers_from_ozon(self.db, client, source_id, posting_numbers)
 
-        # Hard-set status/tab packaging (get may lag).
+        # Hard-set packaging + unit qty from products_json (never leave multi qty).
         with self.db.connect() as conn:
-            placeholders = ", ".join("?" for _ in posting_numbers)
-            conn.execute(
-                """
-                UPDATE ozon_fbs_postings
-                SET status = ?, tab = ?
-                WHERE source_id = ? AND posting_number IN ({})
-                """.format(placeholders),
-                [TAB_AWAITING_PACKAGING, TAB_AWAITING_PACKAGING, source_id]
-                + list(posting_numbers),
-            )
+            for pn, package in parts:
+                products = _products_for_persist(
+                    package, base if isinstance(base, dict) else {}
+                )
+                qty = 1
+                if products:
+                    qty = sum(max(1, int(p.get("quantity") or 1)) for p in products)
+                conn.execute(
+                    """
+                    UPDATE ozon_fbs_postings
+                    SET status = ?, tab = ?, quantity = ?,
+                        products_json = COALESCE(?, products_json),
+                        supply_id = ''
+                    WHERE source_id = ? AND posting_number = ?
+                    """,
+                    (
+                        TAB_AWAITING_PACKAGING,
+                        TAB_AWAITING_PACKAGING,
+                        qty,
+                        json.dumps(products, ensure_ascii=False) if products else None,
+                        source_id,
+                        pn,
+                    ),
+                )
             conn.commit()
 
         return {

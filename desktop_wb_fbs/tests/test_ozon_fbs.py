@@ -698,6 +698,199 @@ class OzonShipStatusParityTest(unittest.TestCase):
                 pass
 
 
+class OzonSplitShipSupplyFlowTest(unittest.TestCase):
+    """End-to-end: multi split stays packaging → ship-all creates supply + awaiting_deliver."""
+
+    def _seed_source(self, db):
+        with db.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO supply_sources(
+                    name, marketplace, client_id, api_key, is_enabled,
+                    lookback_days, created_at
+                ) VALUES ('Озон ФБС', 'ozon', '1', 'k', 1, 2, '2026-01-01')
+                """
+            )
+            sid = int(conn.execute("SELECT last_insert_rowid()").fetchone()[0])
+            conn.commit()
+        return sid
+
+    def test_split_keeps_packaging_then_ship_all_creates_supply(self) -> None:
+        import os
+        import tempfile
+        from unittest.mock import MagicMock
+
+        from app.db import Database
+        from app.services.ozon_split import OzonSplitService
+        from app.services.ozon_supplies import OzonSuppliesService
+
+        fd, path = tempfile.mkstemp(suffix=".sqlite")
+        os.close(fd)
+        try:
+            db = Database(path)
+            db.init_schema()
+            sid = self._seed_source(db)
+            products = [
+                {"sku": 111, "quantity": 2, "offer_id": "A", "name": "Item"},
+            ]
+            with db.connect() as conn:
+                conn.execute(
+                    """
+                    INSERT INTO ozon_fbs_postings(
+                        source_id, posting_number, status, tab, warehouse_id,
+                        warehouse_name, products_json, quantity, synced_at
+                    ) VALUES (?, 'MULTI-1', 'awaiting_packaging', 'awaiting_packaging',
+                              10, 'WH-A', ?, 2, '2026-01-01')
+                    """,
+                    (sid, json.dumps(products, ensure_ascii=False)),
+                )
+                conn.commit()
+
+            # --- Split ---
+            client = MagicMock()
+            client.get_posting.side_effect = lambda pn: {
+                "posting_number": pn,
+                "status": "awaiting_packaging",
+                "products": (
+                    [{"sku": 111, "quantity": 1, "offer_id": "A", "name": "Item"}]
+                    if pn != "MULTI-1"
+                    else products
+                ),
+                "barcodes": {
+                    "upper_barcode": "UP-{}".format(pn),
+                    "lower_barcode": "LO-{}".format(pn),
+                },
+                "analytics_data": {"warehouse": "WH-A", "warehouse_id": 10},
+            }
+            client.split_posting.return_value = {
+                "result": {
+                    "parent_posting": {"posting_number": "MULTI-1"},
+                    "postings": [
+                        {"posting_number": "MULTI-1"},
+                        {"posting_number": "MULTI-1-1"},
+                    ],
+                }
+            }
+            split_out = OzonSplitService(db).split_posting(client, sid, "MULTI-1")
+            self.assertTrue(split_out.get("ok"))
+            self.assertEqual(
+                set(split_out.get("posting_numbers") or []),
+                {"MULTI-1", "MULTI-1-1"},
+            )
+
+            with db.connect() as conn:
+                rows = {
+                    str(r["posting_number"]): dict(r)
+                    for r in conn.execute(
+                        "SELECT posting_number, status, tab, supply_id, quantity "
+                        "FROM ozon_fbs_postings WHERE source_id = ?",
+                        (sid,),
+                    ).fetchall()
+                }
+            self.assertEqual(set(rows), {"MULTI-1", "MULTI-1-1"})
+            for pn, row in rows.items():
+                self.assertEqual(row["status"], "awaiting_packaging", pn)
+                self.assertEqual(row["tab"], "awaiting_packaging", pn)
+                self.assertFalse(str(row["supply_id"] or "").strip(), pn)
+
+            # Multi gone → collect unblocked
+            supplies = OzonSuppliesService(db)
+            preview = supplies.preview_ship_all(sid)
+            self.assertFalse(preview.get("block_collect"))
+            self.assertEqual(int(preview.get("posting_count") or 0), 2)
+            self.assertEqual(len(preview.get("groups") or []), 1)
+
+            # --- Ship all + create supply ---
+            ship_client = MagicMock()
+            ship_client.get_posting.side_effect = lambda pn: {
+                "posting_number": pn,
+                "status": "awaiting_packaging",
+                "products": [{"sku": 111, "quantity": 1}],
+            }
+            ship_client.ship_posting.return_value = ["ok"]
+            decisions = [
+                {
+                    "group_key": preview["groups"][0]["group_key"],
+                    "action": "create",
+                    "name": preview["groups"][0]["suggested_name"],
+                }
+            ]
+            result = supplies.execute_ship_all(
+                sid,
+                ship_client,
+                decisions=decisions,
+                ship_pause_sec=0,
+            )
+            self.assertTrue(result.get("ok"), result)
+            self.assertEqual(int(result.get("shipped") or 0), 2)
+            self.assertTrue(result.get("goto_awaiting_deliver"))
+            created = result.get("created_supplies") or []
+            self.assertEqual(len(created), 1)
+            supply_id = str(created[0].get("supply_id") or "")
+            self.assertTrue(supply_id.startswith("OZ-FBS-"))
+
+            with db.connect() as conn:
+                post_rows = conn.execute(
+                    "SELECT posting_number, status, tab, supply_id "
+                    "FROM ozon_fbs_postings WHERE source_id = ?",
+                    (sid,),
+                ).fetchall()
+                supply_row = conn.execute(
+                    "SELECT supply_id, posting_numbers_json, done "
+                    "FROM ozon_fbs_supplies WHERE source_id = ? AND supply_id = ?",
+                    (sid, supply_id),
+                ).fetchone()
+            for r in post_rows:
+                self.assertEqual(r["status"], "awaiting_deliver", r["posting_number"])
+                self.assertEqual(r["tab"], "awaiting_deliver", r["posting_number"])
+                self.assertEqual(r["supply_id"], supply_id, r["posting_number"])
+            self.assertIsNotNone(supply_row)
+            self.assertEqual(int(supply_row["done"] or 0), 0)
+            listed = supplies.list_awaiting_deliver_supplies(sid)
+            self.assertTrue(any(s.get("supply_id") == supply_id for s in listed))
+        finally:
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+
+    def test_ship_all_blocked_while_multi_exists(self) -> None:
+        import os
+        import tempfile
+
+        from app.db import Database
+        from app.services.ozon_supplies import OzonSuppliesService
+
+        fd, path = tempfile.mkstemp(suffix=".sqlite")
+        os.close(fd)
+        try:
+            db = Database(path)
+            db.init_schema()
+            sid = self._seed_source(db)
+            with db.connect() as conn:
+                conn.execute(
+                    """
+                    INSERT INTO ozon_fbs_postings(
+                        source_id, posting_number, status, tab, products_json, synced_at
+                    ) VALUES (?, 'M-1', 'awaiting_packaging', 'awaiting_packaging',
+                              ?, '2026-01-01')
+                    """,
+                    (
+                        sid,
+                        json.dumps([{"sku": 1, "quantity": 3}], ensure_ascii=False),
+                    ),
+                )
+                conn.commit()
+            preview = OzonSuppliesService(db).preview_ship_all(sid)
+            self.assertTrue(preview.get("block_collect"))
+            self.assertEqual(int(preview.get("multi_posting_count") or 0), 1)
+        finally:
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+
+
 class OzonSelectionPreviewTest(unittest.TestCase):
     def test_preview_rejects_wrong_tab_and_existing_supply(self) -> None:
         import os

@@ -252,6 +252,39 @@ class OzonSuppliesService:
             item["status_label"] = "Доставляется"
             item["status_kind"] = "delivering"
             out.append(item)
+        return self._attach_delivering_meta(source_id, out)
+
+    def _attach_delivering_meta(
+        self, source_id: int, supplies: List[Dict[str, Any]]
+    ) -> List[Dict[str, Any]]:
+        """Archive delivering table: driver + TTN status chips."""
+        from app.services.supply_drivers import SupplyDriversService
+        from app.services.ttn_draft import TtnDraftService
+
+        drivers = SupplyDriversService(self.db)
+        ttn = TtnDraftService(self.db)
+        out = []  # type: List[Dict[str, Any]]
+        for raw in supplies:
+            item = dict(raw)
+            sid = str(item.get("supply_id") or "").strip()
+            assigned = drivers.get_assignment("ozon", source_id, sid)
+            item["driver_name"] = str(assigned.get("driver_name") or "").strip()
+            item["has_driver"] = bool(assigned.get("has_driver"))
+            item["vehicle_number"] = str(assigned.get("vehicle_number") or "").strip()
+            draft = ttn.get("ozon", source_id, sid)
+            has_ttn = bool(draft and draft.get("id"))
+            item["has_ttn"] = has_ttn
+            item["ttn_status_label"] = (
+                "Сформирована" if has_ttn else "Несформирована"
+            )
+            # Soft row tone like archive enrich_ozon_supply_items_row_tones.
+            if not item["has_driver"] and not has_ttn:
+                item["row_tone"] = "warn"
+            elif item["has_driver"] and has_ttn:
+                item["row_tone"] = "ok"
+            else:
+                item["row_tone"] = ""
+            out.append(item)
         return out
 
     def get_supply(
@@ -414,6 +447,280 @@ class OzonSuppliesService:
                 (now, source_id, sid, TAB_AWAITING_DELIVER),
             )
             conn.commit()
+
+    def move_to_awaiting_deliver(self, source_id: int, supply_id: str) -> Dict[str, Any]:
+        """Local reverse of mark_delivering — archive move_supply_to_awaiting_deliver."""
+        sid = str(supply_id or "").strip()
+        if not sid:
+            raise ValueError("Укажите supply_id")
+        if not self.get_supply(source_id, sid):
+            raise RuntimeError("Поставка не найдена")
+        now = utc_now()
+        with self.db.connect() as conn:
+            conn.execute(
+                """
+                UPDATE ozon_fbs_supplies
+                SET delivering_listed = 0, done = 0, updated_at = ?
+                WHERE source_id = ? AND supply_id = ?
+                """,
+                (now, source_id, sid),
+            )
+            cur = conn.execute(
+                """
+                UPDATE ozon_fbs_postings
+                SET tab = ?, status = ?, synced_at = ?
+                WHERE source_id = ? AND supply_id = ?
+                  AND tab = 'delivering'
+                """,
+                (TAB_AWAITING_DELIVER, TAB_AWAITING_DELIVER, now, source_id, sid),
+            )
+            moved = int(cur.rowcount or 0)
+            conn.commit()
+        return {
+            "ok": True,
+            "supply_id": sid,
+            "moved": moved,
+            "message": "Поставка возвращена в «Ожидают отгрузки»",
+        }
+
+    def list_move_targets(
+        self, source_id: int, *, exclude_supply_id: str = ""
+    ) -> List[Dict[str, Any]]:
+        """Awaiting-deliver supplies eligible for local posting move."""
+        exclude = str(exclude_supply_id or "").strip()
+        out = []  # type: List[Dict[str, Any]]
+        for s in self.list_awaiting_deliver_supplies(source_id, adopt_orphans=False):
+            sid = str(s.get("supply_id") or "").strip()
+            if not sid or sid == exclude:
+                continue
+            if int(s.get("delivering_listed") or 0):
+                continue
+            out.append(s)
+        return out
+
+    def move_postings_to_local_supply(
+        self,
+        source_id: int,
+        posting_numbers: List[str],
+        supply_id: str,
+        *,
+        target_tab: str = TAB_AWAITING_DELIVER,
+    ) -> Dict[str, Any]:
+        """Locally reassign postings to an existing supply (no Ozon API)."""
+        sid = str(supply_id or "").strip()
+        nums = []  # type: List[str]
+        seen = set()  # type: Set[str]
+        for raw in posting_numbers or []:
+            pn = str(raw or "").strip()
+            if not pn or pn in seen:
+                continue
+            seen.add(pn)
+            nums.append(pn)
+        if not sid:
+            raise ValueError("Укажите supply_id")
+        if not nums:
+            raise ValueError("Укажите posting_numbers")
+        if not self.get_supply(source_id, sid):
+            raise RuntimeError("Поставка не найдена")
+        tab = str(target_tab or TAB_AWAITING_DELIVER).strip() or TAB_AWAITING_DELIVER
+        now = utc_now()
+        to_move = []  # type: List[str]
+        with self.db.connect() as conn:
+            row = conn.execute(
+                """
+                SELECT posting_numbers_json FROM ozon_fbs_supplies
+                WHERE source_id = ? AND supply_id = ?
+                """,
+                (source_id, sid),
+            ).fetchone()
+            if not row:
+                raise RuntimeError("Поставка не найдена")
+            existing = [
+                str(x).strip()
+                for x in _parse_json_list(row["posting_numbers_json"])
+                if str(x).strip()
+            ]
+            from_by_supply = {}  # type: Dict[str, List[str]]
+            placeholders = ", ".join("?" for _ in nums)
+            rows = conn.execute(
+                """
+                SELECT posting_number, supply_id
+                FROM ozon_fbs_postings
+                WHERE source_id = ? AND posting_number IN ({})
+                """.format(placeholders),
+                [source_id] + nums,
+            ).fetchall()
+            found = {str(r["posting_number"]): str(r["supply_id"] or "") for r in rows}
+            for pn in nums:
+                old = found.get(pn)
+                if old is None:
+                    continue
+                if old == sid:
+                    continue
+                to_move.append(pn)
+                if old:
+                    from_by_supply.setdefault(old, []).append(pn)
+            if to_move:
+                ph = ", ".join("?" for _ in to_move)
+                conn.execute(
+                    """
+                    UPDATE ozon_fbs_postings
+                    SET supply_id = ?, tab = ?, status = ?, synced_at = ?
+                    WHERE source_id = ? AND posting_number IN ({})
+                    """.format(ph),
+                    [sid, tab, tab, now, source_id] + to_move,
+                )
+                merged = existing[:]
+                for pn in to_move:
+                    if pn not in merged:
+                        merged.append(pn)
+                conn.execute(
+                    """
+                    UPDATE ozon_fbs_supplies
+                    SET posting_numbers_json = ?, updated_at = ?
+                    WHERE source_id = ? AND supply_id = ?
+                    """,
+                    (json.dumps(merged, ensure_ascii=False), now, source_id, sid),
+                )
+                for old_sid, leave_nums in from_by_supply.items():
+                    old_row = conn.execute(
+                        """
+                        SELECT posting_numbers_json FROM ozon_fbs_supplies
+                        WHERE source_id = ? AND supply_id = ?
+                        """,
+                        (source_id, old_sid),
+                    ).fetchone()
+                    if not old_row:
+                        continue
+                    leave = set(leave_nums)
+                    kept = [
+                        str(x).strip()
+                        for x in _parse_json_list(old_row["posting_numbers_json"])
+                        if str(x).strip() and str(x).strip() not in leave
+                    ]
+                    conn.execute(
+                        """
+                        UPDATE ozon_fbs_supplies
+                        SET posting_numbers_json = ?, updated_at = ?
+                        WHERE source_id = ? AND supply_id = ?
+                        """,
+                        (
+                            json.dumps(kept, ensure_ascii=False),
+                            now,
+                            source_id,
+                            old_sid,
+                        ),
+                    )
+            conn.commit()
+        return {
+            "ok": True,
+            "supply_id": sid,
+            "moved": len(to_move),
+            "message": "Перенесено в поставку: {}".format(len(to_move)),
+        }
+
+    def create_local_supply_from_postings(
+        self,
+        source_id: int,
+        posting_numbers: List[str],
+        *,
+        name: str = "",
+        target_tab: str = TAB_AWAITING_DELIVER,
+    ) -> Dict[str, Any]:
+        """Create a local supply and move selected postings into it (no ship)."""
+        nums = [str(x).strip() for x in (posting_numbers or []) if str(x).strip()]
+        if not nums:
+            raise ValueError("Укажите posting_numbers")
+        wh_id = None
+        wh_name = ""
+        with self.db.connect() as conn:
+            row = conn.execute(
+                """
+                SELECT warehouse_id, warehouse_name FROM ozon_fbs_postings
+                WHERE source_id = ? AND posting_number = ?
+                """,
+                (source_id, nums[0]),
+            ).fetchone()
+            if row:
+                try:
+                    wh_id = int(row["warehouse_id"] or 0) or None
+                except (TypeError, ValueError):
+                    wh_id = None
+                wh_name = str(row["warehouse_name"] or "").strip()
+        existing_names = {
+            str(s.get("name") or "").strip()
+            for s in self.list_open_supplies(source_id)
+            if str(s.get("name") or "").strip()
+        }
+        base = str(name or "").strip() or default_supply_name(
+            source_name=self.source_display_name(source_id)
+        )
+        supply_name = unique_supply_name(base, existing_names)
+        # Create empty, then move (keeps JSON + from-supply cleanup consistent).
+        sid = self.create_supply(
+            source_id,
+            name=supply_name,
+            warehouse_id=wh_id,
+            warehouse_name=wh_name,
+            posting_numbers=[],
+            force_tab=target_tab,
+        )
+        moved = self.move_postings_to_local_supply(
+            source_id, nums, sid, target_tab=target_tab
+        )
+        return {
+            "ok": True,
+            "supply_id": sid,
+            "name": supply_name,
+            "moved": int(moved.get("moved") or 0),
+            "message": "Создана поставка «{}» · перенесено {}".format(
+                supply_name, int(moved.get("moved") or 0)
+            ),
+        }
+
+    def sticker_groups_by_article(
+        self, source_id: int, supply_id: str
+    ) -> List[Dict[str, Any]]:
+        """Archive sticker-groups: group supply postings by offer_id/article."""
+        detail = self.get_detail(source_id, supply_id)
+        groups = {}  # type: Dict[str, Dict[str, Any]]
+        for order in detail.get("orders") or []:
+            if str(order.get("status") or "").lower() in ("cancelled", "not_accepted"):
+                continue
+            if str(order.get("tab") or "").lower() == "cancelled":
+                continue
+            pn = str(order.get("posting_number") or "").strip()
+            if not pn:
+                continue
+            article = str(
+                order.get("offer_id") or order.get("article") or order.get("sku") or ""
+            ).strip()
+            name = str(
+                order.get("product_name_display")
+                or order.get("product_name")
+                or article
+                or "—"
+            ).strip()
+            key = article or name or pn
+            bucket = groups.get(key)
+            if not bucket:
+                bucket = {
+                    "group_key": key,
+                    "article": article,
+                    "product_name": name,
+                    "qty": 0,
+                    "posting_numbers": [],
+                    "order_ids": [],
+                }
+                groups[key] = bucket
+            bucket["qty"] = int(bucket["qty"] or 0) + 1
+            bucket["posting_numbers"].append(pn)
+            bucket["order_ids"].append(pn)
+        out = list(groups.values())
+        out.sort(
+            key=lambda g: str(g.get("product_name") or "").casefold()
+        )
+        return out
 
     def rename_supply(self, source_id: int, supply_id: str, name: str) -> None:
         sid = str(supply_id or "").strip()

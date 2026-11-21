@@ -5,23 +5,29 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+from functools import partial
 from typing import Any, Dict, List, Optional
 
 from PyQt5.QtCore import Qt, QThread, QUrl, pyqtSignal
 from PyQt5.QtGui import QDesktopServices
 from PyQt5.QtWidgets import (
     QAbstractItemView,
+    QCheckBox,
     QDialog,
+    QDialogButtonBox,
     QFrame,
     QHBoxLayout,
     QHeaderView,
     QInputDialog,
     QLabel,
     QLineEdit,
+    QMenu,
     QMessageBox,
     QPushButton,
+    QScrollArea,
     QTableWidget,
     QTableWidgetItem,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -207,14 +213,29 @@ class OzonSupplyDetailDialog(QDialog):
         self.btn_picking = QPushButton("Лист подбора")
         self.btn_picking.setObjectName("secondary")
         self.btn_picking.clicked.connect(self.print_picking_list)
-        # Archive: «Старые стикеры» (sync v2) hidden/removed — only «Стикеры»
-        # via /v3/posting/fbs/package-label/create + /v2/.../get.
+        # Archive: «Старые стикеры» removed — «Стикеры» + menu «По категориям».
         self.btn_labels = QPushButton("Стикеры")
         self.btn_labels.setObjectName("secondary")
         self.btn_labels.setToolTip(
             "Этикетка отправления Ozon (v3 create + v2 get)"
         )
         self.btn_labels.clicked.connect(self.print_labels)
+        self.btn_labels_menu = QToolButton()
+        self.btn_labels_menu.setObjectName("secondary")
+        self.btn_labels_menu.setText("▾")
+        self.btn_labels_menu.setToolTip("Другие варианты печати стикеров")
+        self.btn_labels_menu.setPopupMode(QToolButton.InstantPopup)
+        labels_menu = QMenu(self.btn_labels_menu)
+        labels_menu.addAction(
+            "Печать по категориям", self.stickers_by_category
+        )
+        self.btn_labels_menu.setMenu(labels_menu)
+        self.btn_shipments = QPushButton("ШК поставки")
+        self.btn_shipments.setObjectName("secondary")
+        self.btn_shipments.setToolTip(
+            "ШК / QR отгрузки Ozon (act/get-barcode) по складу поставки"
+        )
+        self.btn_shipments.clicked.connect(self.open_shipments_barcode)
         self.btn_containers = QPushButton("Грузоместа")
         self.btn_containers.setObjectName("secondary")
         self.btn_containers.setToolTip("Грузоместа Ozon FBS: паллеты, печать ШК")
@@ -246,6 +267,8 @@ class OzonSupplyDetailDialog(QDialog):
             self.btn_cancelled,
             self.btn_picking,
             self.btn_labels,
+            self.btn_labels_menu,
+            self.btn_shipments,
             self.btn_containers,
             self.btn_mark,
             self.btn_pick,
@@ -275,10 +298,34 @@ class OzonSupplyDetailDialog(QDialog):
             ["Отправление", "Товар", "Маркировка", "ШК", "Стикер"]
         )
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.table.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.table.verticalHeader().setVisible(False)
         self.table.doubleClicked.connect(self._open_selected_posting)
+        self.table.itemSelectionChanged.connect(self._on_detail_selection_changed)
         root.addWidget(self.table, 1)
+
+        # Archive #ozonFbsSupplyDetailBottomBar — local re-split of postings.
+        self.detail_bottom = QFrame()
+        self.detail_bottom.setObjectName("bottomBar")
+        dbl = QHBoxLayout(self.detail_bottom)
+        dbl.setContentsMargins(16, 10, 16, 10)
+        dbl.setSpacing(8)
+        self.detail_sel_label = QLabel("Выбрано 0 отправлений")
+        self.detail_sel_label.setObjectName("selectedLabel")
+        dbl.addWidget(self.detail_sel_label)
+        dbl.addStretch(1)
+        self.btn_detail_new_supply = QPushButton("Новая поставка")
+        self.btn_detail_new_supply.clicked.connect(self.move_selected_to_new_supply)
+        self.btn_detail_existing = QPushButton("В существующую")
+        self.btn_detail_existing.setObjectName("secondary")
+        self.btn_detail_existing.clicked.connect(
+            self.move_selected_to_existing_supply
+        )
+        dbl.addWidget(self.btn_detail_new_supply)
+        dbl.addWidget(self.btn_detail_existing)
+        self.detail_bottom.hide()
+        root.addWidget(self.detail_bottom)
 
         self.reload(hydrate=True)
 
@@ -295,6 +342,7 @@ class OzonSupplyDetailDialog(QDialog):
             self.btn_cancelled,
             self.btn_picking,
             self.btn_labels,
+            self.btn_shipments,
             self.btn_containers,
             self.btn_mark,
             self.btn_pick,
@@ -309,10 +357,15 @@ class OzonSupplyDetailDialog(QDialog):
         ro = self._is_read_only()
         for btn in self._action_buttons():
             btn.setEnabled(bool(ready))
+        self.btn_labels_menu.setEnabled(bool(ready))
         if ready:
             self.btn_rename.setEnabled(not ro)
             self.btn_move.setEnabled(not ro)
+            self.btn_detail_new_supply.setEnabled(not ro)
+            self.btn_detail_existing.setEnabled(not ro)
         self.btn_move.setVisible(not ro)
+        self.detail_bottom.setVisible(not ro)
+        self._on_detail_selection_changed()
 
     def reload(self, *, hydrate: bool = True) -> None:
         try:
@@ -581,14 +634,19 @@ class OzonSupplyDetailDialog(QDialog):
             self.supply_mutated = True
             self.reload(hydrate=False)
 
-    def print_labels(self) -> None:
-        pnums = self._posting_numbers()
+    def print_labels(self, posting_numbers: Optional[List[str]] = None) -> None:
+        pnums = [
+            str(p).strip()
+            for p in (posting_numbers or self._posting_numbers())
+            if str(p).strip()
+        ]
         if not pnums:
-            QMessageBox.information(self, "Этикетки", "Нет отправлений.")
+            QMessageBox.information(self, "Стикеры", "Нет отправлений.")
             return
         if self._label_worker and self._label_worker.isRunning():
             return
         self.btn_labels.setEnabled(False)
+        self.btn_labels_menu.setEnabled(False)
         self.load_info.setText("Формирование стикеров Ozon (v3)…")
         worker = _LabelPrintWorker(
             self.labels,
@@ -602,8 +660,310 @@ class OzonSupplyDetailDialog(QDialog):
         self._label_worker = worker
         worker.ready.connect(self._on_labels_ready)
         worker.failed.connect(self._on_labels_failed)
-        worker.finished.connect(lambda: self.btn_labels.setEnabled(True))
+        worker.finished.connect(self._on_labels_worker_finished)
         worker.start()
+
+    def _on_labels_worker_finished(self) -> None:
+        self.btn_labels.setEnabled(True)
+        self.btn_labels_menu.setEnabled(True)
+
+    def stickers_by_category(self) -> None:
+        try:
+            groups = self.supplies.sticker_groups_by_article(
+                self.source_id, self.supply_id
+            )
+        except Exception as exc:
+            QMessageBox.warning(self, "Стикеры", str(exc))
+            return
+        if not groups:
+            QMessageBox.information(self, "Стикеры", "Нет групп для печати.")
+            return
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Печать по категориям · {}".format(self.supply_id))
+        dlg.resize(720, 560)
+        lay = QVBoxLayout(dlg)
+        title = QLabel("Печать стикеров по артикулам")
+        title.setObjectName("dialogTitle")
+        lay.addWidget(title)
+        toolbar = QHBoxLayout()
+        btn_all = QPushButton("Выделить все")
+        btn_all.setObjectName("secondary")
+        btn_clear = QPushButton("Очистить все")
+        btn_clear.setObjectName("secondary")
+        selected_lab = QLabel("Выбрано: 0")
+        toolbar.addWidget(btn_all)
+        toolbar.addWidget(btn_clear)
+        toolbar.addStretch(1)
+        toolbar.addWidget(selected_lab)
+        lay.addLayout(toolbar)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        wrap = QWidget()
+        rows_lay = QVBoxLayout(wrap)
+        row_widgets = []  # type: List[Dict[str, Any]]
+
+        def _sync() -> None:
+            n = sum(1 for r in row_widgets if r["cb"].isChecked())
+            qty = sum(
+                int(r["qty"]) for r in row_widgets if r["cb"].isChecked()
+            )
+            selected_lab.setText("Выбрано: {} · {} шт.".format(n, qty))
+            print_btn.setEnabled(n > 0)
+
+        for idx, g in enumerate(groups):
+            frame = QFrame()
+            row = QHBoxLayout(frame)
+            cb = QCheckBox()
+            name = str(g.get("product_name") or "—")
+            qty = int(g.get("qty") or 0)
+            label = QLabel("{} — {} шт.".format(name, qty))
+            label.setWordWrap(True)
+            fill = QToolButton()
+            fill.setText("▼")
+            fill.setToolTip("Выделить все ниже")
+
+            def _fill_down(start: int = idx) -> None:
+                for i in range(start, len(row_widgets)):
+                    row_widgets[i]["cb"].setChecked(True)
+                _sync()
+
+            fill.clicked.connect(partial(_fill_down, idx))
+            cb.stateChanged.connect(lambda _s: _sync())
+            row.addWidget(cb)
+            row.addWidget(label, 1)
+            row.addWidget(fill)
+            rows_lay.addWidget(frame)
+            row_widgets.append(
+                {
+                    "cb": cb,
+                    "qty": qty,
+                    "posting_numbers": list(g.get("posting_numbers") or []),
+                }
+            )
+        rows_lay.addStretch(1)
+        scroll.setWidget(wrap)
+        lay.addWidget(scroll, 1)
+
+        def _select_all() -> None:
+            for r in row_widgets:
+                r["cb"].setChecked(True)
+            _sync()
+
+        def _clear_all() -> None:
+            for r in row_widgets:
+                r["cb"].setChecked(False)
+            _sync()
+
+        btn_all.clicked.connect(_select_all)
+        btn_clear.clicked.connect(_clear_all)
+
+        def _print_selected() -> None:
+            nums = []  # type: List[str]
+            for r in row_widgets:
+                if r["cb"].isChecked():
+                    nums.extend(str(x) for x in (r["posting_numbers"] or []) if str(x))
+            if not nums:
+                QMessageBox.information(dlg, "Стикеры", "Выберите категории")
+                return
+            dlg.accept()
+            self.print_labels(nums)
+
+        btns = QDialogButtonBox(QDialogButtonBox.Close)
+        print_btn = QPushButton("Печать")
+        print_btn.setEnabled(False)
+        print_btn.clicked.connect(_print_selected)
+        btns.addButton(print_btn, QDialogButtonBox.AcceptRole)
+        btns.rejected.connect(dlg.reject)
+        lay.addWidget(btns)
+        _sync()
+        dlg.exec_()
+
+    def open_shipments_barcode(self) -> None:
+        """Archive shipments modal lite: pick carriage for warehouse → act barcode."""
+        from app.services.ozon_act import OzonActService
+        from app.services.ozon_orders import OzonOrdersService
+
+        wh = 0
+        try:
+            wh = int(self._detail.get("warehouse_id") or 0)
+        except (TypeError, ValueError):
+            wh = 0
+        orders = OzonOrdersService(self.db)
+        carriages = []  # type: List[Dict[str, Any]]
+        try:
+            for c in orders.list_open_carriages(self.source_id):
+                try:
+                    cwh = int(c.get("warehouse_id") or 0)
+                except (TypeError, ValueError):
+                    cwh = 0
+                if wh > 0 and cwh > 0 and cwh != wh:
+                    continue
+                carriages.append(c)
+            if not carriages:
+                carriages = list(orders.list_delivery_carriages(self.source_id) or [])
+        except Exception as exc:
+            QMessageBox.warning(self, "ШК поставки", str(exc))
+            return
+        if not carriages:
+            QMessageBox.information(
+                self,
+                "ШК поставки",
+                "Нет отгрузок Ozon для склада этой поставки. "
+                "Сформируйте отгрузку (акт) в Ozon, затем повторите.",
+            )
+            return
+        labels = []
+        for c in carriages:
+            cid = str(c.get("carriage_id") or c.get("id") or "").strip()
+            name = str(
+                c.get("delivery_method_name")
+                or c.get("name")
+                or cid
+                or "—"
+            )
+            labels.append("{} · {}".format(name, cid))
+        choice, ok = QInputDialog.getItem(
+            self,
+            "ШК поставки",
+            "Отгрузка (carriage) для печати ШК:",
+            labels,
+            0,
+            False,
+        )
+        if not ok or not choice:
+            return
+        idx = labels.index(choice)
+        carriage = carriages[idx]
+        cid = str(
+            carriage.get("carriage_id") or carriage.get("id") or ""
+        ).strip()
+        try:
+            dm_id = int(
+                carriage.get("delivery_method_id")
+                or carriage.get("delivery_method")
+                or 0
+            )
+        except (TypeError, ValueError):
+            dm_id = 0
+        if not cid:
+            QMessageBox.warning(self, "ШК поставки", "Не удалось определить отгрузку")
+            return
+        self.load_info.setText("Загрузка ШК отгрузки…")
+        try:
+            content, name = OzonActService(self.db).fetch_barcode(
+                self.client,
+                self.source_id,
+                cid,
+                delivery_method_id=dm_id or None,
+                create_if_missing=True,
+            )
+        except Exception as exc:
+            QMessageBox.warning(self, "ШК поставки", str(exc))
+            self.load_info.setText("")
+            return
+        suffix = ".png"
+        if content[:4] == b"%PDF":
+            suffix = ".pdf"
+        fd, path = tempfile.mkstemp(suffix=suffix, prefix="ozon-ship-barcode-")
+        os.close(fd)
+        with open(path, "wb") as fh:
+            fh.write(content)
+        self.load_info.setText("ШК: {}".format(name or path))
+        QDesktopServices.openUrl(QUrl.fromLocalFile(path))
+
+    def _on_detail_selection_changed(self) -> None:
+        n = len(self._selected_posting_numbers_multi())
+        self.detail_sel_label.setText("Выбрано {} отправлений".format(n))
+        enabled = n > 0 and not self._is_read_only()
+        self.btn_detail_new_supply.setEnabled(enabled)
+        self.btn_detail_existing.setEnabled(enabled)
+
+    def _selected_posting_numbers_multi(self) -> List[str]:
+        out = []  # type: List[str]
+        for idx in self.table.selectionModel().selectedRows():
+            item = self.table.item(idx.row(), 0)
+            if not item:
+                continue
+            pnum = str(item.data(Qt.UserRole) or item.text() or "").strip()
+            if pnum:
+                out.append(pnum)
+        return out
+
+    def move_selected_to_new_supply(self) -> None:
+        if self._is_read_only():
+            return
+        pnums = self._selected_posting_numbers_multi()
+        if not pnums:
+            return
+        name, ok = QInputDialog.getText(
+            self,
+            "Новая поставка",
+            "Название новой поставки:",
+            text=str(self._detail.get("name") or "") + " · часть",
+        )
+        if not ok:
+            return
+        try:
+            result = self.supplies.create_local_supply_from_postings(
+                self.source_id, pnums, name=str(name or "")
+            )
+        except Exception as exc:
+            QMessageBox.warning(self, "Поставка", str(exc))
+            return
+        self.supply_mutated = True
+        QMessageBox.information(
+            self, "Поставка", str(result.get("message") or "Готово")
+        )
+        self.reload(hydrate=False)
+
+    def move_selected_to_existing_supply(self) -> None:
+        if self._is_read_only():
+            return
+        pnums = self._selected_posting_numbers_multi()
+        if not pnums:
+            return
+        targets = self.supplies.list_move_targets(
+            self.source_id, exclude_supply_id=self.supply_id
+        )
+        if not targets:
+            QMessageBox.information(
+                self,
+                "Поставка",
+                "Нет других поставок в «Ожидают отгрузки» для переноса.",
+            )
+            return
+        labels = [
+            "{} · {} отпр.".format(
+                str(t.get("name") or t.get("supply_id") or ""),
+                int(t.get("posting_count") or t.get("order_count") or 0),
+            )
+            for t in targets
+        ]
+        choice, ok = QInputDialog.getItem(
+            self,
+            "В существующую",
+            "Куда перенести {} отправлений:".format(len(pnums)),
+            labels,
+            0,
+            False,
+        )
+        if not ok or not choice:
+            return
+        target = targets[labels.index(choice)]
+        try:
+            result = self.supplies.move_postings_to_local_supply(
+                self.source_id,
+                pnums,
+                str(target.get("supply_id") or ""),
+            )
+        except Exception as exc:
+            QMessageBox.warning(self, "Поставка", str(exc))
+            return
+        self.supply_mutated = True
+        QMessageBox.information(
+            self, "Поставка", str(result.get("message") or "Готово")
+        )
+        self.reload(hydrate=False)
 
     def _on_labels_ready(self, paths: object) -> None:
         path_list = [str(p) for p in (paths or []) if str(p).strip()]

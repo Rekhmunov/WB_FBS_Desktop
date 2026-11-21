@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import logging
 import tempfile
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Set, Tuple
@@ -18,6 +19,33 @@ _RECONCILE_WORKERS = 4
 
 SORT_TYPES = frozenset({"sort", "non-sort"})
 CARGO_TYPES = frozenset({"box", "pallet"})
+
+# Terminal / already-shipped — hide from the working modal (web archive).
+_SHIPPED_OR_GONE_STATUSES = frozenset(
+    {
+        "shipped",
+        "closed",
+        "cancelled",
+        "canceled",
+        "deleted",
+        "completed",
+        "sent",
+        "delivered",
+    }
+)
+# Accepted at Ozon SC — hidden unless «Показать принятые / завершённые на СЦ».
+_SC_ACCEPTED_STATUSES = frozenset({"acceptance_in_progress", "finished"})
+_FILL_ACTIONS = frozenset({"fill", "place_posting_into_container"})
+_LOCKED_FILL_STATUSES = frozenset(
+    {
+        "approved",
+        "acceptance_in_progress",
+        "finished",
+        "formed",
+        "ready",
+        *_SHIPPED_OR_GONE_STATUSES,
+    }
+)
 
 _STATUS_LABELS = {
     "new": "Новое",
@@ -33,6 +61,14 @@ _STATUS_LABELS = {
     "cancelled": "Отменено",
     "canceled": "Отменено",
     "deleted": "Удалено",
+}
+_SORT_LABELS = {
+    "sort": "Сортируемое",
+    "non-sort": "Несортируемое",
+}
+_CARGO_LABELS = {
+    "pallet": "Паллета",
+    "box": "Короб",
 }
 
 
@@ -54,6 +90,47 @@ def _as_int(value: object, default: int = 0) -> int:
         return default
 
 
+def is_sc_accepted_container(row: Dict[str, Any]) -> bool:
+    st = str(row.get("status") or "").strip().lower()
+    return st in _SC_ACCEPTED_STATUSES
+
+
+def is_active_container(row: Dict[str, Any]) -> bool:
+    """True if container should appear in the working modal (web archive)."""
+    st = str(row.get("status") or "").strip().lower()
+    if st in _SC_ACCEPTED_STATUSES or st in _SHIPPED_OR_GONE_STATUSES:
+        return False
+    actions = row.get("available_actions") or []
+    if isinstance(actions, list):
+        acts = {str(a).strip().lower() for a in actions}
+        if acts & {
+            "delete",
+            "approve",
+            "get_label_container",
+            "fill",
+            "place_posting_into_container",
+        }:
+            return True
+    return st not in _SHIPPED_OR_GONE_STATUSES
+
+
+def container_accepts_fill(row: Dict[str, Any]) -> bool:
+    st = str(row.get("status") or "").strip().lower()
+    if st in _LOCKED_FILL_STATUSES:
+        return False
+    actions = row.get("available_actions") or []
+    acts_l = (
+        {str(a).strip().lower() for a in actions}
+        if isinstance(actions, list)
+        else set()
+    )
+    if acts_l & _FILL_ACTIONS:
+        return True
+    if st in {"new", "approve_failed"} and ("approve" in acts_l or not acts_l):
+        return True
+    return False
+
+
 def normalize_container(raw: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     if not isinstance(raw, dict):
         return None
@@ -63,21 +140,41 @@ def normalize_container(raw: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     status = str(raw.get("status") or "").strip().lower()
     cargo_type = str(raw.get("cargo_type") or "").strip().lower()
     sort_type = str(raw.get("sort_type") or "").strip().lower()
-    return {
+    actions = [
+        str(a).strip()
+        for a in (raw.get("available_actions") or [])
+        if isinstance(raw.get("available_actions"), list) and str(a).strip()
+    ]
+    acts_l = {a.lower() for a in actions}
+    can_delete = "delete" in acts_l
+    can_print = ("get_label_container" in acts_l) or (
+        status in {"new", "approve_failed", "approved"}
+    )
+    can_approve = "approve" in acts_l and status not in _LOCKED_FILL_STATUSES
+    base = {
         "container_id": cid,
         "container_number": _as_int(raw.get("container_number")),
         "status": status,
         "status_label": status_label(status),
         "sort_type": sort_type,
+        "sort_type_label": _SORT_LABELS.get(sort_type, sort_type or "—"),
         "cargo_type": cargo_type,
+        "cargo_type_label": _CARGO_LABELS.get(cargo_type, cargo_type or "—"),
         "order_count": max(0, _as_int(raw.get("count_of_postings"))),
+        "order_count_ozon": max(0, _as_int(raw.get("count_of_postings"))),
         "warehouse_id": raw.get("warehouse_id"),
-        "available_actions": list(raw.get("available_actions") or [])
-        if isinstance(raw.get("available_actions"), list)
-        else [],
+        "warehouse_name": str(raw.get("warehouse_name") or "").strip(),
+        "available_actions": actions,
+        "can_delete": can_delete,
+        "can_print": bool(can_print),
+        "can_approve": bool(can_approve),
+        "is_sc_accepted": status in _SC_ACCEPTED_STATUSES,
         "created_at": str(raw.get("created_at") or "").strip(),
         "locally_archived": False,
+        "bound_to_open_supply": False,
     }
+    base["can_fill"] = container_accepts_fill(base)
+    return base
 
 
 def _posting_numbers_from_container_payload(raw: Dict[str, Any]) -> List[str]:
@@ -173,6 +270,8 @@ class OzonContainersService:
         source_id: Optional[int] = None,
         lookback_days: int = 30,
         warehouse_id: Optional[int] = None,
+        include_sc_accepted: bool = False,
+        only_active: bool = True,
     ) -> Dict[str, Any]:
         wh = int(warehouse_id) if warehouse_id else 0
         if wh <= 0:
@@ -192,6 +291,7 @@ class OzonContainersService:
                     "created_to": created_to,
                     "warehouse_id": wh,
                 },
+                # Newest first — same as web archive modal.
                 "sort_dir": 1,
                 "limit": 100,
             }
@@ -203,18 +303,182 @@ class OzonContainersService:
                 rows = []
             for raw in rows:
                 norm = normalize_container(raw if isinstance(raw, dict) else {})
-                if norm:
-                    items.append(norm)
+                if not norm:
+                    continue
+                if only_active and not is_active_container(norm):
+                    if not (include_sc_accepted and is_sc_accepted_container(norm)):
+                        continue
+                elif (
+                    not include_sc_accepted
+                    and is_sc_accepted_container(norm)
+                    and not is_active_container(norm)
+                ):
+                    continue
+                items.append(norm)
             cursor = str((data or {}).get("cursor") or "").strip()
             if not cursor:
                 break
+        items.sort(
+            key=lambda r: (
+                str(r.get("created_at") or ""),
+                _as_int(r.get("container_id")),
+            ),
+            reverse=True,
+        )
         return {
             "ok": True,
             "carriage_id": _as_int(carriage_id),
             "warehouse_id": wh,
             "items": items,
             "total": len(items),
+            "include_sc_accepted": bool(include_sc_accepted),
         }
+
+    def local_order_counts(
+        self, source_id: int, supply_posting_numbers: List[str]
+    ) -> Dict[int, int]:
+        """Active local binds per container for this supply's postings."""
+        out: Dict[int, int] = {}
+        if self.db is None or int(source_id or 0) <= 0:
+            return out
+        nums = [str(p).strip() for p in supply_posting_numbers if str(p).strip()]
+        if not nums:
+            return out
+        placeholders = ",".join("?" for _ in nums)
+        with self.db.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT container_id, COUNT(*) AS cnt
+                FROM ozon_fbs_postings
+                WHERE source_id = ?
+                  AND posting_number IN ({})
+                  AND container_id IS NOT NULL
+                  AND container_id > 0
+                  AND LOWER(COALESCE(status, '')) NOT IN ('cancelled', 'canceled')
+                GROUP BY container_id
+                """.format(
+                    placeholders
+                ),
+                (int(source_id), *nums),
+            ).fetchall()
+        for row in rows:
+            cid = _as_int(row["container_id"] if hasattr(row, "keys") else row[0])
+            cnt = _as_int(row["cnt"] if hasattr(row, "keys") else row[1])
+            if cid > 0:
+                out[cid] = max(0, cnt)
+        return out
+
+    def enrich_for_supply(
+        self,
+        items: List[Dict[str, Any]],
+        *,
+        source_id: int,
+        posting_numbers: List[str],
+        only_this_supply: bool = False,
+    ) -> List[Dict[str, Any]]:
+        """Rewrite order_count from local binds; optional «ГМ у этой поставки»."""
+        local = self.local_order_counts(source_id, posting_numbers)
+        out: List[Dict[str, Any]] = []
+        for raw in items or []:
+            row = dict(raw)
+            cid = _as_int(row.get("container_id"))
+            bound = bool(cid > 0 and cid in local)
+            row["bound_to_open_supply"] = bound
+            row["order_count_ozon"] = max(
+                0, _as_int(row.get("order_count_ozon") or row.get("order_count"))
+            )
+            if bound:
+                row["order_count"] = max(0, int(local.get(cid) or 0))
+            if only_this_supply and not bound:
+                continue
+            out.append(row)
+        return out
+
+    def wait_container_task(
+        self,
+        client: OzonFbsClient,
+        task_id: int,
+        *,
+        timeout_sec: float = 90.0,
+        poll_sec: float = 1.0,
+    ) -> Dict[str, Any]:
+        """Poll /v1/carriage/container/task/info until done (web archive)."""
+        tid = _as_int(task_id)
+        if tid <= 0:
+            return {"ok": True, "skipped": True}
+        deadline = time.monotonic() + max(5.0, float(timeout_sec))
+        last: Dict[str, Any] = {}
+        while time.monotonic() < deadline:
+            try:
+                data = client.carriage_container_task_info(task_id=tid)
+            except Exception as exc:
+                _log.warning("container task/info %s: %s", tid, exc)
+                return {"ok": False, "task_id": tid, "error": str(exc), "raw": last}
+            last = data if isinstance(data, dict) else {}
+            status = str(
+                last.get("status") or last.get("task_status") or ""
+            ).strip().lower()
+            if status in {"done", "completed", "success", "ok", "finished"}:
+                return {"ok": True, "task_id": tid, "status": status, "raw": last}
+            if status in {"failed", "error", "cancelled", "canceled"}:
+                err = str(
+                    last.get("error")
+                    or last.get("error_message")
+                    or last.get("message")
+                    or status
+                ).strip()
+                return {
+                    "ok": False,
+                    "task_id": tid,
+                    "status": status,
+                    "error": err or status,
+                    "raw": last,
+                }
+            if last.get("result") is not None and status in {"", "unknown"}:
+                return {
+                    "ok": True,
+                    "task_id": tid,
+                    "status": status or "done",
+                    "raw": last,
+                }
+            time.sleep(max(0.3, float(poll_sec)))
+        return {
+            "ok": False,
+            "task_id": tid,
+            "error": "Таймаут ожидания задачи Ozon",
+            "raw": last,
+        }
+
+    def unbound_supply_postings(
+        self, source_id: int, posting_numbers: List[str]
+    ) -> List[str]:
+        """Postings of this supply not yet bound to any container (approve gate)."""
+        if self.db is None or int(source_id or 0) <= 0:
+            return []
+        nums = [str(p).strip() for p in posting_numbers if str(p).strip()]
+        if not nums:
+            return []
+        placeholders = ",".join("?" for _ in nums)
+        with self.db.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT posting_number
+                FROM ozon_fbs_postings
+                WHERE source_id = ?
+                  AND posting_number IN ({})
+                  AND (container_id IS NULL OR container_id <= 0)
+                  AND LOWER(COALESCE(status, '')) NOT IN ('cancelled', 'canceled')
+                ORDER BY posting_number
+                """.format(
+                    placeholders
+                ),
+                (int(source_id), *nums),
+            ).fetchall()
+        return [
+            str(r["posting_number"] if hasattr(r, "keys") else r[0]).strip()
+            for r in rows
+            if str(r["posting_number"] if hasattr(r, "keys") else r[0]).strip()
+        ]
 
     def create(
         self,
@@ -706,7 +970,11 @@ class OzonContainersService:
         }
 
     def approve(
-        self, client: OzonFbsClient, container_ids: List[int]
+        self,
+        client: OzonFbsClient,
+        container_ids: List[int],
+        *,
+        wait_task: bool = True,
     ) -> Dict[str, Any]:
         ids = [_as_int(x) for x in (container_ids or [])]
         ids = [x for x in ids if x > 0][:100]
@@ -727,11 +995,26 @@ class OzonContainersService:
                     }
                 )
         ok_n = max(0, len(ids) - len(errors))
+        task_id = _as_int((data or {}).get("task_id")) if isinstance(data, dict) else 0
+        task_wait: Dict[str, Any] = {}
+        if wait_task and task_id > 0 and not errors:
+            task_wait = self.wait_container_task(client, task_id)
+            if not task_wait.get("ok"):
+                err = str(task_wait.get("error") or "Ошибка задачи Ozon").strip()
+                return {
+                    "ok": False,
+                    "approved": 0,
+                    "errors": [{"container_id": None, "error": err}],
+                    "task_id": task_id,
+                    "task_wait": task_wait,
+                    "message": err,
+                }
         return {
             "ok": not errors,
             "approved": ok_n,
             "errors": errors,
-            "task_id": _as_int((data or {}).get("task_id")) or None,
+            "task_id": task_id or None,
+            "task_wait": task_wait,
             "message": "Подтверждено грузомест: {}".format(ok_n)
             if not errors
             else "Подтверждено: {}, ошибок {}".format(ok_n, len(errors)),

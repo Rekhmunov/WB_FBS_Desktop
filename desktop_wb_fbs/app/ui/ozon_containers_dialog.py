@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Ozon FBS containers (грузоместа) dialog — TrbxDialog-style + archive/reconcile."""
+"""Ozon FBS containers (грузоместа) — parity with web archive modal."""
 from __future__ import annotations
 
 from functools import partial
@@ -31,7 +31,7 @@ from app.ui.dialog_utils import prepare_modal_dialog
 
 
 class OzonContainersDialog(QDialog):
-    """List / create / delete / approve / print / bind / archive / reconcile."""
+    """List / create / delete / approve / print — archive-parity layout."""
 
     def __init__(
         self,
@@ -58,37 +58,27 @@ class OzonContainersDialog(QDialog):
         self.selected_posting = str(selected_posting or "").strip()
         self.containers = []  # type: List[Dict[str, Any]]
         self._include_archived = False
+        self._include_sc_accepted = False
+        self._only_this_supply = False
+        self._reconciled_once = False
 
-        scope = str(self.carriage_id or "")
-        if scope.startswith("supply:"):
-            self.setWindowTitle("Грузоместа поставки {}".format(scope[7:]))
-        else:
-            self.setWindowTitle("Грузоместа отгрузки {}".format(scope))
+        self.setWindowTitle("Грузоместа")
         prepare_modal_dialog(
             self,
             maximized=True,
-            default_size=(720, 560),
-            minimum_size=(560, 440),
+            default_size=(780, 600),
+            minimum_size=(600, 460),
         )
         root = QVBoxLayout(self)
         root.setContentsMargins(24, 24, 24, 24)
-        root.setSpacing(16)
+        root.setSpacing(12)
 
-        title = QLabel("Грузоместа (Ozon)")
+        title = QLabel("Грузоместа")
         title.setObjectName("dialogTitle")
         title.setWordWrap(True)
         root.addWidget(title)
 
-        lead = QLabel(
-            "Создайте грузоместа, привяжите отправления, "
-            "подтвердите состав и распечатайте этикетки. "
-            "«Сверить с Ozon» подтягивает состав ГМ с портала; "
-            "архив только локально скрывает залипшие ГМ."
-        )
-        lead.setObjectName("hint")
-        lead.setWordWrap(True)
-        root.addWidget(lead)
-
+        # Create row: stepper + sort type (web: pallet cargo + sort/non-sort).
         stepper = QHBoxLayout()
         stepper.setSpacing(8)
         self.minus_btn = QPushButton("−")
@@ -103,25 +93,47 @@ class OzonContainersDialog(QDialog):
         self.plus_btn.setObjectName("secondary")
         self.plus_btn.setFixedWidth(44)
         self.plus_btn.clicked.connect(partial(self._step_amount, 1))
-        self.type_combo = QComboBox()
-        self.type_combo.addItem("Паллета", "pallet")
-        self.type_combo.addItem("Короб", "box")
+        type_lbl = QLabel("Тип")
+        type_lbl.setObjectName("hint")
+        self.sort_combo = QComboBox()
+        self.sort_combo.addItem("Сортируемое", "sort")
+        self.sort_combo.addItem("Несортируемое", "non-sort")
         self.create_btn = QPushButton("Создать")
         self.create_btn.clicked.connect(self.create_containers)
+        self.refresh_btn = QPushButton("Обновить")
+        self.refresh_btn.setObjectName("secondary")
+        self.refresh_btn.clicked.connect(self.reload)
         stepper.addWidget(self.minus_btn)
         stepper.addWidget(self.amount)
         stepper.addWidget(self.plus_btn)
         stepper.addSpacing(8)
-        stepper.addWidget(self.type_combo)
+        stepper.addWidget(type_lbl)
+        stepper.addWidget(self.sort_combo)
         stepper.addSpacing(8)
         stepper.addWidget(self.create_btn)
+        stepper.addWidget(self.refresh_btn)
         stepper.addStretch(1)
         root.addLayout(stepper)
 
+        print_row = QHBoxLayout()
+        print_row.setSpacing(8)
+        self.print_supply_btn = QPushButton("Распечатать ШК поставки")
+        self.print_supply_btn.setObjectName("secondary")
+        self.print_supply_btn.clicked.connect(self.print_supply_barcode)
+        print_row.addWidget(self.print_supply_btn)
+        print_row.addStretch(1)
+        root.addLayout(print_row)
+
         filt = QHBoxLayout()
-        filt.setSpacing(8)
+        filt.setSpacing(16)
+        self.show_sc = QCheckBox("Показать принятые / завершённые на СЦ")
+        self.show_sc.toggled.connect(self._on_show_sc)
+        self.only_supply = QCheckBox("ГМ у этой поставки")
+        self.only_supply.toggled.connect(self._on_only_supply)
         self.show_archived = QCheckBox("Показать локальный архив")
         self.show_archived.toggled.connect(self._on_show_archived)
+        filt.addWidget(self.show_sc)
+        filt.addWidget(self.only_supply)
         filt.addWidget(self.show_archived)
         filt.addStretch(1)
         root.addLayout(filt)
@@ -134,7 +146,7 @@ class OzonContainersDialog(QDialog):
         self.table = QTableWidget(0, 4)
         self.table.setObjectName("trbxTable")
         self.table.setHorizontalHeaderLabels(
-            ["ID", "№", "Статус", "Заказов"]
+            ["Грузоместо", "Заказы", "Статус", "Действия"]
         )
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.ExtendedSelection)
@@ -142,14 +154,16 @@ class OzonContainersDialog(QDialog):
         self.table.setShowGrid(False)
         self.table.setFocusPolicy(Qt.NoFocus)
         hdr = self.table.horizontalHeader()
-        hdr.setStretchLastSection(True)
-        hdr.setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        hdr.setStretchLastSection(False)
+        hdr.setSectionResizeMode(0, QHeaderView.Stretch)
         hdr.setSectionResizeMode(1, QHeaderView.ResizeToContents)
-        hdr.setSectionResizeMode(2, QHeaderView.Stretch)
+        hdr.setSectionResizeMode(2, QHeaderView.ResizeToContents)
+        hdr.setSectionResizeMode(3, QHeaderView.ResizeToContents)
         self.table.verticalHeader().setVisible(False)
-        self.table.verticalHeader().setDefaultSectionSize(44)
+        self.table.verticalHeader().setDefaultSectionSize(56)
         root.addWidget(self.table, 1)
 
+        # Keep bind helpers for selected posting (desktop convenience; web uses scan).
         bind_row = QHBoxLayout()
         bind_row.setSpacing(8)
         bind_row.addWidget(QLabel("Отправление:"))
@@ -168,50 +182,30 @@ class OzonContainersDialog(QDialog):
         self.unbind_btn = QPushButton("Отвязать")
         self.unbind_btn.setObjectName("secondary")
         self.unbind_btn.clicked.connect(self.unbind_selected)
-        bind_row.addWidget(self.posting_combo, 1)
-        bind_row.addWidget(self.bind_btn)
-        bind_row.addWidget(self.unbind_btn)
-        root.addLayout(bind_row)
-
-        actions = QHBoxLayout()
-        actions.setSpacing(8)
-        self.refresh_btn = QPushButton("Обновить")
-        self.refresh_btn.setObjectName("secondary")
-        self.refresh_btn.clicked.connect(self.reload)
         self.reconcile_btn = QPushButton("Сверить с Ozon")
         self.reconcile_btn.setObjectName("secondary")
         self.reconcile_btn.clicked.connect(self.reconcile)
-        self.archive_btn = QPushButton("В архив")
-        self.archive_btn.setObjectName("secondary")
-        self.archive_btn.clicked.connect(self.archive_selected)
-        self.restore_btn = QPushButton("Из архива")
-        self.restore_btn.setObjectName("secondary")
-        self.restore_btn.clicked.connect(self.restore_selected)
-        self.approve_btn = QPushButton("Подтвердить")
-        self.approve_btn.clicked.connect(self.approve_selected)
-        self.labels_btn = QPushButton("Этикетки PDF")
-        self.labels_btn.setObjectName("secondary")
-        self.labels_btn.clicked.connect(self.print_labels)
-        self.delete_btn = QPushButton("Удалить")
-        self.delete_btn.setObjectName("danger")
-        self.delete_btn.clicked.connect(self.delete_selected)
-        actions.addWidget(self.refresh_btn)
-        actions.addWidget(self.reconcile_btn)
-        actions.addWidget(self.archive_btn)
-        actions.addWidget(self.restore_btn)
-        actions.addWidget(self.approve_btn)
-        actions.addWidget(self.labels_btn)
-        actions.addWidget(self.delete_btn)
-        actions.addStretch(1)
-        root.addLayout(actions)
+        bind_row.addWidget(self.posting_combo, 1)
+        bind_row.addWidget(self.bind_btn)
+        bind_row.addWidget(self.unbind_btn)
+        bind_row.addWidget(self.reconcile_btn)
+        root.addLayout(bind_row)
 
-        self.reload()
+        self.reload(auto_reconcile=True)
 
     def _step_amount(self, delta: int) -> None:
         self.amount.setValue(max(1, min(100, self.amount.value() + int(delta))))
 
     def _on_show_archived(self, checked: bool) -> None:
         self._include_archived = bool(checked)
+        self.reload()
+
+    def _on_show_sc(self, checked: bool) -> None:
+        self._include_sc_accepted = bool(checked)
+        self.reload()
+
+    def _on_only_supply(self, checked: bool) -> None:
+        self._only_this_supply = bool(checked)
         self.reload()
 
     def _selected_ids(self) -> List[int]:
@@ -221,7 +215,7 @@ class OzonContainersDialog(QDialog):
             if not item:
                 continue
             try:
-                cid = int(item.data(Qt.UserRole) or item.text() or 0)
+                cid = int(item.data(Qt.UserRole) or 0)
             except (TypeError, ValueError):
                 cid = 0
             if cid > 0:
@@ -231,13 +225,39 @@ class OzonContainersDialog(QDialog):
     def _selected_posting(self) -> str:
         return str(self.posting_combo.currentData() or "").strip()
 
-    def reload(self) -> None:
+    def _row_by_id(self, container_id: int) -> Optional[Dict[str, Any]]:
+        for row in self.containers:
+            if int(row.get("container_id") or 0) == int(container_id):
+                return row
+        return None
+
+    def reload(self, *, auto_reconcile: bool = False) -> None:
         try:
+            if (
+                auto_reconcile
+                and not self._reconciled_once
+                and self.source_id > 0
+                and self.posting_numbers
+            ):
+                self._reconciled_once = True
+                try:
+                    self.svc.reconcile_binds(
+                        self.client,
+                        self.source_id,
+                        self.posting_numbers,
+                        warehouse_id=self.warehouse_id,
+                        carriage_id=self.carriage_id,
+                    )
+                except Exception as exc:
+                    self.info.setText("Сверка: {}".format(exc))
+
             result = self.svc.list_containers(
                 self.client,
                 self.carriage_id,
                 source_id=self.source_id or None,
                 warehouse_id=self.warehouse_id or None,
+                include_sc_accepted=self._include_sc_accepted,
+                only_active=True,
             )
             self.warehouse_id = int(result.get("warehouse_id") or self.warehouse_id or 0)
             items = list(result.get("items") or [])
@@ -246,6 +266,12 @@ class OzonContainersDialog(QDialog):
                     self.source_id,
                     items,
                     include_archived=self._include_archived,
+                )
+                items = self.svc.enrich_for_supply(
+                    items,
+                    source_id=self.source_id,
+                    posting_numbers=self.posting_numbers,
+                    only_this_supply=self._only_this_supply,
                 )
             self.containers = items
             self._render_table()
@@ -265,33 +291,97 @@ class OzonContainersDialog(QDialog):
 
     def _render_table(self) -> None:
         self.table.setRowCount(len(self.containers))
+        if not self.containers:
+            self.table.setRowCount(1)
+            empty = QTableWidgetItem("Нет активных грузомест")
+            empty.setFlags(Qt.ItemIsEnabled)
+            self.table.setItem(0, 0, empty)
+            self.table.setSpan(0, 0, 1, 4)
+            return
+        self.table.clearSpans()
         for i, row in enumerate(self.containers):
             cid = int(row.get("container_id") or 0)
-            id_item = QTableWidgetItem(str(cid))
+            num = row.get("container_number") or "—"
+            meta_bits = [
+                str(row.get("sort_type_label") or "").strip(),
+                str(row.get("cargo_type_label") or "").strip(),
+            ]
+            meta = " · ".join(b for b in meta_bits if b and b != "—")
+            main = "{}\n№ {}{}".format(
+                cid,
+                num,
+                (" · " + meta) if meta else "",
+            )
+            id_item = QTableWidgetItem(main)
             id_item.setData(Qt.UserRole, cid)
             self.table.setItem(i, 0, id_item)
-            self.table.setItem(
-                i, 1, QTableWidgetItem(str(row.get("container_number") or "—"))
+
+            orders_ozon = int(
+                row.get("order_count_ozon")
+                if row.get("order_count_ozon") is not None
+                else row.get("order_count")
+                or 0
             )
-            self.table.setItem(
-                i,
-                2,
-                QTableWidgetItem(
-                    str(row.get("status_label") or row.get("status") or "—")
-                ),
-            )
-            self.table.setItem(
-                i, 3, QTableWidgetItem(str(row.get("order_count") or 0))
-            )
+            self.table.setItem(i, 1, QTableWidgetItem(str(orders_ozon)))
+
+            status = str(row.get("status_label") or row.get("status") or "—")
+            if row.get("locally_archived"):
+                status = "{} · скрыто локально".format(status)
+            self.table.setItem(i, 2, QTableWidgetItem(status))
+
+            actions = QWidget()
+            lay = QHBoxLayout(actions)
+            lay.setContentsMargins(4, 2, 4, 2)
+            lay.setSpacing(4)
+
+            approve_btn = QPushButton("✓")
+            approve_btn.setFixedWidth(36)
+            approve_btn.setToolTip("Подтвердить состав грузоместа")
+            approve_btn.setEnabled(bool(row.get("can_approve")))
+            approve_btn.clicked.connect(partial(self._approve_one, cid))
+            print_btn = QPushButton("⎙")
+            print_btn.setObjectName("secondary")
+            print_btn.setFixedWidth(36)
+            print_btn.setToolTip("Печать этикетки")
+            print_btn.setEnabled(row.get("can_print") is not False)
+            print_btn.clicked.connect(partial(self._print_one, cid))
+            delete_btn = QPushButton("✕")
+            delete_btn.setObjectName("danger")
+            delete_btn.setFixedWidth(36)
+            delete_btn.setToolTip("Удалить грузоместо")
+            delete_btn.setEnabled(bool(row.get("can_delete")))
+            delete_btn.clicked.connect(partial(self._delete_one, cid))
+            lay.addWidget(approve_btn)
+            lay.addWidget(print_btn)
+            lay.addWidget(delete_btn)
+
+            if row.get("locally_archived"):
+                restore_btn = QPushButton("⤴")
+                restore_btn.setObjectName("secondary")
+                restore_btn.setFixedWidth(36)
+                restore_btn.setToolTip("Вернуть из локального архива")
+                restore_btn.clicked.connect(partial(self._restore_one, cid))
+                lay.addWidget(restore_btn)
+            elif not row.get("is_sc_accepted"):
+                archive_btn = QPushButton("⤵")
+                archive_btn.setObjectName("secondary")
+                archive_btn.setFixedWidth(36)
+                archive_btn.setToolTip("В локальный архив (без Ozon)")
+                archive_btn.clicked.connect(partial(self._archive_one, cid))
+                lay.addWidget(archive_btn)
+
+            lay.addStretch(1)
+            self.table.setCellWidget(i, 3, actions)
 
     def create_containers(self) -> None:
-        cargo = str(self.type_combo.currentData() or "pallet")
+        sort_type = str(self.sort_combo.currentData() or "sort")
         try:
             result = self.svc.create(
                 self.client,
                 self.carriage_id,
                 self.amount.value(),
-                container_type=cargo,
+                container_type="pallet",
+                sort_type=sort_type,
                 source_id=self.source_id or None,
                 warehouse_id=self.warehouse_id or None,
             )
@@ -305,110 +395,120 @@ class OzonContainersDialog(QDialog):
         except Exception as exc:
             QMessageBox.warning(self, "Грузоместа", str(exc))
 
-    def delete_selected(self) -> None:
-        ids = self._selected_ids()
-        if not ids:
-            QMessageBox.information(self, "Грузоместа", "Выберите грузоместа.")
-            return
+    def _delete_one(self, container_id: int) -> None:
         if (
             QMessageBox.question(
                 self,
                 "Грузоместа",
-                "Удалить выбранные грузоместа ({})?".format(len(ids)),
+                "Удалить грузоместо {}?".format(container_id),
             )
             != QMessageBox.Yes
         ):
             return
         try:
-            result = self.svc.delete(self.client, ids)
-            QMessageBox.information(
-                self, "Грузоместа", str(result.get("message") or "Готово")
-            )
+            result = self.svc.delete(self.client, [container_id])
+            if result.get("errors"):
+                err = result["errors"][0].get("error") or "Ошибка удаления"
+                QMessageBox.warning(self, "Грузоместа", str(err))
+            else:
+                self.info.setText(str(result.get("message") or "Удалено"))
             self.reload()
         except Exception as exc:
             QMessageBox.warning(self, "Грузоместа", str(exc))
 
-    def approve_selected(self) -> None:
-        ids = self._selected_ids()
-        if not ids:
-            QMessageBox.information(self, "Грузоместа", "Выберите грузоместа.")
-            return
-        if (
+    def _approve_one(self, container_id: int) -> None:
+        if self.source_id > 0 and self.posting_numbers:
+            unbound = self.svc.unbound_supply_postings(
+                self.source_id, self.posting_numbers
+            )
+            if unbound:
+                preview = ", ".join(unbound[:5])
+                more = "…" if len(unbound) > 5 else ""
+                if (
+                    QMessageBox.question(
+                        self,
+                        "Грузоместа",
+                        "Не все отправления поставки в грузоместах "
+                        "({}): {}{}.\nВсё равно подтвердить?".format(
+                            len(unbound), preview, more
+                        ),
+                    )
+                    != QMessageBox.Yes
+                ):
+                    return
+        elif (
             QMessageBox.question(
                 self,
                 "Грузоместа",
-                "Подтвердить состав выбранных грузомест ({})?".format(len(ids)),
+                "Подтвердить состав грузоместа {}?".format(container_id),
             )
             != QMessageBox.Yes
         ):
             return
         try:
-            result = self.svc.approve(self.client, ids)
-            QMessageBox.information(
-                self, "Грузоместа", str(result.get("message") or "Готово")
-            )
+            result = self.svc.approve(self.client, [container_id], wait_task=True)
+            if not result.get("ok"):
+                err = ""
+                errors = result.get("errors") or []
+                if errors:
+                    err = str(errors[0].get("error") or "")
+                QMessageBox.warning(
+                    self,
+                    "Грузоместа",
+                    err or str(result.get("message") or "Ошибка подтверждения"),
+                )
+            else:
+                QMessageBox.information(
+                    self, "Грузоместа", str(result.get("message") or "Готово")
+                )
             self.reload()
         except Exception as exc:
             QMessageBox.warning(self, "Грузоместа", str(exc))
 
-    def print_labels(self) -> None:
-        ids = self._selected_ids()
-        if not ids:
-            ids = [
-                int(c.get("container_id") or 0)
-                for c in self.containers
-                if int(c.get("container_id") or 0) > 0
-            ]
-        if not ids:
-            QMessageBox.information(self, "Грузоместа", "Нет грузомест для печати.")
-            return
+    def _print_one(self, container_id: int) -> None:
         try:
-            _payload, path = self.svc.labels_pdf(self.client, ids)
-            self.info.setText("Этикетки сохранены: {}".format(path))
+            _payload, path = self.svc.labels_pdf(self.client, [container_id])
+            self.info.setText("Этикетка сохранена: {}".format(path))
             QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
         except Exception as exc:
             QMessageBox.warning(self, "Грузоместа", str(exc))
 
-    def archive_selected(self) -> None:
-        ids = self._selected_ids()
-        if not ids:
-            QMessageBox.information(self, "Грузоместа", "Выберите грузоместа.")
-            return
+    def _archive_one(self, container_id: int) -> None:
         if self.source_id <= 0:
             QMessageBox.information(
                 self, "Грузоместа", "Нужен источник для локального архива."
             )
             return
         try:
-            for cid in ids:
-                self.svc.archive_locally(self.source_id, cid)
+            self.svc.archive_locally(self.source_id, container_id)
             self.reload()
-            QMessageBox.information(
-                self,
-                "Грузоместа",
-                "В локальный архив: {}".format(len(ids)),
-            )
         except Exception as exc:
             QMessageBox.warning(self, "Грузоместа", str(exc))
 
-    def restore_selected(self) -> None:
-        ids = self._selected_ids()
-        if not ids:
-            QMessageBox.information(self, "Грузоместа", "Выберите грузоместа.")
-            return
+    def _restore_one(self, container_id: int) -> None:
         if self.source_id <= 0:
             return
         try:
-            for cid in ids:
-                self.svc.restore_locally(self.source_id, cid)
+            self.svc.restore_locally(self.source_id, container_id)
             self.reload()
-            QMessageBox.information(
-                self,
-                "Грузоместа",
-                "Восстановлено из архива: {}".format(len(ids)),
-            )
         except Exception as exc:
             QMessageBox.warning(self, "Грузоместа", str(exc))
+
+    def print_supply_barcode(self) -> None:
+        """ШК поставки — same entry as supply detail button."""
+        parent = self.parent()
+        if parent is not None and hasattr(parent, "open_shipments_barcode"):
+            try:
+                parent.open_shipments_barcode()
+                return
+            except Exception as exc:
+                QMessageBox.warning(self, "Грузоместа", str(exc))
+                return
+        QMessageBox.information(
+            self,
+            "Грузоместа",
+            "Откройте печать ШК поставки из карточки поставки.",
+        )
 
     def reconcile(self) -> None:
         if self.source_id <= 0 or not self.posting_numbers:
@@ -440,6 +540,15 @@ class OzonContainersDialog(QDialog):
         if len(ids) != 1:
             QMessageBox.information(
                 self, "Грузоместа", "Выберите одно грузоместо для привязки."
+            )
+            return
+        row = self._row_by_id(ids[0])
+        if row is not None and not row.get("can_fill", True):
+            QMessageBox.information(
+                self,
+                "Грузоместа",
+                "В это грузоместо нельзя добавлять отправления "
+                "(уже подтверждено или принято на СЦ).",
             )
             return
         if not pn:

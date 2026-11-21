@@ -126,6 +126,108 @@ class OzonContainerClientBodiesTest(unittest.TestCase):
         )
 
 
+class OzonContainersNormalizeFilterTest(unittest.TestCase):
+    def test_normalize_flags_and_labels(self) -> None:
+        from app.services.ozon_containers import (
+            is_active_container,
+            is_sc_accepted_container,
+            normalize_container,
+        )
+
+        row = normalize_container(
+            {
+                "container_id": 9,
+                "container_number": 2,
+                "status": "new",
+                "count_of_postings": 3,
+                "cargo_type": "pallet",
+                "sort_type": "sort",
+                "available_actions": ["delete", "approve", "get_label_container"],
+            }
+        )
+        self.assertIsNotNone(row)
+        assert row is not None
+        self.assertEqual(row["sort_type_label"], "Сортируемое")
+        self.assertEqual(row["cargo_type_label"], "Паллета")
+        self.assertTrue(row["can_delete"])
+        self.assertTrue(row["can_approve"])
+        self.assertTrue(row["can_print"])
+        self.assertTrue(row["can_fill"])
+        self.assertTrue(is_active_container(row))
+        self.assertFalse(is_sc_accepted_container(row))
+
+        sc = normalize_container(
+            {
+                "container_id": 10,
+                "status": "finished",
+                "count_of_postings": 1,
+                "available_actions": [],
+            }
+        )
+        assert sc is not None
+        self.assertTrue(is_sc_accepted_container(sc))
+        self.assertFalse(is_active_container(sc))
+
+    def test_list_hides_sc_accepted_by_default(self) -> None:
+        client = OzonFbsClient("cid", "key")
+        svc = OzonContainersService()
+
+        def fake_request(method, path, body=None):
+            return {
+                "containers": [
+                    {
+                        "container_id": 1,
+                        "status": "new",
+                        "available_actions": ["delete", "approve"],
+                        "count_of_postings": 0,
+                    },
+                    {
+                        "container_id": 2,
+                        "status": "finished",
+                        "available_actions": [],
+                        "count_of_postings": 5,
+                    },
+                    {
+                        "container_id": 3,
+                        "status": "shipped",
+                        "available_actions": [],
+                        "count_of_postings": 1,
+                    },
+                ]
+            }
+
+        with patch.object(client, "_request", side_effect=fake_request):
+            hidden = svc.list_containers(client, 1, warehouse_id=10)
+            shown = svc.list_containers(
+                client, 1, warehouse_id=10, include_sc_accepted=True
+            )
+        self.assertEqual([r["container_id"] for r in hidden["items"]], [1])
+        ids_shown = [r["container_id"] for r in shown["items"]]
+        self.assertIn(1, ids_shown)
+        self.assertIn(2, ids_shown)
+        self.assertNotIn(3, ids_shown)
+
+    def test_approve_waits_task(self) -> None:
+        client = OzonFbsClient("cid", "key")
+        svc = OzonContainersService()
+        calls = []
+
+        def fake_request(method, path, body=None):
+            calls.append(path)
+            if path.endswith("/approve"):
+                return {"task_id": 42}
+            if path.endswith("/task/info"):
+                return {"status": "done"}
+            return {}
+
+        with patch.object(client, "_request", side_effect=fake_request):
+            result = svc.approve(client, [7], wait_task=True)
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["task_id"], 42)
+        self.assertIn("/v1/carriage/container/approve", calls)
+        self.assertIn("/v1/carriage/container/task/info", calls)
+
+
 class OzonContainersServiceTest(unittest.TestCase):
     def setUp(self) -> None:
         self.client = OzonFbsClient("cid", "key")

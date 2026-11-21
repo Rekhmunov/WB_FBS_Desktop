@@ -437,6 +437,10 @@ class OzonSupplyDetailDialog(QDialog):
         self.reload(hydrate=True)
 
     def closeEvent(self, event) -> None:  # type: ignore[override]
+        try:
+            self._col_widths.persist()
+        except Exception:
+            pass
         if self._hydrate_worker and self._hydrate_worker.isRunning():
             self._hydrate_worker.request_stop()
         super(OzonSupplyDetailDialog, self).closeEvent(event)
@@ -627,16 +631,22 @@ class OzonSupplyDetailDialog(QDialog):
                 return False
 
             rows = [r for r in self._rows if _match(r)]
-        self.table.setRowCount(len(rows))
-        for i, r in enumerate(rows):
-            pnum = str(r.get("posting_number") or "")
-            # Keep a data item under the cell widget for selection / UserRole.
-            item = QTableWidgetItem(pnum)
-            item.setData(Qt.UserRole, pnum)
-            self.table.setItem(i, 0, item)
-            self.table.setCellWidget(i, 0, build_ozon_posting_cell_widget(r))
-            self.table.setCellWidget(i, 1, build_product_cell_widget(r, photo_size=72))
-            self.table.setRowHeight(i, 121)
+        self._col_widths.begin_update()
+        try:
+            self.table.setRowCount(len(rows))
+            for i, r in enumerate(rows):
+                pnum = str(r.get("posting_number") or "")
+                # Keep a data item under the cell widget for selection / UserRole.
+                item = QTableWidgetItem(pnum)
+                item.setData(Qt.UserRole, pnum)
+                self.table.setItem(i, 0, item)
+                self.table.setCellWidget(i, 0, build_ozon_posting_cell_widget(r))
+                self.table.setCellWidget(
+                    i, 1, build_product_cell_widget(r, photo_size=72)
+                )
+                self.table.setRowHeight(i, 121)
+        finally:
+            self._col_widths.end_update()
 
     def _posting_numbers(self) -> List[str]:
         return [

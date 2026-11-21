@@ -517,6 +517,9 @@ class FbsPage(QWidget):
     def on_tab_change(self, key: str) -> None:
         if key not in ("new", "assembly", "delivery"):
             key = "new"
+        # Flush current layout widths before the table is rebuilt for another tab.
+        self._col_width_save_timer.stop()
+        self._persist_table_col_widths()
         self._tab = key
         for k, btn in self.tab_btns.items():
             btn.setChecked(k == key)
@@ -706,12 +709,13 @@ class FbsPage(QWidget):
             self._col_settings_key(layout), json.dumps(widths, separators=(",", ":"))
         )
 
-    def _apply_table_col_widths(self, layout: str) -> None:
+    def _apply_table_col_widths(self, layout: str, *, keep_guard: bool = False) -> None:
         hdr = self.table.horizontalHeader()
         count = hdr.count()
         if count <= 0:
             return
         widths = self._load_col_widths(layout, count)
+        prev_guard = self._col_widths_guard
         self._col_widths_guard = True
         try:
             hdr.setStretchLastSection(False)
@@ -719,7 +723,12 @@ class FbsPage(QWidget):
                 hdr.setSectionResizeMode(i, QHeaderView.Interactive)
                 self.table.setColumnWidth(i, widths[i])
         finally:
-            self._col_widths_guard = False
+            # keep_guard: stay blocked until deferred re-apply finishes.
+            self._col_widths_guard = True if keep_guard else prev_guard
+
+    def _reapply_table_col_widths(self, layout: str) -> None:
+        self._apply_table_col_widths(layout, keep_guard=True)
+        self._col_widths_guard = False
 
     def _on_column_resized(
         self, _logical_index: int, _old_size: int, _new_size: int
@@ -766,6 +775,8 @@ class FbsPage(QWidget):
             pass
         cols = ["", "Заказ", "Товар", "Склад"]
         self.table.blockSignals(True)
+        self._col_widths_guard = True
+        self._col_width_save_timer.stop()
         self.table.clear()
         self.table.setColumnCount(len(cols))
         self.table.setHorizontalHeaderLabels(cols)
@@ -782,6 +793,7 @@ class FbsPage(QWidget):
             self.table.setItem(r, 0, chk)
 
             order_widget = QWidget()
+            order_widget.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Minimum)
             order_lay = QVBoxLayout(order_widget)
             order_lay.setContentsMargins(10, 10, 10, 10)
             order_lay.setSpacing(4)
@@ -810,6 +822,7 @@ class FbsPage(QWidget):
             self.table.setCellWidget(r, 1, order_widget)
 
             prod_widget = QWidget()
+            prod_widget.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Minimum)
             prod_outer = QHBoxLayout(prod_widget)
             prod_outer.setContentsMargins(10, 10, 10, 10)
             prod_outer.setSpacing(12)
@@ -822,23 +835,27 @@ class FbsPage(QWidget):
             name_lab = QLabel(name)
             name_lab.setObjectName("productName")
             name_lab.setWordWrap(True)
+            name_lab.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
             text_col.addWidget(name_lab)
             sub_parts = ["Арт. {}".format(article or "—")]
             if row.get("nm_id"):
                 sub_parts.append("nmId {}".format(row.get("nm_id")))
             sub = QLabel(" · ".join(sub_parts))
             sub.setObjectName("productSub")
+            sub.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
             text_col.addWidget(sub)
             skus = row.get("skus") or []
             for s in skus[:4]:
                 bc = QLabel(str(s))
                 bc.setObjectName("barcodeLine")
+                bc.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
                 text_col.addWidget(bc)
             text_col.addStretch(1)
             prod_outer.addLayout(text_col, 1)
             self.table.setCellWidget(r, 2, prod_widget)
 
             wh_widget = QWidget()
+            wh_widget.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Minimum)
             wh_lay = QVBoxLayout(wh_widget)
             wh_lay.setContentsMargins(10, 10, 10, 10)
             wh_lay.setSpacing(4)
@@ -846,6 +863,7 @@ class FbsPage(QWidget):
             wh_lab = QLabel(wh_name)
             wh_lab.setObjectName("whName")
             wh_lab.setWordWrap(True)
+            wh_lab.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
             wh_lay.addWidget(wh_lab)
             if row.get("warehouse_id") is not None:
                 wh_id = QLabel("ID {}".format(row.get("warehouse_id")))
@@ -858,7 +876,9 @@ class FbsPage(QWidget):
             self.table.setRowHeight(r, max(self.table.rowHeight(r), 132))
         self.table.blockSignals(False)
         self.table.itemChanged.connect(self._on_check_change)
-        self._apply_table_col_widths("new")
+        self._apply_table_col_widths("new", keep_guard=True)
+        # Re-apply after deferred layout so cell widgets cannot keep a stretch.
+        QTimer.singleShot(0, lambda: self._reapply_table_col_widths("new"))
 
     def _on_check_change(self, item: QTableWidgetItem) -> None:
         if item.column() != 0:
@@ -935,6 +955,8 @@ class FbsPage(QWidget):
             ]
             layout = "supplies_assembly"
         self.table.blockSignals(True)
+        self._col_widths_guard = True
+        self._col_width_save_timer.stop()
         self.table.clear()
         self.table.setColumnCount(len(cols))
         self.table.setHorizontalHeaderLabels(cols)
@@ -949,7 +971,7 @@ class FbsPage(QWidget):
             self.table.setItem(r, 0, chk)
 
             name_widget = QWidget()
-            name_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
+            name_widget.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Minimum)
             name_lay = QVBoxLayout(name_widget)
             name_lay.setContentsMargins(12, 8, 12, 8)
             name_lay.setSpacing(4)
@@ -1050,7 +1072,8 @@ class FbsPage(QWidget):
             self.table.setRowHeight(r, max(self.table.rowHeight(r), min_h))
         self.table.blockSignals(False)
         self.table.itemChanged.connect(self._on_check_change)
-        self._apply_table_col_widths(layout)
+        self._apply_table_col_widths(layout, keep_guard=True)
+        QTimer.singleShot(0, lambda lay=layout: self._reapply_table_col_widths(lay))
 
     def _open_supply_by_id(self, sid: str) -> None:
         from app.ui.supply_detail import SupplyDetailDialog

@@ -398,30 +398,36 @@ class OzonCarriageDetailDialog(QDialog):
                 or q in str(r.get("sku") or "").lower()
                 or q in str(r.get("product_name_display") or "").lower()
             ]
-        self.table.setRowCount(len(rows))
-        for i, r in enumerate(rows):
-            self.table.setItem(
-                i, 0, QTableWidgetItem(str(r.get("posting_number") or ""))
-            )
-            self.table.setCellWidget(
-                i,
-                1,
-                build_product_cell_widget(r, photo_size=72),
-            )
-            marks = []
-            try:
-                marks = json.loads(str(r.get("marks_json") or "[]"))
-            except Exception:
+        self._col_widths.begin_update()
+        try:
+            self.table.setRowCount(len(rows))
+            for i, r in enumerate(rows):
+                self.table.setItem(
+                    i, 0, QTableWidgetItem(str(r.get("posting_number") or ""))
+                )
+                self.table.setCellWidget(
+                    i,
+                    1,
+                    build_product_cell_widget(r, photo_size=72),
+                )
                 marks = []
-            mark_text = "✓" if marks and int(r.get("marks_synced") or 0) else (
-                "…" if marks else "—"
-            )
-            self.table.setItem(i, 2, QTableWidgetItem(mark_text))
-            pick_ok = bool(int(r.get("pick_verified") or 0))
-            self.table.setItem(
-                i, 3, QTableWidgetItem("✓" if pick_ok else "—")
-            )
-            self.table.setRowHeight(i, 106)
+                try:
+                    marks = json.loads(str(r.get("marks_json") or "[]"))
+                except Exception:
+                    marks = []
+                mark_text = (
+                    "✓"
+                    if marks and int(r.get("marks_synced") or 0)
+                    else ("…" if marks else "—")
+                )
+                self.table.setItem(i, 2, QTableWidgetItem(mark_text))
+                pick_ok = bool(int(r.get("pick_verified") or 0))
+                self.table.setItem(
+                    i, 3, QTableWidgetItem("✓" if pick_ok else "—")
+                )
+                self.table.setRowHeight(i, 106)
+        finally:
+            self._col_widths.end_update()
 
     def open_mark(self) -> None:
         from app.ui.ozon_mark_dialog import OzonMarkDialog

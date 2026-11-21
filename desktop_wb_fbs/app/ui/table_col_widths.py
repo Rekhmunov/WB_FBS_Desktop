@@ -40,7 +40,12 @@ def normalize_defaults(
 
 
 class PersistentColumnWidths(QObject):
-    """Interactive header widths saved under ``app_settings`` key."""
+    """Interactive header widths saved under ``app_settings`` key.
+
+    Call ``begin_update()`` / ``end_update()`` around bulk table rebuilds so
+    cell widgets cannot overwrite the user's widths (and so we do not persist
+    those transient resizes). ``end_update()`` re-applies the saved widths.
+    """
 
     def __init__(
         self,
@@ -60,13 +65,43 @@ class PersistentColumnWidths(QObject):
         self.defaults = list(defaults or [])
         self.min_width = int(min_width)
         self._guard = False
+        self._bulk = 0
         self._save_timer = QTimer(self)
         self._save_timer.setSingleShot(True)
         self._save_timer.setInterval(max(50, int(save_delay_ms)))
         self._save_timer.timeout.connect(self.persist)
+        self._reapply_timer = QTimer(self)
+        self._reapply_timer.setSingleShot(True)
+        self._reapply_timer.setInterval(0)
+        self._reapply_timer.timeout.connect(self._on_deferred_reapply)
         hdr = self.table.horizontalHeader()
         hdr.setMinimumSectionSize(self.min_width)
+        hdr.setStretchLastSection(False)
+        hdr.setSectionResizeMode(QHeaderView.Interactive)
         hdr.sectionResized.connect(self._on_section_resized)
+
+    def begin_update(self) -> None:
+        """Suppress persist while the table is being rebuilt."""
+        self._bulk += 1
+        self._guard = True
+        self._save_timer.stop()
+        self._reapply_timer.stop()
+
+    def end_update(self, *, reapply: bool = True) -> None:
+        """Finish a bulk rebuild; optionally restore saved widths."""
+        if self._bulk > 0:
+            self._bulk -= 1
+        if self._bulk > 0:
+            return
+        self._save_timer.stop()
+        if not reapply:
+            self._guard = False
+            return
+        # Keep guard until deferred re-apply finishes — cell widgets / layout
+        # can stretch sections after the first apply and would otherwise be saved.
+        self._guard = True
+        self.apply()
+        self._reapply_timer.start()
 
     def load_widths(self, count: int) -> List[int]:
         raw = self.db.get_setting(self.settings_key, "") if self.settings_key else ""
@@ -83,6 +118,7 @@ class PersistentColumnWidths(QObject):
         if count <= 0:
             return
         widths = self.load_widths(count)
+        prev_guard = self._guard
         self._guard = True
         try:
             hdr.setStretchLastSection(False)
@@ -90,7 +126,8 @@ class PersistentColumnWidths(QObject):
                 hdr.setSectionResizeMode(i, QHeaderView.Interactive)
                 self.table.setColumnWidth(i, widths[i])
         finally:
-            self._guard = False
+            # Preserve caller's guard (bulk update / deferred re-apply).
+            self._guard = prev_guard or self._bulk > 0
 
     def use_layout(
         self, settings_key: str, defaults: Sequence[int]
@@ -102,14 +139,19 @@ class PersistentColumnWidths(QObject):
             and new_key
             and new_key != self.settings_key
             and not self._guard
+            and self._bulk <= 0
         ):
             self.persist()
         self.settings_key = new_key
         self.defaults = list(defaults or [])
         self.apply()
+        if self._bulk <= 0:
+            # Re-apply after deferred layout when switching tabs/layouts.
+            self._guard = True
+            self._reapply_timer.start()
 
     def persist(self) -> None:
-        if self._guard or not self.settings_key:
+        if self._guard or self._bulk > 0 or not self.settings_key:
             return
         hdr = self.table.horizontalHeader()
         count = hdr.count()
@@ -120,9 +162,15 @@ class PersistentColumnWidths(QObject):
             self.settings_key, json.dumps(widths, separators=(",", ":"))
         )
 
+    def _on_deferred_reapply(self) -> None:
+        self._guard = True
+        self.apply()
+        if self._bulk <= 0:
+            self._guard = False
+
     def _on_section_resized(
         self, _logical_index: int, _old_size: int, _new_size: int
     ) -> None:
-        if self._guard:
+        if self._guard or self._bulk > 0:
             return
         self._save_timer.start()

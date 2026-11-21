@@ -188,7 +188,6 @@ class OzonPickDialog(QDialog):
         self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.table.setShowGrid(False)
         self.table.verticalHeader().setVisible(False)
-        self.table.horizontalHeader().setStretchLastSection(True)
         self._col_widths = PersistentColumnWidths(
             self.pick.db,
             self.table,
@@ -207,6 +206,10 @@ class OzonPickDialog(QDialog):
         self._scan_mode.activate()
 
     def closeEvent(self, event) -> None:  # noqa: N802
+        try:
+            self._col_widths.persist()
+        except Exception:
+            pass
         try:
             self._scan_mode.deactivate()
         except Exception:
@@ -320,14 +323,20 @@ class OzonPickDialog(QDialog):
                     continue
             visible.append(r)
 
-        self.table.setRowCount(len(visible))
-        for i, r in enumerate(visible):
-            self.table.setCellWidget(i, 0, build_ozon_posting_cell_widget(r))
-            self.table.setCellWidget(
-                i, 1, build_product_cell_widget(r, photo_size=120)
-            )
-            self.table.setCellWidget(i, 2, self._build_status_widget(r))
-            self.table.setRowHeight(i, max(148, self.table.sizeHintForRow(i)))
+        self._col_widths.begin_update()
+        try:
+            self.table.setRowCount(len(visible))
+            for i, r in enumerate(visible):
+                self.table.setCellWidget(i, 0, build_ozon_posting_cell_widget(r))
+                self.table.setCellWidget(
+                    i, 1, build_product_cell_widget(r, photo_size=120)
+                )
+                self.table.setCellWidget(i, 2, self._build_status_widget(r))
+                self.table.setRowHeight(
+                    i, max(148, self.table.sizeHintForRow(i))
+                )
+        finally:
+            self._col_widths.end_update()
         self._update_counter()
 
     def _update_counter(self) -> None:

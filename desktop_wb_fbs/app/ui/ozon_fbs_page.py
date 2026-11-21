@@ -494,6 +494,8 @@ class OzonFbsPage(QWidget):
         return self.sources.get(int(sid))
 
     def on_tab_change(self, tab: str) -> None:
+        # Flush current layout widths before the table is rebuilt for another tab.
+        self._col_widths.persist()
         self._tab = tab
         self._page = 0
         self._selected_postings.clear()
@@ -670,34 +672,90 @@ class OzonFbsPage(QWidget):
                 "ok",
             )
         if supplies or not self.orders.list_open_carriages(sid):
+            self._col_widths.begin_update()
+            try:
+                self.table.setColumnCount(3)
+                self.table.setHorizontalHeaderLabels(
+                    ["Поставка / отправление", "Статус / товар", "Отправлений"]
+                )
+                total_rows = len(supplies) + len(orphans)
+                self.table.setRowCount(total_rows)
+                row_i = 0
+                for s in supplies:
+                    name = str(s.get("name") or s.get("supply_id") or "")
+                    item = QTableWidgetItem(name)
+                    item.setData(
+                        Qt.UserRole, ("supply", str(s.get("supply_id") or ""))
+                    )
+                    self.table.setItem(row_i, 0, item)
+                    pill = make_status_pill(
+                        str(s.get("status_label") or "Сборка заказов"),
+                        str(s.get("status_kind") or "awaiting_deliver"),
+                    )
+                    wrap = QWidget()
+                    wrap.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Minimum)
+                    lay = QHBoxLayout(wrap)
+                    lay.setContentsMargins(8, 8, 8, 8)
+                    lay.addWidget(pill, 0, Qt.AlignLeft)
+                    lay.addStretch(1)
+                    self.table.setCellWidget(row_i, 1, wrap)
+                    self.table.setItem(
+                        row_i,
+                        2,
+                        QTableWidgetItem(str(int(s.get("posting_count") or 0))),
+                    )
+                    self.table.setRowHeight(row_i, 56)
+                    row_i += 1
+                for r in orphans:
+                    pnum = str(r.get("posting_number") or "")
+                    label = "· {}".format(pnum) if pnum else "· —"
+                    item = QTableWidgetItem(label)
+                    item.setData(Qt.UserRole, ("posting", pnum))
+                    self.table.setItem(row_i, 0, item)
+                    self.table.setCellWidget(row_i, 1, self._product_cell(r))
+                    self.table.setItem(
+                        row_i,
+                        2,
+                        QTableWidgetItem(str(r.get("status_label") or "—")),
+                    )
+                    self.table.setRowHeight(row_i, 132)
+                    row_i += 1
+            finally:
+                self._col_widths.end_update(reapply=False)
+            self._apply_ozon_col_widths("supplies")
+            self.pager_total.setText("Ожидают отгрузки: {}".format(total_rows))
+            self.page_label.setText("1 / 1")
+            self.prev_btn.setEnabled(False)
+            self.next_btn.setEnabled(False)
+            return
+
+        carriages = self.orders.list_open_carriages(sid)
+        self._col_widths.begin_update()
+        try:
             self.table.setColumnCount(3)
             self.table.setHorizontalHeaderLabels(
-                ["Поставка / отправление", "Статус / товар", "Отправлений"]
+                ["Отгрузка / отправление", "Статус / товар", "Отправлений"]
             )
-            total_rows = len(supplies) + len(orphans)
+            total_rows = len(carriages) + len(orphans)
             self.table.setRowCount(total_rows)
             row_i = 0
-            for s in supplies:
-                name = str(s.get("name") or s.get("supply_id") or "")
-                item = QTableWidgetItem(name)
-                item.setData(
-                    Qt.UserRole, ("supply", str(s.get("supply_id") or ""))
-                )
+            for c in carriages:
+                item = QTableWidgetItem(str(c.get("carriage_id") or ""))
+                item.setData(Qt.UserRole, ("carriage", str(c.get("carriage_id") or "")))
                 self.table.setItem(row_i, 0, item)
                 pill = make_status_pill(
-                    str(s.get("status_label") or "Сборка заказов"),
-                    str(s.get("status_kind") or "awaiting_deliver"),
+                    str(c.get("status_label") or "—"),
+                    str(c.get("status_kind") or "assembly"),
                 )
                 wrap = QWidget()
+                wrap.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Minimum)
                 lay = QHBoxLayout(wrap)
                 lay.setContentsMargins(8, 8, 8, 8)
                 lay.addWidget(pill, 0, Qt.AlignLeft)
                 lay.addStretch(1)
                 self.table.setCellWidget(row_i, 1, wrap)
                 self.table.setItem(
-                    row_i,
-                    2,
-                    QTableWidgetItem(str(int(s.get("posting_count") or 0))),
+                    row_i, 2, QTableWidgetItem(str(int(c.get("posting_count") or 0)))
                 )
                 self.table.setRowHeight(row_i, 56)
                 row_i += 1
@@ -715,52 +773,8 @@ class OzonFbsPage(QWidget):
                 )
                 self.table.setRowHeight(row_i, 132)
                 row_i += 1
-            self.pager_total.setText("Ожидают отгрузки: {}".format(total_rows))
-            self.page_label.setText("1 / 1")
-            self.prev_btn.setEnabled(False)
-            self.next_btn.setEnabled(False)
-            return
-
-        carriages = self.orders.list_open_carriages(sid)
-        self.table.setHorizontalHeaderLabels(
-            ["Отгрузка / отправление", "Статус / товар", "Отправлений"]
-        )
-        total_rows = len(carriages) + len(orphans)
-        self.table.setRowCount(total_rows)
-        row_i = 0
-        for c in carriages:
-            item = QTableWidgetItem(str(c.get("carriage_id") or ""))
-            item.setData(Qt.UserRole, ("carriage", str(c.get("carriage_id") or "")))
-            self.table.setItem(row_i, 0, item)
-            pill = make_status_pill(
-                str(c.get("status_label") or "—"),
-                str(c.get("status_kind") or "assembly"),
-            )
-            wrap = QWidget()
-            lay = QHBoxLayout(wrap)
-            lay.setContentsMargins(8, 8, 8, 8)
-            lay.addWidget(pill, 0, Qt.AlignLeft)
-            lay.addStretch(1)
-            self.table.setCellWidget(row_i, 1, wrap)
-            self.table.setItem(
-                row_i, 2, QTableWidgetItem(str(int(c.get("posting_count") or 0)))
-            )
-            self.table.setRowHeight(row_i, 56)
-            row_i += 1
-        for r in orphans:
-            pnum = str(r.get("posting_number") or "")
-            label = "· {}".format(pnum) if pnum else "· —"
-            item = QTableWidgetItem(label)
-            item.setData(Qt.UserRole, ("posting", pnum))
-            self.table.setItem(row_i, 0, item)
-            self.table.setCellWidget(row_i, 1, self._product_cell(r))
-            self.table.setItem(
-                row_i,
-                2,
-                QTableWidgetItem(str(r.get("status_label") or "—")),
-            )
-            self.table.setRowHeight(row_i, 132)
-            row_i += 1
+        finally:
+            self._col_widths.end_update(reapply=False)
         self._apply_ozon_col_widths("supplies")
         self.pager_total.setText("Ожидают отгрузки: {}".format(total_rows))
         self.page_label.setText("1 / 1")
@@ -781,107 +795,121 @@ class OzonFbsPage(QWidget):
         *,
         status_col: bool = False,
     ) -> None:
-        self.table.setColumnCount(len(headers) or 3)
-        self.table.setHorizontalHeaderLabels(headers)
-        self.table.setRowCount(len(rows))
-        for i, r in enumerate(rows):
-            pnum = str(r.get("posting_number") or "")
-            item = QTableWidgetItem(pnum)
-            item.setData(Qt.UserRole, pnum)
-            self.table.setItem(i, 0, item)
-            self.table.setCellWidget(i, 1, self._product_cell(r))
-            if status_col:
-                self.table.setItem(
-                    i, 2, QTableWidgetItem(str(r.get("status_label") or "—"))
-                )
-            else:
-                self.table.setItem(
-                    i, 2, QTableWidgetItem(str(r.get("warehouse_name") or "—"))
-                )
-            self.table.setRowHeight(i, 132)
+        self._col_widths.begin_update()
+        try:
+            self.table.setColumnCount(len(headers) or 3)
+            self.table.setHorizontalHeaderLabels(headers)
+            self.table.setRowCount(len(rows))
+            for i, r in enumerate(rows):
+                pnum = str(r.get("posting_number") or "")
+                item = QTableWidgetItem(pnum)
+                item.setData(Qt.UserRole, pnum)
+                self.table.setItem(i, 0, item)
+                self.table.setCellWidget(i, 1, self._product_cell(r))
+                if status_col:
+                    self.table.setItem(
+                        i, 2, QTableWidgetItem(str(r.get("status_label") or "—"))
+                    )
+                else:
+                    self.table.setItem(
+                        i, 2, QTableWidgetItem(str(r.get("warehouse_name") or "—"))
+                    )
+                self.table.setRowHeight(i, 132)
+        finally:
+            self._col_widths.end_update(reapply=False)
         self._apply_ozon_col_widths(
             "postings_status" if status_col else "postings"
         )
 
     def _fill_carriage_rows(self, carriages: List[Dict[str, Any]]) -> None:
-        self.table.setColumnCount(3)
-        self.table.setHorizontalHeaderLabels(
-            ["Отгрузка", "Статус", "Отправлений"]
-        )
-        self.table.setRowCount(len(carriages))
-        for i, c in enumerate(carriages):
-            item = QTableWidgetItem(str(c.get("carriage_id") or ""))
-            item.setData(Qt.UserRole, ("carriage", str(c.get("carriage_id") or "")))
-            self.table.setItem(i, 0, item)
-            pill = make_status_pill(
-                str(c.get("status_label") or "—"),
-                str(c.get("status_kind") or "delivery"),
+        self._col_widths.begin_update()
+        try:
+            self.table.setColumnCount(3)
+            self.table.setHorizontalHeaderLabels(
+                ["Отгрузка", "Статус", "Отправлений"]
             )
-            wrap = QWidget()
-            lay = QHBoxLayout(wrap)
-            lay.setContentsMargins(8, 8, 8, 8)
-            lay.addWidget(pill, 0, Qt.AlignLeft)
-            lay.addStretch(1)
-            self.table.setCellWidget(i, 1, wrap)
-            self.table.setItem(
-                i, 2, QTableWidgetItem(str(int(c.get("posting_count") or 0)))
-            )
-            self.table.setRowHeight(i, 56)
+            self.table.setRowCount(len(carriages))
+            for i, c in enumerate(carriages):
+                item = QTableWidgetItem(str(c.get("carriage_id") or ""))
+                item.setData(Qt.UserRole, ("carriage", str(c.get("carriage_id") or "")))
+                self.table.setItem(i, 0, item)
+                pill = make_status_pill(
+                    str(c.get("status_label") or "—"),
+                    str(c.get("status_kind") or "delivery"),
+                )
+                wrap = QWidget()
+                wrap.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Minimum)
+                lay = QHBoxLayout(wrap)
+                lay.setContentsMargins(8, 8, 8, 8)
+                lay.addWidget(pill, 0, Qt.AlignLeft)
+                lay.addStretch(1)
+                self.table.setCellWidget(i, 1, wrap)
+                self.table.setItem(
+                    i, 2, QTableWidgetItem(str(int(c.get("posting_count") or 0)))
+                )
+                self.table.setRowHeight(i, 56)
+        finally:
+            self._col_widths.end_update(reapply=False)
         self._apply_ozon_col_widths("carriages")
 
     def _fill_supply_rows(self, supplies: List[Dict[str, Any]]) -> None:
         delivering = self._tab == "delivering"
-        if delivering:
-            self.table.setColumnCount(4)
-            self.table.setHorizontalHeaderLabels(
-                ["Поставка", "Статус / ТН", "Водитель", "Отправлений"]
-            )
-        else:
-            self.table.setColumnCount(3)
-            self.table.setHorizontalHeaderLabels(
-                ["Поставка", "Статус", "Отправлений"]
-            )
-        self.table.setRowCount(len(supplies))
-        for i, s in enumerate(supplies):
-            name = str(s.get("name") or s.get("supply_id") or "")
-            item = QTableWidgetItem(name)
-            item.setData(Qt.UserRole, ("supply", str(s.get("supply_id") or "")))
-            tone = str(s.get("row_tone") or "")
-            if tone == "warn":
-                item.setForeground(Qt.darkYellow)
-            elif tone == "ok":
-                item.setForeground(Qt.darkGreen)
-            self.table.setItem(i, 0, item)
-            status_text = str(s.get("status_label") or "—")
+        self._col_widths.begin_update()
+        try:
             if delivering:
-                status_text = "{}\n{}".format(
-                    status_text, str(s.get("ttn_status_label") or "Несформирована")
-                )
-            pill = make_status_pill(
-                status_text.replace("\n", " · "),
-                str(s.get("status_kind") or "delivering"),
-            )
-            wrap = QWidget()
-            lay = QHBoxLayout(wrap)
-            lay.setContentsMargins(8, 8, 8, 8)
-            lay.addWidget(pill, 0, Qt.AlignLeft)
-            lay.addStretch(1)
-            self.table.setCellWidget(i, 1, wrap)
-            if delivering:
-                driver = str(s.get("driver_name") or "").strip()
-                if not driver:
-                    driver = "—"
-                elif s.get("vehicle_number"):
-                    driver = "{} · {}".format(driver, s.get("vehicle_number"))
-                self.table.setItem(i, 2, QTableWidgetItem(driver))
-                self.table.setItem(
-                    i, 3, QTableWidgetItem(str(int(s.get("posting_count") or 0)))
+                self.table.setColumnCount(4)
+                self.table.setHorizontalHeaderLabels(
+                    ["Поставка", "Статус / ТН", "Водитель", "Отправлений"]
                 )
             else:
-                self.table.setItem(
-                    i, 2, QTableWidgetItem(str(int(s.get("posting_count") or 0)))
+                self.table.setColumnCount(3)
+                self.table.setHorizontalHeaderLabels(
+                    ["Поставка", "Статус", "Отправлений"]
                 )
-            self.table.setRowHeight(i, 56 if not delivering else 64)
+            self.table.setRowCount(len(supplies))
+            for i, s in enumerate(supplies):
+                name = str(s.get("name") or s.get("supply_id") or "")
+                item = QTableWidgetItem(name)
+                item.setData(Qt.UserRole, ("supply", str(s.get("supply_id") or "")))
+                tone = str(s.get("row_tone") or "")
+                if tone == "warn":
+                    item.setForeground(Qt.darkYellow)
+                elif tone == "ok":
+                    item.setForeground(Qt.darkGreen)
+                self.table.setItem(i, 0, item)
+                status_text = str(s.get("status_label") or "—")
+                if delivering:
+                    status_text = "{}\n{}".format(
+                        status_text, str(s.get("ttn_status_label") or "Несформирована")
+                    )
+                pill = make_status_pill(
+                    status_text.replace("\n", " · "),
+                    str(s.get("status_kind") or "delivering"),
+                )
+                wrap = QWidget()
+                wrap.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Minimum)
+                lay = QHBoxLayout(wrap)
+                lay.setContentsMargins(8, 8, 8, 8)
+                lay.addWidget(pill, 0, Qt.AlignLeft)
+                lay.addStretch(1)
+                self.table.setCellWidget(i, 1, wrap)
+                if delivering:
+                    driver = str(s.get("driver_name") or "").strip()
+                    if not driver:
+                        driver = "—"
+                    elif s.get("vehicle_number"):
+                        driver = "{} · {}".format(driver, s.get("vehicle_number"))
+                    self.table.setItem(i, 2, QTableWidgetItem(driver))
+                    self.table.setItem(
+                        i, 3, QTableWidgetItem(str(int(s.get("posting_count") or 0)))
+                    )
+                else:
+                    self.table.setItem(
+                        i, 2, QTableWidgetItem(str(int(s.get("posting_count") or 0)))
+                    )
+                self.table.setRowHeight(i, 56 if not delivering else 64)
+        finally:
+            self._col_widths.end_update(reapply=False)
         self._apply_ozon_col_widths(
             "supplies_delivering" if delivering else "supplies"
         )
@@ -1470,6 +1498,7 @@ class OzonFbsPage(QWidget):
 
     def _product_cell(self, row: Dict[str, Any]) -> QWidget:
         wrap = QWidget()
+        wrap.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Minimum)
         lay = QHBoxLayout(wrap)
         lay.setContentsMargins(8, 8, 8, 8)
         lay.setSpacing(10)
@@ -1477,6 +1506,7 @@ class OzonFbsPage(QWidget):
         text = QVBoxLayout()
         name = QLabel(str(row.get("product_name_display") or "—"))
         name.setWordWrap(True)
+        name.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
         text.addWidget(name)
         sub = QLabel(
             "Арт. {} · SKU {}{}".format(
@@ -1488,6 +1518,7 @@ class OzonFbsPage(QWidget):
             )
         )
         sub.setObjectName("sdProductSub")
+        sub.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
         text.addWidget(sub)
         if row.get("barcodes"):
             text.addWidget(make_badge(str(row["barcodes"][0]), "cargo"))

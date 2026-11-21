@@ -16,6 +16,7 @@ from PyQt5.QtWidgets import (
     QLineEdit,
     QMessageBox,
     QPushButton,
+    QSizePolicy,
     QSpinBox,
     QTableWidget,
     QTableWidgetItem,
@@ -164,36 +165,40 @@ class SettingsPage(QWidget):
         return w
 
     def reload_sources_table(self) -> None:
-        rows = self.sources.list_all()
-        self.src_table.setRowCount(len(rows))
-        for i, s in enumerate(rows):
-            self.src_table.setItem(i, 0, QTableWidgetItem(str(s.get("name") or "")))
-            self.src_table.item(i, 0).setData(Qt.UserRole, int(s["id"]))
-            mp = str(s.get("marketplace") or "wb").lower()
-            mp_label = "ОЗОН" if mp == "ozon" else "ВБ"
-            self.src_table.setItem(i, 1, QTableWidgetItem(mp_label))
-            self.src_table.setItem(
-                i, 2, QTableWidgetItem("да" if int(s.get("is_enabled") or 0) else "нет")
-            )
-            lookback = s.get("lookback_days")
-            try:
-                lookback_text = str(int(lookback)) if lookback is not None else "2"
-            except (TypeError, ValueError):
-                lookback_text = "2"
-            self.src_table.setItem(i, 3, QTableWidgetItem(lookback_text))
-            key = str(s.get("api_key") or "")
-            client_id = str(s.get("client_id") or "")
-            if mp == "ozon" and client_id:
-                masked = "{} / {}".format(
-                    client_id,
-                    (key[:4] + "…" + key[-4:]) if len(key) > 10 else ("*" * len(key)),
+        self._src_col_widths.begin_update()
+        try:
+            rows = self.sources.list_all()
+            self.src_table.setRowCount(len(rows))
+            for i, s in enumerate(rows):
+                self.src_table.setItem(i, 0, QTableWidgetItem(str(s.get("name") or "")))
+                self.src_table.item(i, 0).setData(Qt.UserRole, int(s["id"]))
+                mp = str(s.get("marketplace") or "wb").lower()
+                mp_label = "ОЗОН" if mp == "ozon" else "ВБ"
+                self.src_table.setItem(i, 1, QTableWidgetItem(mp_label))
+                self.src_table.setItem(
+                    i, 2, QTableWidgetItem("да" if int(s.get("is_enabled") or 0) else "нет")
                 )
-            else:
-                masked = (key[:4] + "…" + key[-4:]) if len(key) > 10 else ("*" * len(key))
-            self.src_table.setItem(i, 4, QTableWidgetItem(masked))
-            self.src_table.setItem(
-                i, 5, QTableWidgetItem(str(s.get("last_synced_at") or "—"))
-            )
+                lookback = s.get("lookback_days")
+                try:
+                    lookback_text = str(int(lookback)) if lookback is not None else "2"
+                except (TypeError, ValueError):
+                    lookback_text = "2"
+                self.src_table.setItem(i, 3, QTableWidgetItem(lookback_text))
+                key = str(s.get("api_key") or "")
+                client_id = str(s.get("client_id") or "")
+                if mp == "ozon" and client_id:
+                    masked = "{} / {}".format(
+                        client_id,
+                        (key[:4] + "…" + key[-4:]) if len(key) > 10 else ("*" * len(key)),
+                    )
+                else:
+                    masked = (key[:4] + "…" + key[-4:]) if len(key) > 10 else ("*" * len(key))
+                self.src_table.setItem(i, 4, QTableWidgetItem(masked))
+                self.src_table.setItem(
+                    i, 5, QTableWidgetItem(str(s.get("last_synced_at") or "—"))
+                )
+        finally:
+            self._src_col_widths.end_update()
 
     def _selected_source_id(self) -> Optional[int]:
         row = self.src_table.currentRow()
@@ -652,89 +657,95 @@ class SettingsPage(QWidget):
         return text if text else "—"
 
     def reload_products_table(self) -> None:
-        all_rows = self.products.list_all()
-        rows = self._filtered_products(all_rows)
-        if hasattr(self, "prod_info") and self.prod_info is not None:
-            q = ""
-            if hasattr(self, "prod_search_input") and self.prod_search_input is not None:
-                q = str(self.prod_search_input.text() or "").strip()
-            if q:
-                self.prod_info.setText(
-                    "Товаров: {} из {}".format(len(rows), len(all_rows))
+        self._prod_col_widths.begin_update()
+        try:
+            all_rows = self.products.list_all()
+            rows = self._filtered_products(all_rows)
+            if hasattr(self, "prod_info") and self.prod_info is not None:
+                q = ""
+                if hasattr(self, "prod_search_input") and self.prod_search_input is not None:
+                    q = str(self.prod_search_input.text() or "").strip()
+                if q:
+                    self.prod_info.setText(
+                        "Товаров: {} из {}".format(len(rows), len(all_rows))
+                    )
+                else:
+                    self.prod_info.setText("Товаров: {}".format(len(all_rows)))
+            self.prod_table.setRowCount(len(rows))
+            row_h = photo_display_size(_PRODUCT_PHOTO_SIZE) + 12
+            for i, p in enumerate(rows):
+                self.prod_table.setRowHeight(i, row_h)
+                photo_wrap = QWidget()
+                photo_wrap.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Minimum)
+                photo_lay = QHBoxLayout(photo_wrap)
+                photo_lay.setContentsMargins(4, 4, 4, 4)
+                photo_lay.setAlignment(Qt.AlignCenter)
+                photo_lay.addWidget(
+                    make_photo_label(
+                        p.get("photo_path"),
+                        size=_PRODUCT_PHOTO_SIZE,
+                        placeholder="",
+                    )
                 )
-            else:
-                self.prod_info.setText("Товаров: {}".format(len(all_rows)))
-        self.prod_table.setRowCount(len(rows))
-        row_h = photo_display_size(_PRODUCT_PHOTO_SIZE) + 12
-        for i, p in enumerate(rows):
-            self.prod_table.setRowHeight(i, row_h)
-            photo_wrap = QWidget()
-            photo_lay = QHBoxLayout(photo_wrap)
-            photo_lay.setContentsMargins(4, 4, 4, 4)
-            photo_lay.setAlignment(Qt.AlignCenter)
-            photo_lay.addWidget(
-                make_photo_label(
-                    p.get("photo_path"),
-                    size=_PRODUCT_PHOTO_SIZE,
-                    placeholder="",
+                self.prod_table.setCellWidget(i, _PRODUCT_PHOTO_COL, photo_wrap)
+
+                self.prod_table.setItem(
+                    i, _PRODUCT_NAME_COL, QTableWidgetItem(str(p.get("name") or ""))
                 )
-            )
-            self.prod_table.setCellWidget(i, _PRODUCT_PHOTO_COL, photo_wrap)
+                self.prod_table.item(i, _PRODUCT_NAME_COL).setData(
+                    Qt.UserRole, int(p["id"])
+                )
+                self.prod_table.setItem(
+                    i, 2, QTableWidgetItem(self._dash(p.get("supplier_article")))
+                )
+                self.prod_table.setItem(i, 3, QTableWidgetItem(self._dash(p.get("wb_nmid"))))
+                self.prod_table.setItem(
+                    i, 4, QTableWidgetItem(self._dash(p.get("ozon_sku")))
+                )
+                self.prod_table.setItem(
+                    i, 5, QTableWidgetItem(self._dash(p.get("yandex_offer_id")))
+                )
+                box_qty = p.get("box_qty")
+                self.prod_table.setItem(
+                    i,
+                    6,
+                    QTableWidgetItem(
+                        "—"
+                        if box_qty in (None, "")
+                        else str(box_qty)
+                    ),
+                )
+                self.prod_table.setItem(
+                    i, 7, QTableWidgetItem(self._dash(p.get("product_category")))
+                )
 
-            self.prod_table.setItem(
-                i, _PRODUCT_NAME_COL, QTableWidgetItem(str(p.get("name") or ""))
-            )
-            self.prod_table.item(i, _PRODUCT_NAME_COL).setData(
-                Qt.UserRole, int(p["id"])
-            )
-            self.prod_table.setItem(
-                i, 2, QTableWidgetItem(self._dash(p.get("supplier_article")))
-            )
-            self.prod_table.setItem(i, 3, QTableWidgetItem(self._dash(p.get("wb_nmid"))))
-            self.prod_table.setItem(
-                i, 4, QTableWidgetItem(self._dash(p.get("ozon_sku")))
-            )
-            self.prod_table.setItem(
-                i, 5, QTableWidgetItem(self._dash(p.get("yandex_offer_id")))
-            )
-            box_qty = p.get("box_qty")
-            self.prod_table.setItem(
-                i,
-                6,
-                QTableWidgetItem(
-                    "—"
-                    if box_qty in (None, "")
-                    else str(box_qty)
-                ),
-            )
-            self.prod_table.setItem(
-                i, 7, QTableWidgetItem(self._dash(p.get("product_category")))
-            )
-
-            actions = QWidget()
-            actions_lay = QHBoxLayout(actions)
-            actions_lay.setContentsMargins(4, 0, 4, 0)
-            actions_lay.setSpacing(6)
-            edit_btn = QPushButton("✏")
-            edit_btn.setObjectName("secondary")
-            edit_btn.setFixedSize(32, 28)
-            edit_btn.setToolTip("Изменить")
-            edit_btn.setCursor(Qt.PointingHandCursor)
-            edit_btn.clicked.connect(
-                lambda _=False, pid=int(p["id"]): self._edit_product_by_id(pid)
-            )
-            del_btn = QPushButton("✕")
-            del_btn.setObjectName("danger")
-            del_btn.setFixedSize(32, 28)
-            del_btn.setToolTip("Удалить")
-            del_btn.setCursor(Qt.PointingHandCursor)
-            del_btn.clicked.connect(
-                lambda _=False, pid=int(p["id"]): self._delete_product_by_id(pid)
-            )
-            actions_lay.addWidget(edit_btn)
-            actions_lay.addWidget(del_btn)
-            actions_lay.addStretch(1)
-            self.prod_table.setCellWidget(i, 8, actions)
+                actions = QWidget()
+                actions.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Minimum)
+                actions_lay = QHBoxLayout(actions)
+                actions_lay.setContentsMargins(4, 0, 4, 0)
+                actions_lay.setSpacing(6)
+                edit_btn = QPushButton("✏")
+                edit_btn.setObjectName("secondary")
+                edit_btn.setFixedSize(32, 28)
+                edit_btn.setToolTip("Изменить")
+                edit_btn.setCursor(Qt.PointingHandCursor)
+                edit_btn.clicked.connect(
+                    lambda _=False, pid=int(p["id"]): self._edit_product_by_id(pid)
+                )
+                del_btn = QPushButton("✕")
+                del_btn.setObjectName("danger")
+                del_btn.setFixedSize(32, 28)
+                del_btn.setToolTip("Удалить")
+                del_btn.setCursor(Qt.PointingHandCursor)
+                del_btn.clicked.connect(
+                    lambda _=False, pid=int(p["id"]): self._delete_product_by_id(pid)
+                )
+                actions_lay.addWidget(edit_btn)
+                actions_lay.addWidget(del_btn)
+                actions_lay.addStretch(1)
+                self.prod_table.setCellWidget(i, 8, actions)
+        finally:
+            self._prod_col_widths.end_update()
 
     def _selected_product_id(self) -> Optional[int]:
         row = self.prod_table.currentRow()
@@ -895,13 +906,17 @@ class CategoriesDialog(QDialog):
         super(CategoriesDialog, self).closeEvent(event)
 
     def reload_categories_table(self) -> None:
-        rows = self.categories.list_all()
-        self.cat_table.setRowCount(len(rows))
-        for i, c in enumerate(rows):
-            self.cat_table.setItem(i, 0, QTableWidgetItem(str(c.get("name") or "")))
-            self.cat_table.setItem(
-                i, 1, QTableWidgetItem(str(c.get("boxes_per_pallet") or ""))
-            )
+        self._cat_col_widths.begin_update()
+        try:
+            rows = self.categories.list_all()
+            self.cat_table.setRowCount(len(rows))
+            for i, c in enumerate(rows):
+                self.cat_table.setItem(i, 0, QTableWidgetItem(str(c.get("name") or "")))
+                self.cat_table.setItem(
+                    i, 1, QTableWidgetItem(str(c.get("boxes_per_pallet") or ""))
+                )
+        finally:
+            self._cat_col_widths.end_update()
 
     def _cat_add_row(self) -> None:
         r = self.cat_table.rowCount()

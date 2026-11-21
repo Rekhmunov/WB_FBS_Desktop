@@ -327,6 +327,10 @@ class PickDialog(QDialog):
         self.on_sticker()
 
     def closeEvent(self, event) -> None:
+        try:
+            self._col_widths.persist()
+        except Exception:
+            pass
         self._teardown_scan_mode()
         self._abort_deferred_load()
         self._hide_sku_prompt(refocus=False)
@@ -872,8 +876,9 @@ class PickDialog(QDialog):
         self._rebuild_sticker_index()
         row_count = len(self.rows)
         self.table.setUpdatesEnabled(False)
-        self.table.setRowCount(row_count)
+        self._col_widths.begin_update()
         try:
+            self.table.setRowCount(row_count)
             for i, r in enumerate(self.rows):
                 oid = int(r["order_id"])
                 self._row_index_by_oid[oid] = i
@@ -884,9 +889,11 @@ class PickDialog(QDialog):
                     QApplication.processEvents()
         finally:
             self.table.setUpdatesEnabled(True)
+            self._col_widths.end_update()
         if not fast:
             for i in range(row_count):
                 self._resize_table_row(i)
+            self._col_widths.apply()
         self._apply_filters()
 
     def _set_ambiguous_sticker_info(self, matches: List[Dict[str, Any]]) -> None:

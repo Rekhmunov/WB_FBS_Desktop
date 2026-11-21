@@ -762,6 +762,10 @@ class SupplyDetailDialog(QDialog):
         super(SupplyDetailDialog, self).reject()
 
     def closeEvent(self, event) -> None:
+        try:
+            self._col_widths.persist()
+        except Exception:
+            pass
         self._stop_kiz_status_worker()
         self._stop_pick_status_worker()
         self._stop_load_worker()
@@ -1304,28 +1308,32 @@ class SupplyDetailDialog(QDialog):
         self._clear_loading_table()
         rows = list(self._all_rows)
         self.table.blockSignals(True)
-        self.table.setRowCount(len(rows))
-        self._row_order_ids = []
-        for i, r in enumerate(rows):
-            oid = int(r.get("order_id"))
-            self._row_order_ids.append(oid)
-            cb = QCheckBox()
-            cb.setChecked(oid in self._selected)
-            cb.stateChanged.connect(partial(self._on_row_checked, oid))
-            cb_wrap = QWidget()
-            cb_lay = QHBoxLayout(cb_wrap)
-            cb_lay.setContentsMargins(8, 8, 0, 8)
-            cb_lay.addWidget(cb)
-            cb_lay.setAlignment(Qt.AlignTop | Qt.AlignLeft)
-            self.table.setCellWidget(i, 0, cb_wrap)
+        self._col_widths.begin_update()
+        try:
+            self.table.setRowCount(len(rows))
+            self._row_order_ids = []
+            for i, r in enumerate(rows):
+                oid = int(r.get("order_id"))
+                self._row_order_ids.append(oid)
+                cb = QCheckBox()
+                cb.setChecked(oid in self._selected)
+                cb.stateChanged.connect(partial(self._on_row_checked, oid))
+                cb_wrap = QWidget()
+                cb_lay = QHBoxLayout(cb_wrap)
+                cb_lay.setContentsMargins(8, 8, 0, 8)
+                cb_lay.addWidget(cb)
+                cb_lay.setAlignment(Qt.AlignTop | Qt.AlignLeft)
+                self.table.setCellWidget(i, 0, cb_wrap)
 
-            self.table.setCellWidget(i, 1, self._build_order_cell(r))
-            self.table.setCellWidget(i, 2, self._build_product_cell(r))
-            self.table.setCellWidget(i, 3, self._build_row_menu(oid))
-            self.table.resizeRowToContents(i)
-            self.table.setRowHeight(i, max(self.table.rowHeight(i), 163))
-            if i and i % _RENDER_BATCH == 0:
-                QApplication.processEvents()
+                self.table.setCellWidget(i, 1, self._build_order_cell(r))
+                self.table.setCellWidget(i, 2, self._build_product_cell(r))
+                self.table.setCellWidget(i, 3, self._build_row_menu(oid))
+                self.table.resizeRowToContents(i)
+                self.table.setRowHeight(i, max(self.table.rowHeight(i), 163))
+                if i and i % _RENDER_BATCH == 0:
+                    QApplication.processEvents()
+        finally:
+            self._col_widths.end_update()
         self.table.blockSignals(False)
         self._update_search_visibility()
         self._place_header_select()

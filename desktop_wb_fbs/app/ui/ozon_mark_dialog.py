@@ -248,7 +248,6 @@ class OzonMarkDialog(QDialog):
         self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.table.setShowGrid(False)
         self.table.verticalHeader().setVisible(False)
-        self.table.horizontalHeader().setStretchLastSection(True)
         self._col_widths = PersistentColumnWidths(
             self.mark.db,
             self.table,
@@ -267,6 +266,10 @@ class OzonMarkDialog(QDialog):
         self._scan_mode.activate()
 
     def closeEvent(self, event) -> None:  # noqa: N802
+        try:
+            self._col_widths.persist()
+        except Exception:
+            pass
         try:
             self._scan_mode.deactivate()
         except Exception:
@@ -363,79 +366,82 @@ class OzonMarkDialog(QDialog):
                     continue
             visible.append(r)
 
-        self.table.setRowCount(len(visible))
-        self._inputs = {}
-        for i, r in enumerate(visible):
-            pnum = str(r.get("posting_number") or "")
-            self.table.setCellWidget(i, 0, build_ozon_posting_cell_widget(r))
-            badge = None
-            if self._row_filled(r):
+        self._col_widths.begin_update()
+        try:
+            self.table.setRowCount(len(visible))
+            self._inputs = {}
+            for i, r in enumerate(visible):
+                pnum = str(r.get("posting_number") or "")
+                self.table.setCellWidget(i, 0, build_ozon_posting_cell_widget(r))
                 badge = QLabel("КИЗ")
                 badge.setObjectName("sdKizBadge")
-                badge.setProperty(
-                    "kizState", "ok" if r.get("marks_synced") else "pending"
+                if self._row_filled(r):
+                    badge.setProperty(
+                        "kizState", "ok" if r.get("marks_synced") else "pending"
+                    )
+                else:
+                    badge.setProperty("kizState", "empty")
+                badge.style().unpolish(badge)
+                badge.style().polish(badge)
+                self.table.setCellWidget(
+                    i,
+                    1,
+                    build_product_cell_widget(
+                        r, photo_size=120, extra_widgets=[badge]
+                    ),
                 )
-                badge.style().unpolish(badge)
-                badge.style().polish(badge)
-            else:
-                badge = QLabel("КИЗ")
-                badge.setObjectName("sdKizBadge")
-                badge.setProperty("kizState", "empty")
-                badge.style().unpolish(badge)
-                badge.style().polish(badge)
-            self.table.setCellWidget(
-                i,
-                1,
-                build_product_cell_widget(
-                    r, photo_size=120, extra_widgets=[badge]
-                ),
-            )
-            code_wrap = QWidget()
-            code_lay = QVBoxLayout(code_wrap)
-            code_lay.setContentsMargins(8, 10, 8, 10)
-            code_lay.setSpacing(8)
-            row_edit = QHBoxLayout()
-            row_edit.setSpacing(8)
-            edit = QLineEdit()
-            edit.setObjectName("kizCodeInput")
-            edit.setPlaceholderText("Код маркировки")
-            edit.setText(
-                (r.get("marks") or [""])[0] if r.get("marks") else ""
-            )
-            edit.textChanged.connect(
-                lambda text, pn=pnum: self._on_edit(pn, text)
-            )
-            self._inputs[pnum] = edit
-            row_edit.addWidget(edit, 1)
-            clear_btn = QToolButton()
-            clear_btn.setObjectName("kizCodeRemove")
-            clear_btn.setText("×")
-            clear_btn.setToolTip("Очистить")
-            clear_btn.clicked.connect(
-                lambda _=False, pn=pnum: self._clear_mark(pn)
-            )
-            row_edit.addWidget(clear_btn)
-            code_lay.addLayout(row_edit)
-            status = QLabel()
-            status.setObjectName("kizCodeStatus")
-            if self._row_error(r):
-                status.setText(str(r.get("mark_error") or r.get("error") or "Ошибка"))
-                status.setProperty("state", "error")
-            elif r.get("marks_synced") and self._row_filled(r):
-                status.setText("Сохранено в Ozon")
-                status.setProperty("state", "ok")
-            elif self._row_filled(r):
-                status.setText("Заполнено · не сохранено")
-                status.setProperty("state", "pending")
-            else:
-                status.setText("Не заполнено")
-                status.setProperty("state", "pending")
-            status.style().unpolish(status)
-            status.style().polish(status)
-            code_lay.addWidget(status)
-            code_lay.addStretch(1)
-            self.table.setCellWidget(i, 2, code_wrap)
-            self.table.setRowHeight(i, max(148, self.table.sizeHintForRow(i)))
+                code_wrap = QWidget()
+                code_lay = QVBoxLayout(code_wrap)
+                code_lay.setContentsMargins(8, 10, 8, 10)
+                code_lay.setSpacing(8)
+                row_edit = QHBoxLayout()
+                row_edit.setSpacing(8)
+                edit = QLineEdit()
+                edit.setObjectName("kizCodeInput")
+                edit.setPlaceholderText("Код маркировки")
+                edit.setText(
+                    (r.get("marks") or [""])[0] if r.get("marks") else ""
+                )
+                edit.textChanged.connect(
+                    lambda text, pn=pnum: self._on_edit(pn, text)
+                )
+                self._inputs[pnum] = edit
+                row_edit.addWidget(edit, 1)
+                clear_btn = QToolButton()
+                clear_btn.setObjectName("kizCodeRemove")
+                clear_btn.setText("×")
+                clear_btn.setToolTip("Очистить")
+                clear_btn.clicked.connect(
+                    lambda _=False, pn=pnum: self._clear_mark(pn)
+                )
+                row_edit.addWidget(clear_btn)
+                code_lay.addLayout(row_edit)
+                status = QLabel()
+                status.setObjectName("kizCodeStatus")
+                if self._row_error(r):
+                    status.setText(
+                        str(r.get("mark_error") or r.get("error") or "Ошибка")
+                    )
+                    status.setProperty("state", "error")
+                elif r.get("marks_synced") and self._row_filled(r):
+                    status.setText("Сохранено в Ozon")
+                    status.setProperty("state", "ok")
+                elif self._row_filled(r):
+                    status.setText("Заполнено · не сохранено")
+                    status.setProperty("state", "pending")
+                else:
+                    status.setText("Не заполнено")
+                    status.setProperty("state", "pending")
+                status.style().unpolish(status)
+                status.style().polish(status)
+                code_lay.addWidget(status)
+                code_lay.addStretch(1)
+                self.table.setCellWidget(i, 2, code_wrap)
+                self.table.setRowHeight(
+                    i, max(148, self.table.sizeHintForRow(i))
+                )
+        finally:
+            self._col_widths.end_update()
         self._update_counter()
 
     def _clear_mark(self, posting_number: str) -> None:

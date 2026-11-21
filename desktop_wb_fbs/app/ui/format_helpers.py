@@ -24,7 +24,9 @@ class AdaptiveWrapLabel(QLabel):
     def __init__(self, text: str = "", parent: Optional[QWidget] = None) -> None:
         super(AdaptiveWrapLabel, self).__init__(text, parent)
         self.setWordWrap(False)
-        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        # Preferred (not Expanding): Expanding cell content stretches Interactive
+        # header sections and overwrites the user's saved column widths.
+        self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
         self.setAlignment(Qt.AlignLeft | Qt.AlignTop)
         if text:
             self.setToolTip(text)
@@ -273,7 +275,8 @@ def build_ozon_scanit_label(scanit: object) -> Optional[QWidget]:
 def build_ozon_posting_cell_widget(row: Dict[str, Any]) -> QWidget:
     """Ozon supply-detail «Отправление» cell: posting # + ``ii…`` + date (web archive)."""
     wrap = QWidget()
-    wrap.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
+    # Preferred (not Expanding) so cell widgets cannot stretch saved column widths.
+    wrap.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Minimum)
     lay = QVBoxLayout(wrap)
     lay.setContentsMargins(8, 10, 8, 10)
     lay.setSpacing(6)
@@ -322,7 +325,7 @@ def build_product_cell_widget(
 ) -> QWidget:
     """Product cell matching supply detail table formatting."""
     wrap = QWidget()
-    wrap.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
+    wrap.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Minimum)
     lay = QHBoxLayout(wrap)
     lay.setContentsMargins(8, 10, 8, 10)
     lay.setSpacing(12)

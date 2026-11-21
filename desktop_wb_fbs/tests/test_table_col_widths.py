@@ -64,6 +64,38 @@ class PersistViaDbMockTests(unittest.TestCase):
         self.assertEqual(helper.settings_key, "ozon_fbs_table_cols_supplies")
         del app
 
+    def test_begin_update_blocks_persist_of_transient_resize(self) -> None:
+        import os
+
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+        from PyQt5.QtCore import QTimer
+        from PyQt5.QtWidgets import QApplication, QTableWidget
+        from app.ui.table_col_widths import PersistentColumnWidths
+
+        app = QApplication.instance() or QApplication([])
+        db = MagicMock()
+        db.get_setting.return_value = json.dumps([80, 160, 120])
+        table = QTableWidget(0, 3)
+        helper = PersistentColumnWidths(
+            db, table, "fbs_table_cols_new", [80, 160, 120], save_delay_ms=50
+        )
+        helper.apply()
+        self.assertEqual([table.columnWidth(i) for i in range(3)], [80, 160, 120])
+
+        helper.begin_update()
+        table.setColumnWidth(0, 400)  # transient stretch during rebuild
+        helper.persist()  # must no-op while bulk
+        db.set_setting.assert_not_called()
+        helper.end_update()
+        # Process deferred re-apply so saved widths win over the stretch.
+        QTimer.singleShot(0, app.quit)
+        app.exec_()
+        self.assertEqual([table.columnWidth(i) for i in range(3)], [80, 160, 120])
+        # Transient 400 must not have been written.
+        for call in db.set_setting.call_args_list:
+            self.assertNotIn("400", str(call[0][1]))
+        del app
+
 
 if __name__ == "__main__":
     unittest.main()

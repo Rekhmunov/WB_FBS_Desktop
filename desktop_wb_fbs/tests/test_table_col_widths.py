@@ -38,7 +38,8 @@ class PersistViaDbMockTests(unittest.TestCase):
             "supply_detail_table_cols", "[80,160,300,48]"
         )
 
-    def test_use_layout_persists_previous_key(self) -> None:
+    def test_use_layout_does_not_auto_persist(self) -> None:
+        """Caller must persist before rebuild; use_layout only switches key."""
         import os
 
         os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -54,14 +55,72 @@ class PersistViaDbMockTests(unittest.TestCase):
         )
         helper.apply()
         table.setColumnWidth(0, 240)
+        helper.persist()
+        db.set_setting.assert_called()
+        db.set_setting.reset_mock()
         helper.use_layout("ozon_fbs_table_cols_supplies", [280, 180, 100])
-        saved = [
-            c
-            for c in db.set_setting.call_args_list
-            if c[0][0] == "ozon_fbs_table_cols_postings"
-        ]
-        self.assertTrue(saved)
+        # Switching layout must not write under the previous key.
+        for call in db.set_setting.call_args_list:
+            self.assertNotEqual(call[0][0], "ozon_fbs_table_cols_postings")
         self.assertEqual(helper.settings_key, "ozon_fbs_table_cols_supplies")
+        del app
+
+    def test_tab_switch_does_not_corrupt_previous_layout(self) -> None:
+        """Regression: 3-col awaiting_deliver → 4-col delivering must keep supplies."""
+        import os
+
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+        from PyQt5.QtWidgets import QApplication, QTableWidget
+        from app.ui.table_col_widths import PersistentColumnWidths
+
+        app = QApplication.instance() or QApplication([])
+        store = {}  # type: dict
+
+        def get_setting(key, default=""):
+            return store.get(key, default)
+
+        def set_setting(key, value):
+            store[key] = value
+
+        db = MagicMock()
+        db.get_setting.side_effect = get_setting
+        db.set_setting.side_effect = set_setting
+
+        table = QTableWidget(0, 3)
+        helper = PersistentColumnWidths(
+            db, table, "ozon_fbs_table_cols_supplies", [280, 180, 100]
+        )
+        helper.apply()
+        table.setColumnWidth(0, 333)
+        table.setColumnWidth(1, 222)
+        table.setColumnWidth(2, 111)
+        # Tab leave: persist while old layout is still visible (ozon_fbs_page).
+        helper.persist()
+        self.assertEqual(
+            json.loads(store["ozon_fbs_table_cols_supplies"]), [333, 222, 111]
+        )
+
+        # Rebuild table for delivering (4 cols), then switch layout key.
+        helper.begin_update()
+        table.setColumnCount(4)
+        helper.end_update(reapply=False)
+        helper.use_layout(
+            "ozon_fbs_table_cols_supplies_delivering", [260, 200, 180, 100]
+        )
+        # Previous 3-col key must stay intact (not overwritten with 4 widths).
+        self.assertEqual(
+            json.loads(store["ozon_fbs_table_cols_supplies"]), [333, 222, 111]
+        )
+
+        # Return to awaiting_deliver.
+        helper.persist()
+        helper.begin_update()
+        table.setColumnCount(3)
+        helper.end_update(reapply=False)
+        helper.use_layout("ozon_fbs_table_cols_supplies", [280, 180, 100])
+        self.assertEqual(
+            [table.columnWidth(i) for i in range(3)], [333, 222, 111]
+        )
         del app
 
     def test_begin_update_blocks_persist_of_transient_resize(self) -> None:

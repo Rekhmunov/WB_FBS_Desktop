@@ -63,6 +63,9 @@ class PersistentColumnWidths(QObject):
         self.table = table
         self.settings_key = str(settings_key or "").strip()
         self.defaults = list(defaults or [])
+        # Expected column count for the active layout — refuse to persist when
+        # the header was already rebuilt for another tab (would corrupt the key).
+        self._layout_count = len(self.defaults)
         self.min_width = int(min_width)
         self._guard = False
         self._bulk = 0
@@ -132,18 +135,18 @@ class PersistentColumnWidths(QObject):
     def use_layout(
         self, settings_key: str, defaults: Sequence[int]
     ) -> None:
-        """Switch layout key (save previous widths first) and re-apply."""
+        """Switch layout key and re-apply saved widths for that layout.
+
+        Callers must ``persist()`` while the *previous* layout is still visible
+        (before ``setColumnCount``). Auto-persist here used to write the new
+        header's column count under the old settings key — e.g. 4-col
+        «Доставляются» overwrote the 3-col «Ожидают отгрузки» entry, so
+        returning to that tab fell back to defaults.
+        """
         new_key = str(settings_key or "").strip()
-        if (
-            self.settings_key
-            and new_key
-            and new_key != self.settings_key
-            and not self._guard
-            and self._bulk <= 0
-        ):
-            self.persist()
         self.settings_key = new_key
         self.defaults = list(defaults or [])
+        self._layout_count = len(self.defaults)
         self.apply()
         if self._bulk <= 0:
             # Re-apply after deferred layout when switching tabs/layouts.
@@ -156,6 +159,9 @@ class PersistentColumnWidths(QObject):
         hdr = self.table.horizontalHeader()
         count = hdr.count()
         if count <= 0:
+            return
+        # Header already rebuilt for another layout — do not corrupt this key.
+        if self._layout_count > 0 and count != self._layout_count:
             return
         widths = [hdr.sectionSize(i) for i in range(count)]
         self.db.set_setting(

@@ -36,6 +36,13 @@ def _hide_windows_console() -> None:
 
 
 def _crash_log_path() -> Path:
+    # Prefer portable data/logs (same as app); fall back to legacy AppData.
+    try:
+        from app.paths import logs_dir
+
+        return logs_dir() / "last_crash.txt"
+    except Exception:
+        pass
     if sys.platform == "win32":
         base = os.environ.get("APPDATA") or str(Path.home() / "AppData" / "Roaming")
         path = Path(base) / "FeedPilotFBS" / "logs"

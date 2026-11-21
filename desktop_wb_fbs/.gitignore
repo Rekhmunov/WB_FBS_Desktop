@@ -9,3 +9,6 @@ build/
 .idea/
 .vscode/
 *.sqlite3
+# Portable local store (DB, photos, logs) next to the program
+/data/
+data/

@@ -52,11 +52,10 @@ from app.ui.table_col_widths import PersistentColumnWidths
 
 
 class _LabelPrintWorker(QThread):
-    """Fetch sticker PDFs first, open them, then bind QR in background.
+    """Build one archive-style stickers HTML, then bind QR in background.
 
-    Pre-print sequential ``get_posting`` for the whole supply was freezing the
-    UI on «Формирование стикеров…» for many minutes — skipped (archive binds
-    after print).
+    Cover + per-article separators + Ozon label images in a single file
+    (web ``build_stickers_print`` / ``render_stickers_print_html`` parity).
     """
 
     progress = pyqtSignal(int, int, str)  # done, total, detail
@@ -71,7 +70,11 @@ class _LabelPrintWorker(QThread):
         stickers: Any,
         client: OzonFbsClient,
         source_id: int,
+        supply_id: str,
         posting_numbers: List[str],
+        *,
+        source_name: str = "",
+        include_cover_and_separators: bool = True,
         parent: Optional[QWidget] = None,
     ) -> None:
         super(_LabelPrintWorker, self).__init__(parent)
@@ -80,7 +83,10 @@ class _LabelPrintWorker(QThread):
         self.stickers = stickers
         self.client = client
         self.source_id = source_id
+        self.supply_id = str(supply_id or "").strip()
         self.posting_numbers = list(posting_numbers or [])
+        self.source_name = str(source_name or "").strip()
+        self.include_cover_and_separators = bool(include_cover_and_separators)
 
     def _emit_progress(self, done: int, total: int, message: str) -> None:
         if self.isInterruptionRequested():
@@ -89,6 +95,7 @@ class _LabelPrintWorker(QThread):
 
     def run(self) -> None:
         from app.services.ozon_labels import format_label_error
+        from app.services.ozon_stickers_print import build_stickers_print_file
 
         nums = list(self.posting_numbers)
         n = len(nums)
@@ -107,18 +114,21 @@ class _LabelPrintWorker(QThread):
                 elif args:
                     self._emit_progress(0, max(n, 1), str(args[0]))
 
-            # Web archive «Стикеры»: v3 create + v2 get only (no obsolete sync).
-            paths = self.labels.fetch_label_paths(
+            detail = self.supplies.get_detail(self.source_id, self.supply_id)
+            # Web archive «Стикеры»: one HTML sheet (cover + артикул + labels).
+            path = build_stickers_print_file(
+                self.labels,
                 self.client,
-                self.source_id,
+                detail,
                 nums,
+                source_name=self.source_name,
+                include_cover_and_separators=self.include_cover_and_separators,
                 progress=_label_prog,
                 stop_requested=self.isInterruptionRequested,
             )
             if self.isInterruptionRequested():
                 return
-            # Open PDF immediately — do not wait for QR re-bind.
-            self.ready.emit(list(paths or []))
+            self.ready.emit([path])
             try:
                 self._emit_progress(0, max(n, 1), "Привязка QR после печати…")
 
@@ -144,7 +154,6 @@ class _LabelPrintWorker(QThread):
                     return
                 self.bind_done.emit(int(bound or 0))
             except Exception as bind_exc:
-                # PDF already opened — report bind issues without failing print.
                 self._emit_progress(
                     n,
                     max(n, 1),
@@ -707,14 +716,20 @@ class OzonSupplyDetailDialog(QDialog):
         )
         progress.set_progress(0, max(len(pnums), 1), "")
         self._label_progress = progress
+        source_name = str(
+            self.source.get("name") or self.source.get("client_id") or ""
+        ).strip()
         worker = _LabelPrintWorker(
             self.labels,
             self.supplies,
             self.stickers,
             self.client,
             self.source_id,
+            self.supply_id,
             pnums,
-            self,
+            source_name=source_name,
+            include_cover_and_separators=True,
+            parent=self,
         )
         self._label_worker = worker
         worker.progress.connect(self._on_labels_progress)
@@ -1074,17 +1089,13 @@ class OzonSupplyDetailDialog(QDialog):
             self._close_label_progress()
             QMessageBox.warning(self, "Стикеры", "Ozon не вернул файл этикеток")
             return
-        text = (
-            "Стикеры открыты · {} файл(ов) · привязка QR…".format(len(path_list))
-            if len(path_list) > 1
-            else "Стикеры открыты · привязка QR…"
-        )
+        text = "Лист стикеров открыт · привязка QR…"
         self.load_info.setText(text)
         dlg = self._label_progress
         if dlg is not None and dlg.isVisible():
             dlg.set_progress(0, max(len(self._posting_numbers()), 1), text)
-        for path in path_list:
-            QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
+        # One HTML sheet (cover + артикулы + этикетки), same as web archive.
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(path_list[0])))
 
     def _on_labels_failed(self, message: str) -> None:
         self._close_label_progress()

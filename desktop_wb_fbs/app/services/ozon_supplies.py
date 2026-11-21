@@ -187,12 +187,13 @@ class OzonSuppliesService:
         }
 
     def list_awaiting_deliver_supplies(
-        self, source_id: int, *, adopt_orphans: bool = True
+        self, source_id: int, *, adopt_orphans: bool = False
     ) -> List[Dict[str, Any]]:
-        """Open local supplies with postings still on awaiting_deliver (or empty).
+        """Open local supplies that still have awaiting_deliver postings.
 
-        When ``adopt_orphans`` is True (default), loose awaiting_deliver rows are
-        wrapped into a separate «· добор» supply — never into an existing one.
+        Empty shells (stale ``posting_numbers_json``, no live rows) are omitted
+        and pruned. Orphan adoption is opt-in — never a side effect of tab
+        counts / refresh, otherwise mid-collect orphans spawn empty «· добор».
         """
         if adopt_orphans:
             try:
@@ -203,17 +204,31 @@ class OzonSuppliesService:
         counts = self._order_counts_by_tab(source_id, TAB_AWAITING_DELIVER)
         delivering_ids = self._supply_ids_with_tab(source_id, "delivering")
         out = []  # type: List[Dict[str, Any]]
+        empty_ids = []  # type: List[str]
         for s in open_supplies:
             sid = str(s.get("supply_id") or "")
+            if not sid:
+                continue
             if int(s.get("delivering_listed") or 0):
                 continue
-            if sid in delivering_ids and counts.get(sid, 0) == 0:
+            live = int(counts.get(sid, 0) or 0)
+            if sid in delivering_ids and live == 0:
+                continue
+            if live <= 0:
+                # Stale JSON must not keep empty «добор» visible.
+                empty_ids.append(sid)
                 continue
             item = dict(s)
-            item["posting_count"] = int(counts.get(sid) or item.get("order_count") or 0)
+            item["posting_count"] = live
+            item["order_count"] = live
             item["status_label"] = "Сборка заказов"
             item["status_kind"] = "awaiting_deliver"
             out.append(item)
+        if empty_ids:
+            try:
+                self._delete_empty_open_supplies(source_id, empty_ids)
+            except Exception as exc:
+                _log.warning("ozon prune empty supplies: %s", exc)
         return out
 
     def list_delivering_supplies(self, source_id: int) -> List[Dict[str, Any]]:
@@ -371,6 +386,8 @@ class OzonSuppliesService:
                     [sid, force_tab, force_tab, now, source_id] + nums,
                 )
             conn.commit()
+        if nums:
+            self._detach_postings_from_other_supplies(source_id, sid, nums)
         return sid
 
     def add_postings(
@@ -421,6 +438,111 @@ class OzonSuppliesService:
                 [sid, TAB_AWAITING_DELIVER, TAB_AWAITING_DELIVER, now, source_id]
                 + nums,
             )
+            conn.commit()
+        self._detach_postings_from_other_supplies(source_id, sid, nums)
+
+    def _detach_postings_from_other_supplies(
+        self,
+        source_id: int,
+        keep_supply_id: str,
+        posting_numbers: List[str],
+    ) -> None:
+        """Remove postings from other open supplies' JSON; delete emptied shells."""
+        sid = str(keep_supply_id or "").strip()
+        nums = [str(x).strip() for x in posting_numbers if str(x).strip()]
+        if not sid or not nums:
+            return
+        now = utc_now()
+        num_set = set(nums)
+        emptied = []  # type: List[str]
+        with self.db.connect() as conn:
+            others = conn.execute(
+                """
+                SELECT supply_id, posting_numbers_json FROM ozon_fbs_supplies
+                WHERE source_id = ? AND supply_id != ? AND done = 0
+                """,
+                (source_id, sid),
+            ).fetchall()
+            for other in others:
+                oid = str(other["supply_id"] or "").strip()
+                if not oid:
+                    continue
+                prev = [
+                    str(x).strip()
+                    for x in _parse_json_list(other["posting_numbers_json"])
+                    if str(x).strip()
+                ]
+                if not prev or not num_set.intersection(prev):
+                    continue
+                kept = [x for x in prev if x not in num_set]
+                conn.execute(
+                    """
+                    UPDATE ozon_fbs_supplies
+                    SET posting_numbers_json = ?, updated_at = ?
+                    WHERE source_id = ? AND supply_id = ?
+                    """,
+                    (json.dumps(kept, ensure_ascii=False), now, source_id, oid),
+                )
+                if not kept:
+                    emptied.append(oid)
+            conn.commit()
+        if emptied:
+            self._delete_empty_open_supplies(source_id, emptied)
+
+    def _delete_empty_open_supplies(
+        self, source_id: int, supply_ids: List[str]
+    ) -> None:
+        """Delete open supplies that have no live postings and empty JSON."""
+        ids = [str(x).strip() for x in supply_ids if str(x).strip()]
+        if not ids:
+            return
+        with self.db.connect() as conn:
+            for sid in ids:
+                live = conn.execute(
+                    """
+                    SELECT COUNT(*) AS c FROM ozon_fbs_postings
+                    WHERE source_id = ? AND supply_id = ?
+                    """,
+                    (source_id, sid),
+                ).fetchone()
+                if int(live["c"] if live else 0) > 0:
+                    continue
+                row = conn.execute(
+                    """
+                    SELECT posting_numbers_json, done, delivering_listed
+                    FROM ozon_fbs_supplies
+                    WHERE source_id = ? AND supply_id = ?
+                    """,
+                    (source_id, sid),
+                ).fetchone()
+                if not row:
+                    continue
+                if int(row["done"] or 0) or int(row["delivering_listed"] or 0):
+                    continue
+                leftover = [
+                    str(x).strip()
+                    for x in _parse_json_list(row["posting_numbers_json"])
+                    if str(x).strip()
+                ]
+                # Only delete when JSON is empty or every listed posting is gone.
+                if leftover:
+                    still = conn.execute(
+                        """
+                        SELECT COUNT(*) AS c FROM ozon_fbs_postings
+                        WHERE source_id = ? AND posting_number IN ({})
+                          AND supply_id = ?
+                        """.format(", ".join("?" for _ in leftover)),
+                        [source_id] + leftover + [sid],
+                    ).fetchone()
+                    if int(still["c"] if still else 0) > 0:
+                        continue
+                conn.execute(
+                    """
+                    DELETE FROM ozon_fbs_supplies
+                    WHERE source_id = ? AND supply_id = ?
+                    """,
+                    (source_id, sid),
+                )
             conn.commit()
 
     def mark_delivering(self, source_id: int, supply_id: str) -> None:
@@ -1395,9 +1517,14 @@ class OzonSuppliesService:
             wh_name = (
                 str(bucket[0].get("warehouse_name") or "").strip() if bucket else ""
             )
+            live_counts = self._order_counts_by_tab(
+                source_id, TAB_AWAITING_DELIVER
+            )
             matching = []
             for s in open_supplies:
-                if int(s.get("order_count") or 0) <= 0:
+                sid = str(s.get("supply_id") or "")
+                # Prefer live rows over stale posting_numbers_json.
+                if int(live_counts.get(sid, 0) or 0) <= 0:
                     continue
                 if int(s.get("delivering_listed") or 0):
                     continue
@@ -1550,6 +1677,50 @@ class OzonSuppliesService:
             action = str(dec.get("action") or "create").strip().lower()
             if action == "add_one":
                 action = "add"
+            wh_id = group.get("warehouse_id")
+            wh_name = str(group.get("warehouse_name") or "")
+            # Resolve target supply BEFORE shipping so mid-collect orphans
+            # never spawn empty «· добор» supplies on UI refresh.
+            target_sid = ""
+            target_name = ""
+            try:
+                if action == "add" and dec.get("supply_id"):
+                    target_sid = str(dec.get("supply_id") or "").strip()
+                    target_name = str(
+                        dec.get("name") or dec.get("supply_id") or target_sid
+                    )
+                    if not target_sid:
+                        raise RuntimeError("Не выбрана поставка для добавления")
+                else:
+                    target_name = unique_supply_name(
+                        str(dec.get("name") or group.get("suggested_name") or ""),
+                        open_names,
+                    )
+                    target_sid = self.create_supply(
+                        source_id,
+                        name=target_name,
+                        warehouse_id=wh_id,
+                        warehouse_name=wh_name,
+                        posting_numbers=[],
+                    )
+                    open_names.add(target_name)
+                created.append({"supply_id": target_sid, "name": target_name})
+            except Exception as exc:
+                errors.append(
+                    {
+                        "posting_number": posting_numbers[0] if posting_numbers else "—",
+                        "error": "Поставка: {}".format(exc),
+                    }
+                )
+                done += len(posting_numbers)
+                if progress:
+                    progress(
+                        done,
+                        total,
+                        "Сборка… {} из {}".format(done, total),
+                    )
+                continue
+
             shipped_here = []  # type: List[str]
             for pn in posting_numbers:
                 if stop_requested and stop_requested():
@@ -1575,9 +1746,8 @@ class OzonSuppliesService:
                         ship_svc.ship_posting(
                             client, source_id, pn, posting=row, fast=True
                         )
-                    else:
-                        # Already past packaging on Ozon — still attach to local supply.
-                        pass
+                    # Attach immediately — no orphan window for adopt/добор.
+                    self.add_postings(source_id, target_sid, [pn])
                     shipped.append(pn)
                     shipped_here.append(pn)
                 except Exception as exc:
@@ -1596,42 +1766,15 @@ class OzonSuppliesService:
                 if ship_pause_sec and ship_pause_sec > 0:
                     time.sleep(float(ship_pause_sec))
 
-            if not shipped_here:
-                continue
-            wh_id = group.get("warehouse_id")
-            wh_name = str(group.get("warehouse_name") or "")
-            try:
-                if action == "add" and dec.get("supply_id"):
-                    self.add_postings(
-                        source_id, str(dec.get("supply_id")), shipped_here
-                    )
-                    created.append(
-                        {
-                            "supply_id": str(dec.get("supply_id")),
-                            "name": str(dec.get("name") or dec.get("supply_id")),
-                        }
-                    )
-                else:
-                    name = unique_supply_name(
-                        str(dec.get("name") or group.get("suggested_name") or ""),
-                        open_names,
-                    )
-                    sid = self.create_supply(
-                        source_id,
-                        name=name,
-                        warehouse_id=wh_id,
-                        warehouse_name=wh_name,
-                        posting_numbers=shipped_here,
-                    )
-                    open_names.add(name)
-                    created.append({"supply_id": sid, "name": name})
-            except Exception as exc:
-                errors.append(
-                    {
-                        "posting_number": shipped_here[0],
-                        "error": "Поставка: {}".format(exc),
-                    }
-                )
+            if not shipped_here and action != "add":
+                # Created empty shell but nothing shipped — remove it.
+                try:
+                    self._delete_empty_open_supplies(source_id, [target_sid])
+                except Exception:
+                    pass
+                created[:] = [
+                    c for c in created if str(c.get("supply_id")) != target_sid
+                ]
 
         shipped_n = len(shipped)
         failed_n = len(errors)
@@ -1656,7 +1799,10 @@ class OzonSuppliesService:
         }
 
     def tab_supply_counts(self, source_id: int) -> Dict[str, int]:
-        awaiting = len(self.list_awaiting_deliver_supplies(source_id))
+        # Never adopt orphans while counting — that created empty «добор» mid-collect.
+        awaiting = len(
+            self.list_awaiting_deliver_supplies(source_id, adopt_orphans=False)
+        )
         delivering = len(self.list_delivering_supplies(source_id))
         return {
             "awaiting_deliver": awaiting,

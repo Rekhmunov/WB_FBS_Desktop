@@ -644,13 +644,13 @@ class OzonFbsPage(QWidget):
             return
 
         # awaiting_deliver — local supplies (web parity), fallback to API carriages.
-        # Orphans (awaiting_deliver without supply_id) → new «· добор» supply,
-        # never mixed into an existing operator-created supply.
+        # Adopt orphans only when idle (not during «Собрать все»); never via tab counts.
         adopt = {}  # type: Dict[str, Any]
-        try:
-            adopt = supplies_svc.adopt_orphan_awaiting_deliver_postings(sid)
-        except Exception:
-            adopt = {}
+        if self._ops_busy != "ship":
+            try:
+                adopt = supplies_svc.adopt_orphan_awaiting_deliver_postings(sid)
+            except Exception:
+                adopt = {}
         supplies = supplies_svc.list_awaiting_deliver_supplies(
             sid, adopt_orphans=False
         )

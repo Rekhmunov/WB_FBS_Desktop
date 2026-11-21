@@ -966,6 +966,251 @@ class OzonShipStatusParityTest(unittest.TestCase):
             except OSError:
                 pass
 
+    def test_empty_dobor_hidden_and_pruned(self) -> None:
+        import os
+        import tempfile
+
+        from app.db import Database
+        from app.services.ozon_supplies import OzonSuppliesService
+
+        fd, path = tempfile.mkstemp(suffix=".sqlite")
+        os.close(fd)
+        try:
+            db = Database(path)
+            db.init_schema()
+            with db.connect() as conn:
+                conn.execute(
+                    """
+                    INSERT INTO supply_sources(
+                        name, marketplace, client_id, api_key, is_enabled,
+                        lookback_days, created_at
+                    ) VALUES ('Озон ФБС', 'ozon', '1', 'k', 1, 2, '2026-01-01')
+                    """
+                )
+                sid = int(conn.execute("SELECT last_insert_rowid()").fetchone()[0])
+                conn.commit()
+            svc = OzonSuppliesService(db)
+            real = svc.create_supply(
+                sid,
+                name="Поставка реальная",
+                warehouse_id=10,
+                warehouse_name="WH",
+                posting_numbers=[],
+            )
+            empty = svc.create_supply(
+                sid,
+                name="Поставка · добор",
+                warehouse_id=10,
+                warehouse_name="WH",
+                posting_numbers=[],
+            )
+            with db.connect() as conn:
+                conn.execute(
+                    """
+                    INSERT INTO ozon_fbs_postings(
+                        source_id, posting_number, status, tab, supply_id,
+                        warehouse_id, offer_id, product_name, synced_at
+                    ) VALUES (?, 'LIVE-1', 'awaiting_deliver', 'awaiting_deliver', ?,
+                              10, 'A', 'Live', '2026-01-01')
+                    """,
+                    (sid, real),
+                )
+                # Stale JSON on empty shell (classic empty-добор display bug).
+                conn.execute(
+                    """
+                    UPDATE ozon_fbs_supplies
+                    SET posting_numbers_json = ?
+                    WHERE source_id = ? AND supply_id = ?
+                    """,
+                    ('["GONE-1"]', sid, empty),
+                )
+                conn.commit()
+            listed = svc.list_awaiting_deliver_supplies(sid, adopt_orphans=False)
+            ids = {str(s.get("supply_id")) for s in listed}
+            self.assertIn(real, ids)
+            self.assertNotIn(empty, ids)
+            self.assertEqual(int(listed[0].get("posting_count") or 0), 1)
+            with db.connect() as conn:
+                gone = conn.execute(
+                    "SELECT 1 FROM ozon_fbs_supplies WHERE supply_id = ?",
+                    (empty,),
+                ).fetchone()
+            self.assertIsNone(gone)
+        finally:
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+
+    def test_add_postings_detaches_from_other_supply(self) -> None:
+        import os
+        import tempfile
+
+        from app.db import Database
+        from app.services.ozon_supplies import OzonSuppliesService
+
+        fd, path = tempfile.mkstemp(suffix=".sqlite")
+        os.close(fd)
+        try:
+            db = Database(path)
+            db.init_schema()
+            with db.connect() as conn:
+                conn.execute(
+                    """
+                    INSERT INTO supply_sources(
+                        name, marketplace, client_id, api_key, is_enabled,
+                        lookback_days, created_at
+                    ) VALUES ('Озон ФБС', 'ozon', '1', 'k', 1, 2, '2026-01-01')
+                    """
+                )
+                sid = int(conn.execute("SELECT last_insert_rowid()").fetchone()[0])
+                conn.execute(
+                    """
+                    INSERT INTO ozon_fbs_postings(
+                        source_id, posting_number, status, tab, supply_id,
+                        synced_at
+                    ) VALUES (?, 'PN-X', 'awaiting_deliver', 'awaiting_deliver', '',
+                              '2026-01-01')
+                    """,
+                    (sid,),
+                )
+                conn.commit()
+            svc = OzonSuppliesService(db)
+            dobor = svc.create_supply(
+                sid, name="добор", posting_numbers=["PN-X"]
+            )
+            target = svc.create_supply(
+                sid, name="цель", posting_numbers=[]
+            )
+            svc.add_postings(sid, target, ["PN-X"])
+            with db.connect() as conn:
+                row = conn.execute(
+                    "SELECT supply_id FROM ozon_fbs_postings WHERE posting_number='PN-X'"
+                ).fetchone()
+                left = conn.execute(
+                    "SELECT 1 FROM ozon_fbs_supplies WHERE supply_id = ?",
+                    (dobor,),
+                ).fetchone()
+            self.assertEqual(row["supply_id"], target)
+            self.assertIsNone(left)
+        finally:
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+
+    def test_ship_all_add_attaches_immediately(self) -> None:
+        import os
+        import tempfile
+        from unittest.mock import MagicMock
+
+        from app.db import Database
+        from app.services.ozon_supplies import OzonSuppliesService
+
+        fd, path = tempfile.mkstemp(suffix=".sqlite")
+        os.close(fd)
+        try:
+            db = Database(path)
+            db.init_schema()
+            with db.connect() as conn:
+                conn.execute(
+                    """
+                    INSERT INTO supply_sources(
+                        name, marketplace, client_id, api_key, is_enabled,
+                        lookback_days, created_at
+                    ) VALUES ('Озон ФБС', 'ozon', '1', 'k', 1, 2, '2026-01-01')
+                    """
+                )
+                sid = int(conn.execute("SELECT last_insert_rowid()").fetchone()[0])
+                conn.execute(
+                    """
+                    INSERT INTO ozon_fbs_postings(
+                        source_id, posting_number, status, tab, warehouse_id,
+                        warehouse_name, products_json, synced_at
+                    ) VALUES
+                    (?, 'S1', 'awaiting_packaging', 'awaiting_packaging', 10, 'WH',
+                     '[{"sku":1,"quantity":1}]', '2026-01-01'),
+                    (?, 'S2', 'awaiting_packaging', 'awaiting_packaging', 10, 'WH',
+                     '[{"sku":1,"quantity":1}]', '2026-01-01')
+                    """,
+                    (sid, sid),
+                )
+                conn.commit()
+            svc = OzonSuppliesService(db)
+            existing = svc.create_supply(
+                sid,
+                name="Поставка выбранная",
+                warehouse_id=10,
+                warehouse_name="WH",
+                posting_numbers=[],
+            )
+            # Seed one live posting so existing is a valid "add" target in preview.
+            with db.connect() as conn:
+                conn.execute(
+                    """
+                    INSERT INTO ozon_fbs_postings(
+                        source_id, posting_number, status, tab, supply_id,
+                        warehouse_id, warehouse_name, products_json, synced_at
+                    ) VALUES (?, 'SEED', 'awaiting_deliver', 'awaiting_deliver', ?,
+                              10, 'WH', '[{"sku":1,"quantity":1}]', '2026-01-01')
+                    """,
+                    (sid, existing),
+                )
+                conn.execute(
+                    """
+                    UPDATE ozon_fbs_supplies
+                    SET posting_numbers_json = ?
+                    WHERE supply_id = ?
+                    """,
+                    ('["SEED"]', existing),
+                )
+                conn.commit()
+            preview = svc.preview_ship_all(sid)
+            self.assertFalse(preview.get("block_collect"))
+            g = preview["groups"][0]
+            client = MagicMock()
+            client.ship_posting.return_value = ["ok"]
+            result = svc.execute_ship_all(
+                sid,
+                client,
+                decisions=[
+                    {
+                        "group_key": g["group_key"],
+                        "action": "add",
+                        "supply_id": existing,
+                        "name": "Поставка выбранная",
+                    }
+                ],
+                ship_pause_sec=0,
+            )
+            self.assertTrue(result.get("ok"), result)
+            with db.connect() as conn:
+                rows = {
+                    str(r["posting_number"]): str(r["supply_id"] or "")
+                    for r in conn.execute(
+                        "SELECT posting_number, supply_id FROM ozon_fbs_postings "
+                        "WHERE source_id = ?",
+                        (sid,),
+                    ).fetchall()
+                }
+                supplies = [
+                    str(r["supply_id"])
+                    for r in conn.execute(
+                        "SELECT supply_id FROM ozon_fbs_supplies WHERE source_id = ?",
+                        (sid,),
+                    ).fetchall()
+                ]
+            self.assertEqual(rows["S1"], existing)
+            self.assertEqual(rows["S2"], existing)
+            self.assertEqual(supplies, [existing])
+            orphans = svc.list_orphan_awaiting_deliver_rows(sid)
+            self.assertEqual(orphans, [])
+        finally:
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+
     def test_ship_already_assembled_counts_ok(self) -> None:
         import os
         import tempfile

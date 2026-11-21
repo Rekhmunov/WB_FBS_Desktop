@@ -41,6 +41,7 @@ from app.ui.dialog_utils import (
     make_modal_search_box,
 )
 from app.ui.format_helpers import build_product_cell_widget
+from app.ui.table_col_widths import PersistentColumnWidths
 
 
 class _CarriageLoadWorker(QThread):
@@ -283,6 +284,14 @@ class OzonCarriageDetailDialog(QDialog):
         self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.table.verticalHeader().setVisible(False)
         self.table.setShowGrid(False)
+        self._col_widths = PersistentColumnWidths(
+            self.db,
+            self.table,
+            "ozon_carriage_detail_table_cols",
+            [180, 360, 100, 100],
+            parent=self,
+        )
+        self._col_widths.apply()
         root.addWidget(self.table, 1)
 
         self._set_actions_ready(False)

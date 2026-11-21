@@ -38,6 +38,32 @@ class PersistViaDbMockTests(unittest.TestCase):
             "supply_detail_table_cols", "[80,160,300,48]"
         )
 
+    def test_use_layout_persists_previous_key(self) -> None:
+        import os
+
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+        from PyQt5.QtWidgets import QApplication, QTableWidget
+        from app.ui.table_col_widths import PersistentColumnWidths
+
+        app = QApplication.instance() or QApplication([])
+        db = MagicMock()
+        db.get_setting.return_value = ""
+        table = QTableWidget(0, 3)
+        helper = PersistentColumnWidths(
+            db, table, "ozon_fbs_table_cols_postings", [200, 360, 160]
+        )
+        helper.apply()
+        table.setColumnWidth(0, 240)
+        helper.use_layout("ozon_fbs_table_cols_supplies", [280, 180, 100])
+        saved = [
+            c
+            for c in db.set_setting.call_args_list
+            if c[0][0] == "ozon_fbs_table_cols_postings"
+        ]
+        self.assertTrue(saved)
+        self.assertEqual(helper.settings_key, "ozon_fbs_table_cols_supplies")
+        del app
+
 
 if __name__ == "__main__":
     unittest.main()

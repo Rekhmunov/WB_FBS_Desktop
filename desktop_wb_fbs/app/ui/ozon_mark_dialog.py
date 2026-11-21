@@ -31,6 +31,7 @@ from app.ui.dialog_utils import (
     make_modal_search_box,
 )
 from app.ui.format_helpers import build_product_cell_widget
+from app.ui.table_col_widths import PersistentColumnWidths
 
 
 class _OzonMarkSaveWorker(QThread):
@@ -178,6 +179,14 @@ class OzonMarkDialog(QDialog):
         self.table.setHorizontalHeaderLabels(["Отправление", "Товар", "Код маркировки"])
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.table.verticalHeader().setVisible(False)
+        self._col_widths = PersistentColumnWidths(
+            self.mark.db,
+            self.table,
+            "ozon_mark_modal_table_cols",
+            [180, 360, 280],
+            parent=self,
+        )
+        self._col_widths.apply()
         root.addWidget(self.table, 1)
 
         self.load_rows()

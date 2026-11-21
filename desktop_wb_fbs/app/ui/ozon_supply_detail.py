@@ -44,6 +44,7 @@ from app.ui.dialog_utils import (
     make_modal_search_box,
 )
 from app.ui.format_helpers import build_product_cell_widget
+from app.ui.table_col_widths import PersistentColumnWidths
 
 
 class _LabelPrintWorker(QThread):
@@ -301,6 +302,14 @@ class OzonSupplyDetailDialog(QDialog):
         self.table.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.table.verticalHeader().setVisible(False)
+        self._col_widths = PersistentColumnWidths(
+            self.db,
+            self.table,
+            "ozon_supply_detail_table_cols",
+            [180, 360, 100, 80, 140],
+            parent=self,
+        )
+        self._col_widths.apply()
         self.table.doubleClicked.connect(self._open_selected_posting)
         self.table.itemSelectionChanged.connect(self._on_detail_selection_changed)
         root.addWidget(self.table, 1)

@@ -92,6 +92,22 @@ class PersistentColumnWidths(QObject):
         finally:
             self._guard = False
 
+    def use_layout(
+        self, settings_key: str, defaults: Sequence[int]
+    ) -> None:
+        """Switch layout key (save previous widths first) and re-apply."""
+        new_key = str(settings_key or "").strip()
+        if (
+            self.settings_key
+            and new_key
+            and new_key != self.settings_key
+            and not self._guard
+        ):
+            self.persist()
+        self.settings_key = new_key
+        self.defaults = list(defaults or [])
+        self.apply()
+
     def persist(self) -> None:
         if self._guard or not self.settings_key:
             return

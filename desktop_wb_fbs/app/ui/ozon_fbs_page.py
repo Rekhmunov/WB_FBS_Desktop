@@ -14,6 +14,7 @@ from PyQt5.QtWidgets import (
     QDialogButtonBox,
     QFrame,
     QHBoxLayout,
+    QHeaderView,
     QLabel,
     QLineEdit,
     QMessageBox,
@@ -35,7 +36,16 @@ from app.ui.dialog_utils import (
 )
 from app.ui.format_helpers import make_badge, make_photo_label, make_status_pill
 from app.ui.layout_utils import FbsTabButton, fit_tab_button
+from app.ui.table_col_widths import PersistentColumnWidths
 from app.ozon.sync import sync_source as ozon_sync_source
+
+_OZON_COL_DEFAULTS = {
+    "postings": [200, 360, 160],
+    "postings_status": [200, 320, 140],
+    "supplies": [280, 180, 100],
+    "supplies_delivering": [260, 200, 180, 100],
+    "carriages": [220, 180, 100],
+}
 
 
 class OzonSyncWorker(QThread):
@@ -360,6 +370,18 @@ class OzonFbsPage(QWidget):
         self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.table.verticalHeader().setVisible(False)
         self.table.setShowGrid(False)
+        hdr = self.table.horizontalHeader()
+        hdr.setStretchLastSection(False)
+        hdr.setSectionResizeMode(QHeaderView.Interactive)
+        hdr.setMinimumSectionSize(32)
+        self._col_widths = PersistentColumnWidths(
+            self.db,
+            self.table,
+            "ozon_fbs_table_cols_postings",
+            _OZON_COL_DEFAULTS["postings"],
+            parent=self,
+        )
+        self._col_widths.apply()
         self.table.doubleClicked.connect(self._on_row_double_click)
         self.table.itemSelectionChanged.connect(self._on_selection_changed)
         root.addWidget(self.table, 1)
@@ -648,6 +670,7 @@ class OzonFbsPage(QWidget):
                 "ok",
             )
         if supplies or not self.orders.list_open_carriages(sid):
+            self.table.setColumnCount(3)
             self.table.setHorizontalHeaderLabels(
                 ["Поставка / отправление", "Статус / товар", "Отправлений"]
             )
@@ -738,10 +761,18 @@ class OzonFbsPage(QWidget):
             )
             self.table.setRowHeight(row_i, 120)
             row_i += 1
+        self._apply_ozon_col_widths("supplies")
         self.pager_total.setText("Ожидают отгрузки: {}".format(total_rows))
         self.page_label.setText("1 / 1")
         self.prev_btn.setEnabled(False)
         self.next_btn.setEnabled(False)
+
+    def _apply_ozon_col_widths(self, layout: str) -> None:
+        key = "ozon_fbs_table_cols_{}".format(layout)
+        defaults = _OZON_COL_DEFAULTS.get(layout) or [120] * max(
+            1, self.table.columnCount()
+        )
+        self._col_widths.use_layout(key, defaults)
 
     def _fill_posting_rows(
         self,
@@ -750,6 +781,7 @@ class OzonFbsPage(QWidget):
         *,
         status_col: bool = False,
     ) -> None:
+        self.table.setColumnCount(len(headers) or 3)
         self.table.setHorizontalHeaderLabels(headers)
         self.table.setRowCount(len(rows))
         for i, r in enumerate(rows):
@@ -767,8 +799,12 @@ class OzonFbsPage(QWidget):
                     i, 2, QTableWidgetItem(str(r.get("warehouse_name") or "—"))
                 )
             self.table.setRowHeight(i, 120)
+        self._apply_ozon_col_widths(
+            "postings_status" if status_col else "postings"
+        )
 
     def _fill_carriage_rows(self, carriages: List[Dict[str, Any]]) -> None:
+        self.table.setColumnCount(3)
         self.table.setHorizontalHeaderLabels(
             ["Отгрузка", "Статус", "Отправлений"]
         )
@@ -791,6 +827,7 @@ class OzonFbsPage(QWidget):
                 i, 2, QTableWidgetItem(str(int(c.get("posting_count") or 0)))
             )
             self.table.setRowHeight(i, 56)
+        self._apply_ozon_col_widths("carriages")
 
     def _fill_supply_rows(self, supplies: List[Dict[str, Any]]) -> None:
         delivering = self._tab == "delivering"
@@ -845,6 +882,9 @@ class OzonFbsPage(QWidget):
                     i, 2, QTableWidgetItem(str(int(s.get("posting_count") or 0)))
                 )
             self.table.setRowHeight(i, 56 if not delivering else 64)
+        self._apply_ozon_col_widths(
+            "supplies_delivering" if delivering else "supplies"
+        )
 
     def _selected_supply_ids(self) -> List[str]:
         out = []  # type: List[str]

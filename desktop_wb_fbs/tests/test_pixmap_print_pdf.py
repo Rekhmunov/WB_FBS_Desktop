@@ -127,6 +127,23 @@ class PixmapPdfDownloadTests(unittest.TestCase):
             self.assertTrue(_write_pixmaps_pdf(str(out), stickers))
             self.assertLess(out.stat().st_size, 250_000)
 
+    def test_write_pixmaps_pdf_progress_and_cancel(self) -> None:
+        pages = [self._pixmap(200, 120) for _ in range(5)]
+        seen = []
+
+        def _progress(done: int, total: int) -> bool:
+            seen.append((done, total))
+            return done < 2  # cancel mid-way
+
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "cancel.pdf"
+            self.assertFalse(
+                _write_pixmaps_pdf(str(out), pages, progress=_progress)
+            )
+            self.assertFalse(out.exists())
+        self.assertTrue(seen)
+        self.assertEqual(seen[0][1], 5)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -19,6 +19,7 @@ from PyQt5.QtCore import (
 from PyQt5.QtGui import QColor, QFontMetrics, QImage, QPainter, QPen, QPixmap
 from PyQt5.QtPrintSupport import QPrintDialog, QPrinter
 from PyQt5.QtWidgets import (
+    QApplication,
     QButtonGroup,
     QComboBox,
     QDialog,
@@ -29,6 +30,7 @@ from PyQt5.QtWidgets import (
     QLabel,
     QLineEdit,
     QMessageBox,
+    QProgressDialog,
     QPushButton,
     QRadioButton,
     QScrollArea,
@@ -252,20 +254,37 @@ def _pixmap_to_jpeg_bytes(
     return bytes(blob), int(flat.width()), int(flat.height())
 
 
-def _write_pixmaps_pdf(path: str, pixmaps: List[QPixmap]) -> bool:
+def _write_pixmaps_pdf(
+    path: str,
+    pixmaps: List[QPixmap],
+    progress: Optional[Any] = None,
+) -> bool:
     """
     Write a compact multi-page PDF (JPEG image XObjects).
 
     QPrinter(HighResolution)+PdfFormat upscales pages to ~1200 DPI rasters and
     produces multi‑MB / sometimes unreadable files in Edge. Embed JPEG instead.
+
+    ``progress`` is optional ``callable(done: int, total: int) -> bool``.
+    Return False from it to cancel. Keep the UI alive by pumping events there.
     """
     valid = _valid_pixmaps(pixmaps)
     if not valid:
         return False
 
+    total = len(valid)
     pages = []  # type: List[Tuple[bytes, int, int]]
-    for pix in valid:
-        pages.append(_pixmap_to_jpeg_bytes(pix))
+    # More pages → slightly smaller JPEG to keep encode + file light.
+    max_side = 1200 if total >= 40 else 1400
+    quality = 70 if total >= 40 else 75
+    for index, pix in enumerate(valid, start=1):
+        if progress is not None and not progress(index - 1, total):
+            return False
+        pages.append(
+            _pixmap_to_jpeg_bytes(pix, quality=quality, max_side=max_side)
+        )
+    if progress is not None and not progress(total, total):
+        return False
 
     # A4 in PDF points.
     page_w = 595.27
@@ -374,7 +393,11 @@ def _print_pixmaps(parent: QWidget, pixmaps: List[QPixmap]) -> None:
 
 
 def _download_pixmaps_pdf(
-    parent: QWidget, pixmaps: List[QPixmap], title: str = ""
+    parent: QWidget,
+    pixmaps: List[QPixmap],
+    title: str = "",
+    *,
+    busy_widgets: Optional[List[QWidget]] = None,
 ) -> Optional[str]:
     """Ask for a path and write a compact multi-page PDF. Returns saved path."""
     valid = _valid_pixmaps(pixmaps)
@@ -391,15 +414,73 @@ def _download_pixmaps_pdf(
         return None
     if not str(path).lower().endswith(".pdf"):
         path = path + ".pdf"
+
+    widgets = [w for w in (busy_widgets or []) if w is not None]
+    for w in widgets:
+        w.setEnabled(False)
+
+    progress = QProgressDialog(
+        "Сохранение PDF…", "Отмена", 0, max(1, len(valid)), parent
+    )
+    progress.setWindowTitle("Скачать")
+    progress.setWindowModality(Qt.ApplicationModal)
+    progress.setMinimumDuration(0)
+    progress.setValue(0)
+    progress.show()
+    QApplication.processEvents()
+
+    cancelled = {"v": False}
+
+    def _on_progress(done: int, total: int) -> bool:
+        if progress.wasCanceled():
+            cancelled["v"] = True
+            return False
+        progress.setMaximum(max(1, int(total) or 1))
+        progress.setValue(int(done))
+        progress.setLabelText(
+            "Сохранение PDF… {}/{}".format(int(done), int(total))
+        )
+        QApplication.processEvents()
+        return not progress.wasCanceled()
+
+    ok = False
     try:
-        ok = _write_pixmaps_pdf(path, valid)
+        ok = bool(_write_pixmaps_pdf(path, valid, progress=_on_progress))
     except Exception:
         ok = False
-    if not ok:
-        QMessageBox.warning(parent, "Скачать", "Не удалось сохранить PDF.")
+    finally:
+        progress.close()
+        for w in widgets:
+            w.setEnabled(True)
+
+    if cancelled["v"]:
+        try:
+            Path(path).unlink(missing_ok=True)  # type: ignore[call-arg]
+        except TypeError:
+            # Python 3.7 compat / missing_ok unavailable
+            try:
+                if Path(path).exists():
+                    Path(path).unlink()
+            except OSError:
+                pass
+        except OSError:
+            pass
         return None
-    QMessageBox.information(parent, "Скачать", "Файл сохранён:\n{}".format(path))
-    return path
+
+    # Defer the result box: nested modal QMessageBox right after QFileDialog
+    # + long encode on the print preview has hung the UI on Windows.
+    saved_path = path if ok else ""
+
+    def _notify() -> None:
+        if saved_path:
+            QMessageBox.information(
+                parent, "Скачать", "Файл сохранён:\n{}".format(saved_path)
+            )
+        else:
+            QMessageBox.warning(parent, "Скачать", "Не удалось сохранить PDF.")
+
+    QTimer.singleShot(0, _notify)
+    return saved_path or None
 
 
 def show_png_list(
@@ -524,7 +605,12 @@ def show_pixmap_print_preview(
     download_btn = buttons.addButton("Скачать", QDialogButtonBox.ActionRole)
     download_btn.setObjectName("secondary")
     download_btn.clicked.connect(
-        lambda: _download_pixmaps_pdf(dlg, valid, title)
+        lambda: _download_pixmaps_pdf(
+            dlg,
+            valid,
+            title,
+            busy_widgets=[print_btn, download_btn],
+        )
     )
     root.addWidget(buttons)
     dlg.exec_()

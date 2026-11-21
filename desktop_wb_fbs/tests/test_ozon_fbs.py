@@ -745,7 +745,9 @@ class OzonShipStatusParityTest(unittest.TestCase):
             self.assertEqual(enriched.get("offer_id"), "ART-777")
             self.assertEqual(str(enriched.get("sku")), "777")
             self.assertEqual(enriched.get("product_name_display"), "Из JSON")
-            self.assertEqual(enriched.get("barcodes"), ["QR-1"])
+            # Product ШК ≠ package QR (web: barcodes[] under product, sticker_* separate).
+            self.assertEqual(enriched.get("barcodes"), [])
+            self.assertEqual(enriched.get("sticker_barcode"), "QR-1")
         finally:
             try:
                 os.unlink(path)

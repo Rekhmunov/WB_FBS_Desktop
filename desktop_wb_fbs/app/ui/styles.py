@@ -873,6 +873,10 @@ QLabel#sdOrderMeta {
 QLabel#sdSticker {
     color: #0f1f33;
 }
+QLabel#sdScanit {
+    color: #0f172a;
+    margin-top: 2px;
+}
 QLabel#sdProductName {
     font-size: 14px;
     font-weight: 700;

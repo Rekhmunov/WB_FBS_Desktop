@@ -9,6 +9,7 @@ from typing import Any, Callable, Dict, List, Optional
 from app.db import Database
 from app.ozon import compute_tab, carriage_is_done, iso_z, lookback_window, utc_now
 from app.ozon.client import OzonFbsClient
+from app.ozon.sticker_fields import sticker_fields_from_posting
 
 _log = logging.getLogger(__name__)
 ProgressCb = Optional[Callable[[str, int], None]]
@@ -31,25 +32,21 @@ def _first_product(posting: Dict[str, Any]) -> Dict[str, Any]:
     return products[0] if products else {}
 
 
-def _barcodes(posting: Dict[str, Any]) -> List[str]:
-    bc = posting.get("barcodes")
-    if not isinstance(bc, dict):
-        return []
-    out = []
-    for key in ("upper_barcode", "lower_barcode"):
-        val = str(bc.get(key) or "").strip()
-        if val:
-            out.append(val)
+def _product_barcodes(posting: Dict[str, Any]) -> List[str]:
+    """Product ШК from products[].barcodes — not package QR (web archive parity)."""
+    out = []  # type: List[str]
+    for prod in _products(posting):
+        raw = prod.get("barcodes")
+        if isinstance(raw, list):
+            for item in raw:
+                val = str(item or "").strip()
+                if val and val not in out:
+                    out.append(val)
+        elif isinstance(raw, str):
+            val = raw.strip()
+            if val and val not in out:
+                out.append(val)
     return out
-
-
-def _sticker_pair(posting: Dict[str, Any]) -> tuple:
-    bc = posting.get("barcodes")
-    if not isinstance(bc, dict):
-        return "", ""
-    upper = str(bc.get("upper_barcode") or "").strip()
-    lower = str(bc.get("lower_barcode") or "").strip()
-    return upper, lower
 
 
 def upsert_posting(
@@ -74,8 +71,11 @@ def upsert_posting(
     qty = int(prod.get("quantity") or 1)
     wh = str(analytics.get("warehouse") or "")
     wh_id = analytics.get("warehouse_id")
-    barcodes = _barcodes(posting)
-    sticker_upper, sticker_lower = _sticker_pair(posting)
+    barcodes = _product_barcodes(posting)
+    stickers = sticker_fields_from_posting(posting)
+    sticker_upper = stickers.get("sticker_barcode") or ""
+    sticker_lower = stickers.get("sticker_lower_barcode") or ""
+    sticker_scanit = stickers.get("sticker_scanit") or ""
     cancel = posting.get("cancellation") if isinstance(posting.get("cancellation"), dict) else {}
     cancel_reason = str(cancel.get("cancel_reason") or "")
     now = utc_now()
@@ -87,9 +87,9 @@ def upsert_posting(
                 tab, carriage_id, offer_id, sku, product_name, quantity,
                 warehouse_name, warehouse_id, barcodes_json, cancel_reason,
                 shipment_date, in_process_at, created_at_wb, products_json,
-                sticker_barcode, sticker_lower_barcode,
+                sticker_barcode, sticker_lower_barcode, sticker_scanit,
                 raw_json, synced_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(source_id, posting_number) DO UPDATE SET
                 order_id = excluded.order_id,
                 order_number = excluded.order_number,
@@ -128,6 +128,9 @@ def upsert_posting(
                     WHEN excluded.sticker_lower_barcode != ''
                     THEN excluded.sticker_lower_barcode
                     ELSE ozon_fbs_postings.sticker_lower_barcode END,
+                sticker_scanit = CASE
+                    WHEN excluded.sticker_scanit != '' THEN excluded.sticker_scanit
+                    ELSE ozon_fbs_postings.sticker_scanit END,
                 raw_json = excluded.raw_json,
                 synced_at = excluded.synced_at
             """,
@@ -154,6 +157,7 @@ def upsert_posting(
                 json.dumps(all_products, ensure_ascii=False),
                 sticker_upper,
                 sticker_lower,
+                sticker_scanit,
                 json.dumps(posting, ensure_ascii=False),
                 now,
             ),

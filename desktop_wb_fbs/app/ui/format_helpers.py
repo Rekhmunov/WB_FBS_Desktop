@@ -226,6 +226,67 @@ def build_order_cell_widget(row: Dict[str, Any]) -> QWidget:
     return wrap
 
 
+def build_ozon_scanit_label(scanit: object) -> Optional[QLabel]:
+    """Instance label ``ii…`` under posting number (web ``_ozonFbsScanitUnderOrderHtml``)."""
+    from app.ozon.sticker_fields import format_scanit_tail_html, normalize_ozon_scanit
+
+    value = normalize_ozon_scanit(scanit)
+    if not value:
+        # Already-persisted column may hold a valid ii… string.
+        raw = str(scanit or "").strip()
+        value = normalize_ozon_scanit(raw) if raw else ""
+    if not value:
+        return None
+    lab = QLabel()
+    lab.setObjectName("sdScanit")
+    lab.setTextFormat(Qt.RichText)
+    lab.setText(format_scanit_tail_html(value))
+    lab.setToolTip(value)
+    return lab
+
+
+def build_ozon_posting_cell_widget(row: Dict[str, Any]) -> QWidget:
+    """Ozon supply-detail «Отправление» cell: posting # + ``ii…`` + date (web archive)."""
+    wrap = QWidget()
+    wrap.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
+    lay = QVBoxLayout(wrap)
+    lay.setContentsMargins(8, 10, 8, 10)
+    lay.setSpacing(4)
+
+    pn = str(row.get("posting_number") or "").strip() or "—"
+    oid = QLabel(pn)
+    oid.setObjectName("sdOrderId")
+    oid.setTextInteractionFlags(Qt.TextSelectableByMouse)
+    lay.addWidget(oid)
+
+    scanit_lab = build_ozon_scanit_label(row.get("sticker_scanit"))
+    if scanit_lab is not None:
+        lay.addWidget(scanit_lab)
+
+    created = str(
+        row.get("created_date")
+        or row.get("in_process_at")
+        or row.get("created_at_wb")
+        or ""
+    ).strip()
+    if created and "T" in created:
+        created = created.split("T", 1)[0]
+    meta = QLabel("от {}".format(created or "—"))
+    meta.setObjectName("sdOrderMeta")
+    lay.addWidget(meta)
+
+    badges = QHBoxLayout()
+    badges.setContentsMargins(0, 0, 0, 0)
+    badges.setSpacing(4)
+    cancel_label = str(row.get("cancel_reason") or "").strip()
+    if cancel_label or str(row.get("tab") or "").lower() == "cancelled":
+        badges.addWidget(make_badge(cancel_label or "отменено", "danger"))
+    badges.addStretch(1)
+    lay.addLayout(badges)
+    lay.addStretch(1)
+    return wrap
+
+
 def build_product_cell_widget(
     row: Dict[str, Any],
     *,
@@ -246,25 +307,41 @@ def build_product_cell_widget(
     text.setSpacing(4)
     text.setContentsMargins(0, 0, 0, 0)
 
-    name = str(row.get("product_name") or row.get("article") or "—")
+    name = str(
+        row.get("product_name")
+        or row.get("article")
+        or row.get("offer_id")
+        or "—"
+    )
     name_lab = AdaptiveWrapLabel(name)
     name_lab.setObjectName("sdProductName")
     text.addWidget(name_lab)
 
-    article = str(row.get("article") or "—")
+    article = str(row.get("article") or row.get("offer_id") or "").strip() or "—"
     nm = row.get("nm_id")
+    sku = str(row.get("sku") or "").strip()
     sub = "Арт. {}".format(article)
     if nm not in (None, ""):
         sub += " · nmId {}".format(nm)
+    elif sku:
+        sub += " · SKU {}".format(sku)
     sub_lab = AdaptiveWrapLabel(sub)
     sub_lab.setObjectName("sdProductSub")
     text.addWidget(sub_lab)
 
+    # WB: skus list; Ozon: product barcodes[] under the name (web archive).
+    codes = []  # type: list
     skus = row.get("skus") if isinstance(row.get("skus"), list) else []
-    for sku in skus:
-        s = str(sku or "").strip()
-        if not s:
-            continue
+    for sku_code in skus:
+        s = str(sku_code or "").strip()
+        if s and s not in codes:
+            codes.append(s)
+    barcodes = row.get("barcodes") if isinstance(row.get("barcodes"), list) else []
+    for bc_raw in barcodes:
+        s = str(bc_raw or "").strip()
+        if s and s not in codes:
+            codes.append(s)
+    for s in codes:
         bc = QLabel(s)
         bc.setObjectName("sdBarcode")
         bc.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)

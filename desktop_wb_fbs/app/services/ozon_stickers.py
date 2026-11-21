@@ -66,6 +66,18 @@ class OzonStickersService:
                 ).fetchall()
                 matches = [Database.row_to_dict(r) for r in rows]
             if not matches:
+                # New instance label ``ii…`` (web archive step after lower).
+                rows = conn.execute(
+                    """
+                    SELECT * FROM ozon_fbs_postings
+                    WHERE source_id = ? AND sticker_scanit != ''
+                      AND LOWER(sticker_scanit) = ?
+                    LIMIT ?
+                    """,
+                    (source_id, raw_key, _MATCH_LIMIT),
+                ).fetchall()
+                matches = [Database.row_to_dict(r) for r in rows]
+            if not matches:
                 # posting_number exact
                 rows = conn.execute(
                     """
@@ -101,7 +113,7 @@ class OzonStickersService:
     def _row_matches(
         self, row: Dict[str, Any], raw: str, raw_key: str
     ) -> bool:
-        for key in ("sticker_barcode", "sticker_lower_barcode"):
+        for key in ("sticker_barcode", "sticker_lower_barcode", "sticker_scanit"):
             val = str(row.get(key) or "").strip()
             if val and _scan_key(val) == raw_key:
                 return True

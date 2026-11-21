@@ -43,7 +43,10 @@ from app.ui.dialog_utils import (
     init_fullscreen_dialog,
     make_modal_search_box,
 )
-from app.ui.format_helpers import build_product_cell_widget
+from app.ui.format_helpers import (
+    build_ozon_posting_cell_widget,
+    build_product_cell_widget,
+)
 from app.ui.table_col_widths import PersistentColumnWidths
 
 
@@ -312,19 +315,20 @@ class OzonSupplyDetailDialog(QDialog):
         self.load_info.setContentsMargins(24, 8, 24, 8)
         root.addWidget(self.load_info)
 
-        self.table = QTableWidget(0, 5)
-        self.table.setHorizontalHeaderLabels(
-            ["Отправление", "Товар", "Маркировка", "ШК", "Стикер"]
-        )
+        # Archive #ozonFbsSupplyDetailTable: Отправление | Товар (ii… under posting).
+        self.table = QTableWidget(0, 2)
+        self.table.setObjectName("sdTable")
+        self.table.setHorizontalHeaderLabels(["Отправление", "Товар"])
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.table.setShowGrid(False)
         self.table.verticalHeader().setVisible(False)
         self._col_widths = PersistentColumnWidths(
             self.db,
             self.table,
-            "ozon_supply_detail_table_cols",
-            [180, 360, 100, 80, 140],
+            "ozon_supply_detail_table_cols_v2",
+            [320, 640],
             parent=self,
         )
         self._col_widths.apply()
@@ -525,7 +529,11 @@ class OzonSupplyDetailDialog(QDialog):
                 for code in r.get("barcodes") or []:
                     if q in str(code or "").lower():
                         return True
-                for key in ("sticker_barcode", "sticker_lower_barcode"):
+                for key in (
+                    "sticker_barcode",
+                    "sticker_lower_barcode",
+                    "sticker_scanit",
+                ):
                     if q in str(r.get(key) or "").lower():
                         return True
                 return False
@@ -534,43 +542,13 @@ class OzonSupplyDetailDialog(QDialog):
         self.table.setRowCount(len(rows))
         for i, r in enumerate(rows):
             pnum = str(r.get("posting_number") or "")
+            # Keep a data item under the cell widget for selection / UserRole.
             item = QTableWidgetItem(pnum)
             item.setData(Qt.UserRole, pnum)
             self.table.setItem(i, 0, item)
+            self.table.setCellWidget(i, 0, build_ozon_posting_cell_widget(r))
             self.table.setCellWidget(i, 1, build_product_cell_widget(r, photo_size=72))
-            marks = []
-            try:
-                marks = json.loads(str(r.get("marks_json") or "[]"))
-            except Exception:
-                marks = []
-            if not isinstance(marks, list):
-                marks = []
-            mark_text = (
-                "✓"
-                if marks and int(r.get("marks_synced") or 0)
-                else ("…" if marks else "—")
-            )
-            if str(r.get("tab") or "") == "cancelled" or str(
-                r.get("status") or ""
-            ).lower() in ("cancelled", "not_accepted"):
-                mark_text = "отм."
-            self.table.setItem(i, 2, QTableWidgetItem(mark_text))
-            pick_ok = bool(int(r.get("pick_verified") or 0))
-            self.table.setItem(i, 3, QTableWidgetItem("✓" if pick_ok else "—"))
-            sticker = str(
-                r.get("sticker_barcode") or r.get("sticker_lower_barcode") or ""
-            ).strip()
-            if not sticker:
-                try:
-                    bcs = r.get("barcodes") or []
-                    if isinstance(bcs, list) and bcs:
-                        sticker = str(bcs[0] or "")
-                except Exception:
-                    sticker = ""
-            self.table.setItem(
-                i, 4, QTableWidgetItem(sticker[:18] + ("…" if len(sticker) > 18 else ""))
-            )
-            self.table.setRowHeight(i, 96)
+            self.table.setRowHeight(i, 110)
 
     def _posting_numbers(self) -> List[str]:
         return [
